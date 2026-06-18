@@ -1,0 +1,69 @@
+[gd_scene format=3]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
+albedo_color = Color(0.8627451, 0.8235294, 0.6666667, 1)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_wall"]
+albedo_color = Color(0.8627451, 0.8235294, 0.6666667, 1)
+
+[node name="CorridorUShaped" type="Node3D"]
+
+[node name="FloorLeft" type="CSGBox3D" parent="."]
+use_collision = true
+size = Vector3(3.125, 0.2, 7.5)
+position = Vector3(-3.75, 0, 0)
+material = SubResource("StandardMaterial3D_floor")
+
+[node name="FloorCenter" type="CSGBox3D" parent="."]
+use_collision = true
+size = Vector3(7.5, 0.2, 3.125)
+position = Vector3(0, 0, -3.75)
+material = SubResource("StandardMaterial3D_floor")
+
+[node name="FloorRight" type="CSGBox3D" parent="."]
+use_collision = true
+size = Vector3(3.125, 0.2, 7.5)
+position = Vector3(3.75, 0, 0)
+material = SubResource("StandardMaterial3D_floor")
+
+[node name="Wall_N1" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3.75, 2, -3.75)
+use_collision = true
+size = Vector3(3.125, 4, 0.2)
+material = SubResource("StandardMaterial3D_wall")
+
+[node name="Wall_N2" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.75, 2, -3.75)
+use_collision = true
+size = Vector3(3.125, 4, 0.2)
+material = SubResource("StandardMaterial3D_wall")
+
+[node name="Wall_S1" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -3.75, 2, 3.75)
+use_collision = true
+size = Vector3(3.125, 4, 0.2)
+material = SubResource("StandardMaterial3D_wall")
+
+[node name="Wall_S2" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.75, 2, 3.75)
+use_collision = true
+size = Vector3(3.125, 4, 0.2)
+material = SubResource("StandardMaterial3D_wall")
+
+[node name="Wall_W1" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -5.3125, 2, 0)
+use_collision = true
+size = Vector3(0.2, 4, 7.5)
+material = SubResource("StandardMaterial3D_wall")
+
+[node name="Wall_E1" type="CSGBox3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5.3125, 2, 0)
+use_collision = true
+size = Vector3(0.2, 4, 7.5)
+material = SubResource("StandardMaterial3D_wall")
+
+[node name="Ceiling" type="CSGBox3D" parent="."]
+visible = false
+use_collision = true
+size = Vector3(15, 0.2, 15)
+material = SubResource("StandardMaterial3D_floor")

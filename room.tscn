@@ -1,0 +1,76 @@
+[gd_scene format=3 uid="uid://dgn20u4toxbi6"]
+
+[ext_resource type="Texture2D" uid="uid://dxq5ps6neslid" path="res://textures/floor.png" id="1_4o3f6"]
+[ext_resource type="Texture2D" uid="uid://dtwav0mlvppxo" path="res://textures/wall.png" id="1_bisa2"]
+[ext_resource type="PackedScene" uid="uid://ohm0cadryckk" path="res://player.tscn" id="3_4o3f6"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_v5vuv"]
+albedo_color = Color(0.8627451, 0.8235294, 0.6666667, 1)
+albedo_texture = ExtResource("1_4o3f6")
+uv1_scale = Vector3(0.2, 0.2, 0.2)
+uv1_triplanar = true
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_v321d"]
+albedo_color = Color(0.8627451, 0.8235294, 0.6666667, 1)
+albedo_texture = ExtResource("1_bisa2")
+uv1_scale = Vector3(0.2, 0.2, 0.2)
+uv1_triplanar = true
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_bisa2"]
+albedo_color = Color(0.8627451, 0.8235294, 0.6666667, 1)
+albedo_texture = ExtResource("1_bisa2")
+uv1_scale = Vector3(0.2, 0.21, 0.2)
+uv1_triplanar = true
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_4o3f6"]
+albedo_color = Color(0.8627451, 0.8235294, 0.6666667, 1)
+albedo_texture = ExtResource("1_bisa2")
+uv1_scale = Vector3(0.2, 0.2, 0.2)
+uv1_triplanar = true
+
+[sub_resource type="Environment" id="Environment_4o3f6"]
+fog_enabled = true
+fog_light_color = Color(0.7058824, 0.6666667, 0.47058824, 1)
+
+[node name="Node3D" type="Node3D" unique_id=612332476]
+
+[node name="Floor" type="CSGBox3D" parent="." unique_id=1795667526]
+use_collision = true
+size = Vector3(20, 0.2, 20)
+material = SubResource("StandardMaterial3D_v5vuv")
+
+[node name="Wall_North" type="CSGBox3D" parent="." unique_id=2079759839]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, -10)
+use_collision = true
+size = Vector3(20, 4, 0.2)
+material = SubResource("StandardMaterial3D_v321d")
+
+[node name="Wall_South" type="CSGBox3D" parent="." unique_id=1253138342]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 10)
+use_collision = true
+size = Vector3(20, 4, 0.2)
+material = SubResource("StandardMaterial3D_v321d")
+
+[node name="Wall_East" type="CSGBox3D" parent="." unique_id=167950445]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 2, 0)
+use_collision = true
+size = Vector3(0.2, 4, 20)
+material = SubResource("StandardMaterial3D_bisa2")
+
+[node name="Wall_West" type="CSGBox3D" parent="." unique_id=1451214285]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -10, 2, 0)
+use_collision = true
+size = Vector3(0.2, 4, 20)
+material = SubResource("StandardMaterial3D_4o3f6")
+
+[node name="Ceiling" type="CSGBox3D" parent="." unique_id=771374742]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4, 0)
+visible = false
+use_collision = true
+size = Vector3(20, 0.2, 20)
+
+[node name="Player" parent="." unique_id=2094207758 instance=ExtResource("3_4o3f6")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1088197389]
+environment = SubResource("Environment_4o3f6")
