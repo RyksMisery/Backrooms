@@ -741,8 +741,8 @@ func _build_well(x: int, z: int, c: Vector3) -> void:
 	for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
 		if _grid[x + d.x][z + d.y] != 0:
 			continue                       # глухая сторона — пропускаем
-		var conn := Vector2i(x + d.x, z + d.y)
-		var dv := _ofs(conn.x % 2 == 0, 0.0, 0.0, float(_well_doors.get(conn, 0.0)))
+		var lamp_conn := Vector2i(x + d.x, z + d.y)
+		var dv := _ofs(lamp_conn.x % 2 == 0, 0.0, 0.0, float(_well_doors.get(lamp_conn, 0.0)))
 		var lx := c.x + float(d.x) * (ROOM * 0.5 - RING * 0.5) + dv.x
 		var lz := c.z + float(d.y) * (ROOM * 0.5 - RING * 0.5) + dv.z
 		var mi := MeshInstance3D.new()
@@ -773,10 +773,10 @@ func _build_well(x: int, z: int, c: Vector3) -> void:
 			edir = d
 			break
 	var fv := Vector3(float(edir.x), 0, float(edir.y))
-	var conn := Vector2i(x + edir.x, z + edir.y)
-	var doff := float(_well_doors.get(conn, 0.0))
+	var entry_conn := Vector2i(x + edir.x, z + edir.y)
+	var doff := float(_well_doors.get(entry_conn, 0.0))
 	# смещение проёма в мире — ровно как в _build_conn (через _ofs по перпендикуляру)
-	var door_vec := _ofs(conn.x % 2 == 0, 0.0, 0.0, doff)
+	var door_vec := _ofs(entry_conn.x % 2 == 0, 0.0, 0.0, doff)
 	_well_entry_pos = c + fv * (ROOM * 0.5 - RING * 0.5) + door_vec
 	_well_entry_pos.y = 1.2
 	var look := -fv                              # смотрим к центру
