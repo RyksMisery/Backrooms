@@ -82,6 +82,44 @@ Internal partitions may be generated later in different ways, as long as they
 respect the connection rule above: the player should be forced to travel
 through the area instead of crossing it through the shortest line.
 
+Internal partitions may use 0.5-panel thickness when a lighter office-like
+divider is needed. In that case, place the divider on the same centerline that
+a full 1-panel partition would use, unless the specific area layout says
+otherwise.
+
+Office-like internal openings use the white door module as their reference
+size. Door openings keep the same width as the scaled `3d/wite_door.glb`
+door plus 0.18 m side clearance on each side, and the lintel starts at the
+scaled door height plus 0.97 m. Empty office openings receive only the door
+frame/trim from `3d/wite_door.glb` on both sides of the partition. The frame
+uses the baseboard material color. Empty openings also receive baseboard-color
+inner reveals on both sides and under the lintel, spanning the full thickness
+of the office partition and meeting the frame tightly. Full office doors use
+the same placement; their frames use the baseboard material color, while door
+leaves and handles keep the original white-door materials. Full office doors
+must include collision so the player cannot pass through the closed door.
+Office openings and office doors are reusable semantic elements: nodes should
+be marked with `office_opening`, full door nodes also with `office_door`, and
+each should carry an `opening_id` so future labyrinth reconfiguration
+mechanics can open some office passages while closing others. Office areas may
+also place decorative full office doors on blind walls opposite side passages
+into divided office rooms; these use the same visual treatment and protrusion
+from the wall plane, but are not navigable openings.
+
+Decorative white doors are a reusable labyrinth element, not only an office
+detail. Wherever a decorative `3d/wite_door.glb` door is placed against a blind
+wall, use the calibrated wall offset from the current prototype:
+`door_depth * 0.5 - 0.1185 m` from the wall plane toward the room-facing side.
+If a baseboard would run through the door footprint, split or remove the
+baseboard in that footprint so the door sits cleanly against the wall.
+
+For any internal partition with the same 0.5-panel thickness as the office
+partitions, office-style doors, frames, and openings use the calibrated office
+placement from this prototype across the whole labyrinth. Keep the same
+room-facing protrusion, frame placement on both sides, lintel height, reveal
+trim, and baseboard-color frame/reveal treatment unless a specific area design
+explicitly overrides it.
+
 ## Light Placement
 
 Ceiling lights are placed after wall/column/partition occupancy is known.

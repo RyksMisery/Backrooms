@@ -11,6 +11,15 @@ const SLAB_T := 0.20
 const LIGHT_STEP := 2
 const LIGHT_MARGIN_EMPTY := 1
 const PASSAGE_CELLS := 3
+const OFFICE_DOOR_SCALE := 1.5
+const OFFICE_DOOR_CENTER_X := 11.5
+const OFFICE_DOOR_CENTER_Z := 7.5
+const OFFICE_DOOR_WIDTH := 1.008042
+const OFFICE_DOOR_HEIGHT := 2.116508
+const OFFICE_DOOR_DEPTH := 0.1808
+const OFFICE_DOOR_SIDE_CLEARANCE := 0.18
+const OFFICE_DOOR_TOP_CLEARANCE := 0.97
+const OFFICE_REVEAL_TRIM_T := 0.08
 
 const K_EMPTY := 0
 const K_WALL := 1
@@ -46,6 +55,7 @@ func _ready() -> void:
 	_begin()
 	_build_areas()
 	_commit()
+	_place_office_doors()
 	_add_light_sources()
 	_spawn_player()
 	_build_hud()
@@ -110,6 +120,9 @@ func _build_border_wall(area: Dictionary, dir: Vector2i) -> void:
 	elif dir == Vector2i(-1, 0):
 		_add_border_z(o, -WALL_T, passages)
 	elif dir == Vector2i(1, 0):
+		if not has_neighbor and String(area["id"]).begins_with("office_1"):
+			_add_office_decor_border_z(area, o, ROOM)
+			return
 		_add_border_z(o, ROOM, passages)
 
 
@@ -168,6 +181,26 @@ func _add_border_z(o: Vector3, local_x: float, passages: Array[Rect2i]) -> void:
 	_add_wall_z_segment(o, local_x, cursor, ROOM + WALL_T)
 
 
+func _add_office_decor_border_z(area: Dictionary, o: Vector3, local_x: float) -> void:
+	_put("wall", Vector3(WALL_T, CEIL_H, ROOM + WALL_T * 2.0),
+		o + Vector3(local_x + WALL_T * 0.5, CEIL_H * 0.5, ROOM * 0.5), true, false)
+	var gap_center := CELL * (11.5 if String(area["id"]) == "office_1_top" else 3.5)
+	var gap_w := OFFICE_DOOR_WIDTH + OFFICE_DOOR_SIDE_CLEARANCE * 2.0
+	var gap0 := gap_center - gap_w * 0.5
+	var gap1 := gap_center + gap_w * 0.5
+	_add_base_z_segment(o, local_x, -WALL_T, gap0)
+	_add_base_z_segment(o, local_x, gap1, ROOM + WALL_T)
+
+
+func _add_base_z_segment(o: Vector3, local_x: float, z0: float, z1: float) -> void:
+	var len := z1 - z0
+	if len <= 0.01:
+		return
+	var size := Vector3(WALL_T + 0.05, 0.12, len + 0.05)
+	var pos := o + Vector3(local_x + WALL_T * 0.5, 0.06, (z0 + z1) * 0.5)
+	_st["base"].append_from(_get_box(size), 0, Transform3D(Basis(), pos))
+
+
 func _add_wall_x_segment(o: Vector3, x0: float, x1: float, local_z: float) -> void:
 	var len := x1 - x0
 	if len <= 0.05:
@@ -221,13 +254,241 @@ func _build_maze(area: Dictionary) -> void:
 	_add_cell_wall(area, Rect2i(12, 7, 1, 5))
 
 
+func _office_1_partition_rects() -> Array[Rect2]:
+	var t := 0.5
+	var a := 7.5 - t * 0.5
+	var open_w := _office_opening_width_panels()
+	var x0 := 3.5 - open_w * 0.5
+	var x1 := 3.5 + open_w * 0.5
+	var x2 := OFFICE_DOOR_CENTER_X - open_w * 0.5
+	var x3 := OFFICE_DOOR_CENTER_X + open_w * 0.5
+	var z0 := 3.5 - open_w * 0.5
+	var z1 := 3.5 + open_w * 0.5
+	var z2 := 11.5 - open_w * 0.5
+	var z3 := 11.5 + open_w * 0.5
+	return [
+		Rect2(a, 0.0, t, z0),
+		Rect2(a, z1, t, z2 - z1),
+		Rect2(a, z3, t, 15.0 - z3),
+		Rect2(0.0, a, x0, t),
+		Rect2(x1, a, x2 - x1, t),
+		Rect2(x3, a, 15.0 - x3, t),
+	]
+
+
 func _build_office_1(area: Dictionary) -> void:
-	_add_cell_wall(area, Rect2i(7, 0, 1, 3))
-	_add_cell_wall(area, Rect2i(7, 5, 1, 5))
-	_add_cell_wall(area, Rect2i(7, 12, 1, 3))
-	_add_cell_wall(area, Rect2i(0, 7, 3, 1))
-	_add_cell_wall(area, Rect2i(5, 7, 5, 1))
-	_add_cell_wall(area, Rect2i(12, 7, 3, 1))
+	for r: Rect2 in _office_1_partition_rects():
+		_add_panel_wall(area, r)
+	_add_office_opening_lintels(area)
+	_add_office_empty_opening_reveals(area)
+
+
+func _add_office_opening_lintels(area: Dictionary) -> void:
+	var t := 0.5
+	var open_w := _office_opening_width_panels()
+	var lintel_bottom := OFFICE_DOOR_HEIGHT + OFFICE_DOOR_TOP_CLEARANCE
+	for x in [3.5, OFFICE_DOOR_CENTER_X]:
+		var rect := Rect2(x - open_w * 0.5, OFFICE_DOOR_CENTER_Z - t * 0.5, open_w, t)
+		_add_panel_wall(area, rect, lintel_bottom, CEIL_H - lintel_bottom)
+	for z in [3.5, 11.5]:
+		var rect := Rect2(7.5 - t * 0.5, z - open_w * 0.5, t, open_w)
+		_add_panel_wall(area, rect, lintel_bottom, CEIL_H - lintel_bottom)
+
+
+func _add_office_empty_opening_reveals(area: Dictionary) -> void:
+	for opening: Dictionary in _office_frame_openings(String(area["id"])):
+		var center: Vector2 = opening["center"]
+		var normal: Vector2 = opening["normal"]
+		_add_office_opening_reveal(area, center, normal)
+
+
+func _add_office_opening_reveal(area: Dictionary, center: Vector2, normal: Vector2) -> void:
+	var o := _area_origin(area)
+	var wall_t := CELL * 0.5
+	var open_w := _office_opening_width_panels() * CELL
+	var h := OFFICE_DOOR_HEIGHT + OFFICE_DOOR_TOP_CLEARANCE
+	var trim_t := OFFICE_REVEAL_TRIM_T
+	var cx := center.x * CELL
+	var cz := center.y * CELL
+	if absf(normal.y) > 0.0:
+		for sx in [-1.0, 1.0]:
+			_put("base", Vector3(trim_t, h, wall_t), o + Vector3(cx + sx * open_w * 0.5, h * 0.5, cz), false)
+		_put("base", Vector3(open_w + trim_t, trim_t, wall_t), o + Vector3(cx, h - trim_t * 0.5, cz), false)
+	else:
+		for sz in [-1.0, 1.0]:
+			_put("base", Vector3(wall_t, h, trim_t), o + Vector3(cx, h * 0.5, cz + sz * open_w * 0.5), false)
+		_put("base", Vector3(wall_t, trim_t, open_w + trim_t), o + Vector3(cx, h - trim_t * 0.5, cz), false)
+
+
+func _office_opening_width_panels() -> float:
+	return (OFFICE_DOOR_WIDTH + OFFICE_DOOR_SIDE_CLEARANCE * 2.0) / CELL
+
+
+func _place_office_doors() -> void:
+	if not _area_by_cell.has(Vector2i(1, 0)):
+		return
+	var door_scene := load("res://3d/wite_door.glb") as PackedScene
+	if door_scene == null:
+		return
+	var top_area: Dictionary = _area_by_cell[Vector2i(1, 0)]
+	_spawn_floor_model(door_scene, _office_door_pos(top_area, 1.0), 0.0, OFFICE_DOOR_SCALE,
+		"office_white_door", "office_1_top:right", 1.0)
+	_spawn_floor_model(door_scene, _office_door_pos(top_area, -1.0), PI, OFFICE_DOOR_SCALE,
+		"office_white_door_back", "office_1_top:right", -1.0)
+	if _area_by_cell.has(Vector2i(1, 2)):
+		var bottom_area: Dictionary = _area_by_cell[Vector2i(1, 2)]
+		_spawn_floor_model(door_scene, _office_door_pos(bottom_area, 1.0), 0.0, OFFICE_DOOR_SCALE,
+			"office_white_door_mirror", "office_1_bottom:right", 1.0)
+		_spawn_floor_model(door_scene, _office_door_pos(bottom_area, -1.0), PI, OFFICE_DOOR_SCALE,
+			"office_white_door_mirror_back", "office_1_bottom:right", -1.0)
+	_spawn_office_entry_decor_doors(door_scene)
+	for area: Dictionary in _areas:
+		var id := String(area["id"])
+		if not id.begins_with("office_1"):
+			continue
+		for opening: Dictionary in _office_frame_openings(id):
+			var center: Vector2 = opening["center"]
+			var yaw: float = opening["yaw"]
+			var normal: Vector2 = opening["normal"]
+			var opening_id := "%s:%s" % [id, String(opening["id"])]
+			for side: float in [-1.0, 1.0]:
+				var pos := _office_opening_world_pos(area, center, normal * side)
+				var side_yaw := yaw + (PI if side < 0.0 else 0.0)
+				_spawn_door_frame_model(door_scene, pos, side_yaw, OFFICE_DOOR_SCALE,
+					"office_door_frame", opening_id, side)
+
+
+func _office_frame_openings(area_id: String) -> Array[Dictionary]:
+	var openings: Array[Dictionary] = [
+		{"id": "left", "center": Vector2(3.5, OFFICE_DOOR_CENTER_Z), "yaw": 0.0, "normal": Vector2(0.0, 1.0)},
+		{"id": "upper", "center": Vector2(7.5, 3.5), "yaw": PI * 0.5, "normal": Vector2(1.0, 0.0)},
+		{"id": "lower", "center": Vector2(7.5, 11.5), "yaw": PI * 0.5, "normal": Vector2(1.0, 0.0)},
+	]
+	return openings
+
+
+func _office_opening_world_pos(area: Dictionary, center: Vector2, normal: Vector2) -> Vector3:
+	var wall_t := CELL * 0.5
+	var face_offset := (wall_t - OFFICE_DOOR_DEPTH) * 0.5 + 0.02
+	return _area_origin(area) + Vector3(
+		CELL * center.x + normal.x * face_offset,
+		0.0,
+		CELL * center.y + normal.y * face_offset
+	)
+
+
+func _office_door_pos(area: Dictionary, side: float) -> Vector3:
+	return _office_opening_world_pos(area, Vector2(OFFICE_DOOR_CENTER_X, OFFICE_DOOR_CENTER_Z), Vector2(0.0, side))
+
+
+func _spawn_office_entry_decor_doors(door_scene: PackedScene) -> void:
+	if _area_by_cell.has(Vector2i(1, 0)):
+		var area: Dictionary = _area_by_cell[Vector2i(1, 0)]
+		var pos := _area_origin(area) + Vector3(ROOM - _office_decor_door_face_offset(), 0.0, CELL * 11.5)
+		_spawn_floor_model(door_scene, pos, PI * 0.5, OFFICE_DOOR_SCALE,
+			"office_entry_decor_door", "office_1_top:entry_decor", 1.0, false, "decor_door")
+	if _area_by_cell.has(Vector2i(1, 2)):
+		var area: Dictionary = _area_by_cell[Vector2i(1, 2)]
+		var pos := _area_origin(area) + Vector3(ROOM - _office_decor_door_face_offset(), 0.0, CELL * 3.5)
+		_spawn_floor_model(door_scene, pos, PI * 0.5, OFFICE_DOOR_SCALE,
+			"office_entry_decor_door_mirror", "office_1_bottom:entry_decor", -1.0, false, "decor_door")
+
+
+func _office_decor_door_face_offset() -> float:
+	return OFFICE_DOOR_DEPTH * 0.5 - 0.1185
+
+
+func _spawn_door_frame_model(scene: PackedScene, floor_pos: Vector3, yaw: float, scl: float,
+		node_name: String, opening_id: String, side: float) -> void:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return
+	_keep_door_frame_only(inst)
+	_place_floor_model_instance(inst, floor_pos, yaw, scl, node_name)
+	_mark_office_opening_node(inst, opening_id, "frame", side)
+
+
+func _keep_door_frame_only(root: Node3D) -> void:
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		if node.name == "Difference2" or node.name == "Difference22":
+			(node as MeshInstance3D).material_override = _mat_base
+			continue
+		var parent := node.get_parent()
+		if parent != null:
+			parent.remove_child(node)
+		node.free()
+
+
+func _spawn_floor_model(scene: PackedScene, floor_pos: Vector3, yaw: float, scl: float,
+		node_name: String, opening_id := "", side := 0.0, collide := true, kind := "door") -> void:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return
+	_apply_door_frame_material(inst)
+	_place_floor_model_instance(inst, floor_pos, yaw, scl, node_name)
+	_mark_office_opening_node(inst, opening_id, kind, side)
+	if collide:
+		_add_model_collision(inst)
+
+
+func _mark_office_opening_node(node: Node3D, opening_id: String, kind: String, side: float) -> void:
+	node.add_to_group("office_opening")
+	node.set_meta("office_kind", kind)
+	node.set_meta("opening_id", opening_id)
+	node.set_meta("opening_side", side)
+	if kind == "door":
+		node.add_to_group("office_door")
+
+
+func _apply_door_frame_material(root: Node3D) -> void:
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		if node.name == "Difference2" or node.name == "Difference22":
+			(node as MeshInstance3D).material_override = _mat_base
+
+
+func _place_floor_model_instance(inst: Node3D, floor_pos: Vector3, yaw: float, scl: float, node_name: String) -> void:
+	inst.name = node_name
+	add_child(inst)
+	inst.scale = Vector3(scl, scl, scl)
+	inst.rotation.y = yaw
+	inst.position = floor_pos
+	var box := _node_world_aabb(inst)
+	if box.size.y > 0.0:
+		var center := box.position + box.size * 0.5
+		inst.position.x += floor_pos.x - center.x
+		inst.position.y += floor_pos.y - box.position.y
+		inst.position.z += floor_pos.z - center.z
+
+
+func _add_model_collision(inst: Node3D) -> void:
+	var box := _node_world_aabb(inst)
+	if box.size.x <= 0.0 or box.size.y <= 0.0 or box.size.z <= 0.0:
+		return
+	var sh := BoxShape3D.new()
+	sh.size = box.size
+	var cs := CollisionShape3D.new()
+	cs.shape = sh
+	cs.position = box.position + box.size * 0.5
+	_body.add_child(cs)
+
+
+func _node_world_aabb(root: Node3D) -> AABB:
+	var box := AABB()
+	var has := false
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		var mi := node as MeshInstance3D
+		var la := mi.get_aabb()
+		var xf := mi.global_transform
+		for ix in [0.0, 1.0]:
+			for iy in [0.0, 1.0]:
+				for iz in [0.0, 1.0]:
+					var p := xf * (la.position + Vector3(la.size.x * ix, la.size.y * iy, la.size.z * iz))
+					if has:
+						box = box.expand(p)
+					else:
+						box = AABB(p, Vector3.ZERO)
+						has = true
+	return box
 
 
 func _build_column_hall(area: Dictionary) -> void:
@@ -238,7 +499,7 @@ func _build_column_hall(area: Dictionary) -> void:
 
 func _build_branch(area: Dictionary) -> void:
 	_add_cell_wall(area, Rect2i(0, 6, 15, 3))
-	for x in [2, 6, 10, 13]:
+	for x in [3, 7, 11]:
 		_add_cell_wall(area, Rect2i(x, 0, 1, 2))
 		_add_cell_wall(area, Rect2i(x, 4, 1, 2))
 		_add_cell_wall(area, Rect2i(x, 9, 1, 2))
@@ -254,14 +515,18 @@ func _build_office_2(area: Dictionary) -> void:
 
 
 func _add_cell_wall(area: Dictionary, r: Rect2i) -> void:
+	_add_panel_wall(area, Rect2(r.position, r.size))
+
+
+func _add_panel_wall(area: Dictionary, r: Rect2, bottom := 0.0, height := CEIL_H) -> void:
 	var o := _area_origin(area)
 	var center := o + Vector3(
-		(float(r.position.x) + float(r.size.x) * 0.5) * CELL,
-		CEIL_H * 0.5,
-		(float(r.position.y) + float(r.size.y) * 0.5) * CELL
+		(r.position.x + r.size.x * 0.5) * CELL,
+		bottom + height * 0.5,
+		(r.position.y + r.size.y * 0.5) * CELL
 	)
-	_put("wall", Vector3(float(r.size.x) * CELL, CEIL_H, float(r.size.y) * CELL), center)
-	_mark_occupied(area, r, 1)
+	_put("wall", Vector3(r.size.x * CELL, height, r.size.y * CELL), center)
+	_mark_occupied_rect(area, r, 1)
 
 
 func _add_pit_cell(area: Dictionary, r: Rect2i) -> void:
@@ -276,9 +541,17 @@ func _add_pit_cell(area: Dictionary, r: Rect2i) -> void:
 
 
 func _mark_occupied(area: Dictionary, r: Rect2i, margin: int) -> void:
+	_mark_occupied_rect(area, Rect2(r.position, r.size), margin)
+
+
+func _mark_occupied_rect(area: Dictionary, r: Rect2, margin: int) -> void:
 	var key_prefix := String(area["id"])
-	for x in range(r.position.x - margin, r.position.x + r.size.x + margin):
-		for z in range(r.position.y - margin, r.position.y + r.size.y + margin):
+	var x0 := floori(r.position.x) - margin
+	var x1 := ceili(r.position.x + r.size.x) + margin
+	var z0 := floori(r.position.y) - margin
+	var z1 := ceili(r.position.y + r.size.y) + margin
+	for x in range(x0, x1):
+		for z in range(z0, z1):
 			_occupied_for_lights["%s:%d:%d" % [key_prefix, x, z]] = true
 
 
@@ -287,16 +560,18 @@ func _add_area_lights(area: Dictionary) -> void:
 	var last := ROOM_CELLS - LIGHT_MARGIN_EMPTY - 1
 	var o := _area_origin(area)
 	var id := String(area["id"])
+	if id == "branch":
+		for p: Vector2i in _branch_light_starts():
+			_put("lamp",
+				Vector3(CELL - 0.05, 0.06, CELL * 2.0 - 0.05),
+				o + Vector3((float(p.x) + 0.5) * CELL, CEIL_H - 0.03, (float(p.y) + 1.0) * CELL),
+				false)
+		return
 	for x in range(first, last + 1, LIGHT_STEP):
 		for z in range(first, last + 1, LIGHT_STEP):
 			if _occupied_for_lights.has("%s:%d:%d" % [id, x, z]):
 				continue
-			if id == "branch":
-				if x + 1 >= ROOM_CELLS or _occupied_for_lights.has("%s:%d:%d" % [id, x + 1, z]):
-					continue
-				_put("lamp", Vector3(CELL * 2.0 - 0.05, 0.06, CELL - 0.05), o + Vector3((float(x) + 1.0) * CELL, CEIL_H - 0.03, (float(z) + 0.5) * CELL), false)
-			else:
-				_put("lamp", Vector3(CELL - 0.05, 0.06, CELL - 0.05), o + Vector3((float(x) + 0.5) * CELL, CEIL_H - 0.03, (float(z) + 0.5) * CELL), false)
+			_put("lamp", Vector3(CELL - 0.05, 0.06, CELL - 0.05), o + Vector3((float(x) + 0.5) * CELL, CEIL_H - 0.03, (float(z) + 0.5) * CELL), false)
 
 
 func _add_light_sources() -> void:
@@ -305,22 +580,36 @@ func _add_light_sources() -> void:
 	for area: Dictionary in _areas:
 		var o := _area_origin(area)
 		var id := String(area["id"])
+		if id == "branch":
+			for p: Vector2i in _branch_light_starts():
+				var l := _make_omni_lamp()
+				l.position = o + Vector3((float(p.x) + 0.5) * CELL, CEIL_H - 0.35, (float(p.y) + 1.0) * CELL)
+				add_child(l)
+			continue
 		for x in range(first, last + 1, LIGHT_STEP):
 			for z in range(first, last + 1, LIGHT_STEP):
 				if _occupied_for_lights.has("%s:%d:%d" % [id, x, z]):
 					continue
-				var l := OmniLight3D.new()
-				if id == "branch":
-					if x + 1 >= ROOM_CELLS or _occupied_for_lights.has("%s:%d:%d" % [id, x + 1, z]):
-						continue
-					l.position = o + Vector3((float(x) + 1.0) * CELL, CEIL_H - 0.35, (float(z) + 0.5) * CELL)
-				else:
-					l.position = o + Vector3((float(x) + 0.5) * CELL, CEIL_H - 0.35, (float(z) + 0.5) * CELL)
-				l.omni_range = 7.0
-				l.light_energy = 0.42
-				l.light_color = Color(0.92, 0.88, 0.62)
-				l.shadow_enabled = false
+				var l := _make_omni_lamp()
+				l.position = o + Vector3((float(x) + 0.5) * CELL, CEIL_H - 0.35, (float(z) + 0.5) * CELL)
 				add_child(l)
+
+
+func _branch_light_starts() -> Array[Vector2i]:
+	var starts: Array[Vector2i] = []
+	for z in [2, 11]:
+		for x in [1, 5, 9]:
+			starts.append(Vector2i(x, z))
+	return starts
+
+
+func _make_omni_lamp() -> OmniLight3D:
+	var l := OmniLight3D.new()
+	l.omni_range = 7.0
+	l.light_energy = 0.42
+	l.light_color = Color(0.92, 0.88, 0.62)
+	l.shadow_enabled = false
+	return l
 
 
 func _spawn_player() -> void:
@@ -443,7 +732,7 @@ func _commit() -> void:
 		add_child(mi)
 
 
-func _put(st_name: String, size: Vector3, pos: Vector3, collide := true) -> void:
+func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_base := true) -> void:
 	_st[st_name].append_from(_get_box(size), 0, Transform3D(Basis(), pos))
 	if collide:
 		if not _shape_cache.has(size):
@@ -454,7 +743,7 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true) -> void
 		cs.shape = _shape_cache[size]
 		cs.position = pos
 		_body.add_child(cs)
-	if st_name == "wall" and pos.y - size.y * 0.5 < 0.05:
+	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05:
 		var base_size := Vector3(size.x + 0.05, 0.12, size.z + 0.05)
 		_st["base"].append_from(_get_box(base_size), 0, Transform3D(Basis(), Vector3(pos.x, 0.06, pos.z)))
 
@@ -483,7 +772,6 @@ class AreasMiniMap:
 		var area_panels := ROOM_CELLS + WALL_CELLS
 		var pad := 14.0
 		var bounds := _map_bounds(areas, area_panels)
-		draw_rect(Rect2(Vector2.ZERO, size), Color(0.02, 0.018, 0.01, 0.78), true)
 		for area: Dictionary in areas:
 			_draw_area_walls(area, panel_px, pad, bounds, area_panels)
 		var player = _level._player_ref
@@ -491,9 +779,7 @@ class AreasMiniMap:
 			var pp: Vector3 = player.position
 			var gx := pp.x / CELL
 			var gz := pp.z / CELL
-			var px := pad + (gx - bounds.position.x) * panel_px
-			var py := pad + (bounds.end.y - gz) * panel_px
-			draw_circle(Vector2(px, py), 4.0, Color(0.1, 0.45, 1.0, 1.0))
+			draw_circle(_map_point(gx, gz, panel_px, pad, bounds), 4.0, Color(0.1, 0.45, 1.0, 1.0))
 
 	func _map_bounds(areas: Array, area_panels: int) -> Rect2:
 		var min_x := INF
@@ -509,7 +795,7 @@ class AreasMiniMap:
 		return Rect2(Vector2(min_x, min_z), Vector2(max_x - min_x, max_z - min_z))
 
 	func _draw_area_walls(area: Dictionary, panel_px: float, pad: float, bounds: Rect2, area_panels: int) -> void:
-		var wall := Color(0, 0, 0, 0.5)
+		var wall := Color(0, 0, 0, 1.0)
 		var c: Vector2i = area["cell"]
 		var ox := c.x * area_panels
 		var oz := c.y * area_panels
@@ -521,7 +807,7 @@ class AreasMiniMap:
 			if has_neighbor:
 				passages = _level._passages_for(area, dir)
 			_draw_border(area, dir, passages, ox, oz, panel_px, pad, bounds, wall)
-		for rr: Rect2i in _internal_rects(area):
+		for rr in _internal_rects(area):
 			_draw_global_rect(Rect2(ox + rr.position.x, oz + rr.position.y, rr.size.x, rr.size.y), panel_px, pad, bounds, wall)
 		for rr: Rect2i in _pit_rects(area):
 			_draw_global_rect(Rect2(ox + rr.position.x, oz + rr.position.y, rr.size.x, rr.size.y), panel_px, pad, bounds, Color(1.0, 0.05, 0.02, 0.65))
@@ -549,20 +835,20 @@ class AreasMiniMap:
 				cursor = p.position.x + p.size.x
 			_draw_global_rect(Rect2(ox + x, oz + cursor, WALL_CELLS, ROOM_CELLS + WALL_CELLS - cursor), panel_px, pad, bounds, color)
 
-	func _internal_rects(area: Dictionary) -> Array[Rect2i]:
+	func _internal_rects(area: Dictionary) -> Array:
 		var id := String(area["id"])
-		var rects: Array[Rect2i] = []
+		var rects: Array = []
 		match id:
 			"s_corridor":
 				rects = [Rect2i(0, 3, 12, 3), Rect2i(3, 9, 12, 3)]
 			"maze":
 				rects = [Rect2i(2, 2, 1, 10), Rect2i(2, 11, 9, 1), Rect2i(5, 2, 1, 6), Rect2i(5, 7, 5, 1), Rect2i(9, 4, 1, 7), Rect2i(10, 4, 3, 1), Rect2i(12, 7, 1, 5)]
 			"office_1_top", "office_1_bottom":
-				rects = [Rect2i(7, 0, 1, 3), Rect2i(7, 5, 1, 5), Rect2i(7, 12, 1, 3), Rect2i(0, 7, 3, 1), Rect2i(5, 7, 5, 1), Rect2i(12, 7, 3, 1)]
+				rects = _level._office_1_partition_rects()
 			"column_hall":
 				rects = [Rect2i(3, 3, 2, 2), Rect2i(9, 3, 2, 2), Rect2i(3, 9, 2, 2), Rect2i(9, 9, 2, 2)]
 			"branch":
-				rects = [Rect2i(0, 6, 15, 3), Rect2i(2, 0, 1, 2), Rect2i(2, 4, 1, 2), Rect2i(2, 9, 1, 2), Rect2i(2, 13, 1, 2), Rect2i(6, 0, 1, 2), Rect2i(6, 4, 1, 2), Rect2i(6, 9, 1, 2), Rect2i(6, 13, 1, 2), Rect2i(10, 0, 1, 2), Rect2i(10, 4, 1, 2), Rect2i(10, 9, 1, 2), Rect2i(10, 13, 1, 2), Rect2i(13, 0, 1, 2), Rect2i(13, 4, 1, 2), Rect2i(13, 9, 1, 2), Rect2i(13, 13, 1, 2)]
+				rects = [Rect2i(0, 6, 15, 3), Rect2i(3, 0, 1, 2), Rect2i(3, 4, 1, 2), Rect2i(3, 9, 1, 2), Rect2i(3, 13, 1, 2), Rect2i(7, 0, 1, 2), Rect2i(7, 4, 1, 2), Rect2i(7, 9, 1, 2), Rect2i(7, 13, 1, 2), Rect2i(11, 0, 1, 2), Rect2i(11, 4, 1, 2), Rect2i(11, 9, 1, 2), Rect2i(11, 13, 1, 2)]
 			"office_2":
 				rects = [Rect2i(2, 3, 10, 1), Rect2i(4, 8, 9, 1), Rect2i(2, 12, 10, 1), Rect2i(11, 3, 1, 5), Rect2i(4, 8, 1, 4)]
 		return rects
@@ -578,11 +864,18 @@ class AreasMiniMap:
 	func _draw_global_rect(r: Rect2, panel_px: float, pad: float, bounds: Rect2, color: Color) -> void:
 		if r.size.x <= 0.0 or r.size.y <= 0.0:
 			return
+		var pos := _map_point(r.position.x + r.size.x, r.position.y, panel_px, pad, bounds)
 		draw_rect(
 			Rect2(
-				Vector2(pad + (r.position.x - bounds.position.x) * panel_px, pad + (bounds.end.y - r.position.y - r.size.y) * panel_px),
-				r.size * panel_px
+				pos,
+				Vector2(r.size.y, r.size.x) * panel_px
 			),
 			color,
 			true
+		)
+
+	func _map_point(gx: float, gz: float, panel_px: float, pad: float, bounds: Rect2) -> Vector2:
+		return Vector2(
+			pad + (gz - bounds.position.y) * panel_px,
+			pad + (bounds.end.x - gx) * panel_px
 		)
