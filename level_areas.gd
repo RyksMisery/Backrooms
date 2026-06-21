@@ -31,6 +31,8 @@ const PIT_BORDER := 1.0
 const PIT_GAP := 1.0
 const PIT_COUNT := 4
 
+const PASSAGE_W := 3                            # ширина прохода между областями, плитки
+
 # Типы клеток occupancy-сетки.
 const K_SOLID := 0
 const K_FLOOR := 1
@@ -38,6 +40,7 @@ const K_WALL := 2
 const K_PASSAGE := 3
 const K_PARTITION := 4
 const K_PIT := 5
+const K_COLUMN := 6
 
 var _body: StaticBody3D
 var _mesh_cache: Dictionary = {}
@@ -84,7 +87,6 @@ func _ready() -> void:
 	_carve_passages()               # проходы в общих стенах
 	_derive_geometry()              # сетка -> меш + коллизия
 	_commit()
-	_place_chair()
 	_add_lights()
 	_spawn_player()
 	_build_hud()
@@ -130,9 +132,13 @@ func _set_cell(c: Vector2i, t: int) -> void:
 # ─────────────────────────────────────────────────────────────
 
 func _init_areas() -> void:
+	# Крест: колонный зал в центре, разветвления по 4 сторонам.
 	_areas = [
-		{"id": "office", "name": "ОФИС", "cell": Vector2i(0, 0), "type": "office"},
-		{"id": "pit", "name": "ПРОВАЛ", "cell": Vector2i(1, 0), "type": "pit"},
+		{"id": "hall", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(1, 1), "type": "column_hall", "rot": 0},
+		{"id": "branch_n", "name": "РАЗВЕТВЛЕНИЕ С", "cell": Vector2i(1, 0), "type": "branch", "rot": 3},
+		{"id": "branch_e", "name": "РАЗВЕТВЛЕНИЕ В", "cell": Vector2i(2, 1), "type": "branch", "rot": 0},
+		{"id": "branch_s", "name": "РАЗВЕТВЛЕНИЕ Ю", "cell": Vector2i(1, 2), "type": "branch", "rot": 1},
+		{"id": "branch_w", "name": "РАЗВЕТВЛЕНИЕ З", "cell": Vector2i(0, 1), "type": "branch", "rot": 2},
 	]
 	_area_by_cell.clear()
 	for area: Dictionary in _areas:
@@ -172,6 +178,52 @@ func _build_area_content() -> void:
 				_build_office(area)
 			"pit":
 				_build_pit(area)
+			"column_hall":
+				_build_column_hall(area)
+			"branch":
+				_build_branch(area)
+
+
+func _build_column_hall(area: Dictionary) -> void:
+	# 4 колонны 2×2, симметрично относительно центра (7.5): клетки 3-4 и 10-11.
+	for lx in [3, 10]:
+		for lz in [3, 10]:
+			_place_column(area, lx, lz, 2, 2)
+
+
+func _build_branch(area: Dictionary) -> void:
+	# Геометрия «разветвления» из blueprint: перемычка на всю ширину делит
+	# область на два рукава + рёбра-стойки. Поворот ставит вход к залу.
+	_fill_wall_cells(area, Rect2i(0, 6, 15, 3))
+	for x in [3, 7, 11]:
+		_fill_wall_cells(area, Rect2i(x, 0, 1, 2))
+		_fill_wall_cells(area, Rect2i(x, 4, 1, 2))
+		_fill_wall_cells(area, Rect2i(x, 9, 1, 2))
+		_fill_wall_cells(area, Rect2i(x, 13, 1, 2))
+
+
+# Заливка прямоугольника внутренними стенами (клетки K_WALL) с учётом поворота
+# области на k·90°. Деривация сама построит геометрию/коллизию/карту.
+func _fill_wall_cells(area: Dictionary, r: Rect2i) -> void:
+	var k := int(area.get("rot", 0))
+	var base := _area_base_cell(area)
+	for lx in range(r.position.x, r.position.x + r.size.x):
+		for lz in range(r.position.y, r.position.y + r.size.y):
+			var rc := _rot_cell(lx, lz, k)
+			_set_cell(Vector2i(base.x + WALL_CELLS + rc.x, base.y + WALL_CELLS + rc.y), K_WALL)
+
+
+func _rot_cell(x: int, z: int, k: int) -> Vector2i:
+	var r := ROOM_CELLS - 1
+	match k:
+		1:
+			return Vector2i(r - z, x)
+		2:
+			return Vector2i(r - x, r - z)
+		3:
+			return Vector2i(z, r - x)
+		_:
+			return Vector2i(x, z)
 
 
 func _build_office(area: Dictionary) -> void:
@@ -225,17 +277,36 @@ func _place_pit(area: Dictionary, lx: float, lz: float, w: float, h: float) -> v
 
 
 # ─────────────────────────────────────────────────────────────
-#  Проходы в общих стенах (прорубаются произвольным размером)
+#  Колонна и проходы
 # ─────────────────────────────────────────────────────────────
 
+# Элемент: колонна w×h панелей (на всю высоту). Геометрия в поток "wall"
+# (материал + плинтус), занятость — K_COLUMN (блокирует свет, тёмная на карте).
+func _place_column(area: Dictionary, lx: int, lz: int, w: int, h: int) -> void:
+	var c: Vector2i = area["cell"]
+	var center := _local_world(c.x, c.y, float(lx) + float(w) * 0.5, float(lz) + float(h) * 0.5, CEIL_H * 0.5)
+	_put("wall", Vector3(float(w) * CELL, CEIL_H, float(h) * CELL), center)
+	var base := _area_base_cell(area)
+	for dx in range(w):
+		for dz in range(h):
+			var cell := Vector2i(base.x + WALL_CELLS + lx + dx, base.y + WALL_CELLS + lz + dz)
+			_set_cell(cell, K_COLUMN)
+			_light_block[cell] = true
+
+
 func _carve_passages() -> void:
+	# Два прохода на стену (позиции 3 и 9, как в blueprint hall↔branch).
+	# Симметричны относительно центра → совпадают со входами разветвления
+	# при любом повороте области.
+	var ranges := [Vector2i(3, 6), Vector2i(9, 12)]
 	for area: Dictionary in _areas:
 		var c: Vector2i = area["cell"]
-		# Диапазон выбран в обход перегородки офиса (ряд 7) и клеток провала.
 		if _area_by_cell.has(c + Vector2i(1, 0)):
-			_carve_passage(area, Vector2i(1, 0), 5, 7)   # вдоль Z, локально [5,7)
+			for rg: Vector2i in ranges:
+				_carve_passage(area, Vector2i(1, 0), rg.x, rg.y)
 		if _area_by_cell.has(c + Vector2i(0, 1)):
-			_carve_passage(area, Vector2i(0, 1), 5, 7)   # вдоль X, локально [5,7)
+			for rg: Vector2i in ranges:
+				_carve_passage(area, Vector2i(0, 1), rg.x, rg.y)
 
 
 # along0/along1 — диапазон прохода в панелях вдоль общей стены (произвольный).
@@ -349,13 +420,14 @@ func _recalc_bounds() -> void:
 # ─────────────────────────────────────────────────────────────
 
 func _derive_geometry() -> void:
-	# Пол и потолок — единые плиты по габаритам сетки.
-	var w := float(_gmax.x - _gmin.x + 1)
-	var d := float(_gmax.y - _gmin.y + 1)
-	var cx := (float(_gmin.x) + w * 0.5) * CELL
-	var cz := (float(_gmin.y) + d * 0.5) * CELL
-	_put("floor", Vector3(w * CELL, SLAB_T, d * CELL), Vector3(cx, -SLAB_T * 0.5, cz), true)
-	_put("ceil", Vector3(w * CELL, SLAB_T, d * CELL), Vector3(cx, CEIL_H + SLAB_T * 0.5, cz), false)
+	# Пол и потолок — по реальной форме областей (все клетки сетки), без
+	# пустых углов и без перекрытий на общих стенах.
+	for r: Rect2i in _merge_cells(-1):
+		var fs := Vector3(float(r.size.x) * CELL, SLAB_T, float(r.size.y) * CELL)
+		var fcx := (float(r.position.x) + float(r.size.x) * 0.5) * CELL
+		var fcz := (float(r.position.y) + float(r.size.y) * 0.5) * CELL
+		_put("floor", fs, Vector3(fcx, -SLAB_T * 0.5, fcz), true)
+		_put("ceil", fs, Vector3(fcx, CEIL_H + SLAB_T * 0.5, fcz), false)
 	# Стены — greedy-слияние клеток K_WALL в прямоугольники.
 	for r: Rect2i in _merge_cells(K_WALL):
 		var size := Vector3(float(r.size.x) * CELL, CEIL_H, float(r.size.y) * CELL)
@@ -370,7 +442,7 @@ func _derive_geometry() -> void:
 func _merge_cells(kind: int) -> Array[Rect2i]:
 	var cells: Dictionary = {}
 	for c: Vector2i in _grid.keys():
-		if _grid[c] == kind:
+		if kind == -1 or _grid[c] == kind:
 			cells[c] = true
 	var keys: Array = cells.keys()
 	keys.sort_custom(func(a, b):
@@ -502,26 +574,70 @@ func _add_model_collision(inst: Node3D) -> void:
 # ─────────────────────────────────────────────────────────────
 
 func _add_lights() -> void:
+	for area: Dictionary in _areas:
+		if String(area["type"]) == "branch":
+			_add_branch_lights(area)
+		else:
+			_add_grid_lights(area)
+
+
+func _add_grid_lights(area: Dictionary) -> void:
 	var first := LIGHT_MARGIN
 	var last := ROOM_CELLS - LIGHT_MARGIN - 1
-	for area: Dictionary in _areas:
-		var c: Vector2i = area["cell"]
-		var base := _area_base_cell(area)
-		for lx in range(first, last + 1, LIGHT_STEP):
-			for lz in range(first, last + 1, LIGHT_STEP):
-				var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
-				if _light_blocked(cell):
-					continue
-				var pos := _local_world(c.x, c.y, float(lx) + 0.5, float(lz) + 0.5, CEIL_H - 0.03)
-				_put("lamp", Vector3(CELL - 0.05, 0.06, CELL - 0.05), pos, false)
-				var l := OmniLight3D.new()
-				l.omni_range = 7.0
-				l.light_energy = 0.42
-				l.light_color = Color(0.92, 0.88, 0.62)
-				l.shadow_enabled = false
-				l.position = pos + Vector3(0, -0.32, 0)
-				add_child(l)
-				_lamps.append(l)
+	var c: Vector2i = area["cell"]
+	var base := _area_base_cell(area)
+	for lx in range(first, last + 1, LIGHT_STEP):
+		for lz in range(first, last + 1, LIGHT_STEP):
+			var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
+			if _light_blocked(cell):
+				continue
+			var pos := _local_world(c.x, c.y, float(lx) + 0.5, float(lz) + 0.5, CEIL_H - 0.03)
+			_put("lamp", Vector3(CELL - 0.05, 0.06, CELL - 0.05), pos, false)
+			_spawn_lamp_source(pos)
+
+
+# Свет разветвления (как в blueprint): сдвоенные панели 1×2 в коридорах между
+# рёбрами на позициях x∈{1,5,9}, z∈{2,11}; в крайней ячейке света нет.
+# Позиции и ориентация панели поворачиваются вместе с областью.
+func _add_branch_lights(area: Dictionary) -> void:
+	var c: Vector2i = area["cell"]
+	var k := int(area.get("rot", 0))
+	for z in [2, 11]:
+		for x in [1, 5, 9]:
+			var p := _rot_point(float(x) + 0.5, float(z) + 1.0, k)
+			var sx := CELL
+			var sz := CELL * 2.0
+			if k == 1 or k == 3:
+				var t := sx
+				sx = sz
+				sz = t
+			var pos := _local_world(c.x, c.y, p.x, p.y, CEIL_H - 0.03)
+			_put("lamp", Vector3(sx - 0.05, 0.06, sz - 0.05), pos, false)
+			_spawn_lamp_source(pos)
+
+
+func _spawn_lamp_source(pos: Vector3) -> void:
+	var l := OmniLight3D.new()
+	l.omni_range = 7.0
+	l.light_energy = 0.42
+	l.light_color = Color(0.92, 0.88, 0.62)
+	l.shadow_enabled = false
+	l.position = pos + Vector3(0, -0.32, 0)
+	add_child(l)
+	_lamps.append(l)
+
+
+func _rot_point(px: float, pz: float, k: int) -> Vector2:
+	var r := float(ROOM_CELLS)
+	match k:
+		1:
+			return Vector2(r - pz, px)
+		2:
+			return Vector2(r - px, r - pz)
+		3:
+			return Vector2(pz, r - px)
+		_:
+			return Vector2(px, pz)
 
 
 func _light_blocked(cell: Vector2i) -> bool:
@@ -568,8 +684,11 @@ func _update_shadow_pool() -> void:
 func _spawn_player() -> void:
 	var player_scene := preload("res://player.tscn")
 	var player := player_scene.instantiate() as CharacterBody3D
-	player.position = _local_world(0, 0, 3.75, 6.6, 1.2)
-	var look := _chair_pos - player.position
+	# Центр колонного зала, лицом к северному проходу.
+	var hall: Dictionary = _area_by_cell.get(Vector2i(1, 1), _areas[0])
+	var c: Vector2i = hall["cell"]
+	player.position = _local_world(c.x, c.y, 7.5, 7.5, 1.2)
+	var look := _local_world(c.x, c.y, 7.5, 0.0, 1.2) - player.position
 	look.y = 0.0
 	look = look.normalized()
 	player.rotation.y = atan2(-look.x, -look.z)
@@ -586,7 +705,7 @@ func _build_hud() -> void:
 	_hud_label.text = ""
 	canvas.add_child(_hud_label)
 	var map := AreasGridMap.new()
-	map.configure(self, CELL, K_WALL, K_PARTITION, K_PIT)
+	map.configure(self, CELL, K_WALL, K_PARTITION, K_PIT, K_COLUMN)
 	var vp := get_viewport().get_visible_rect().size
 	map.size = Vector2(360, 360)
 	map.position = Vector2(vp.x - 372, 12)
@@ -715,13 +834,15 @@ class AreasGridMap:
 	var _k_wall := 2
 	var _k_partition := 4
 	var _k_pit := 5
+	var _k_column := 6
 
-	func configure(level: Node, cell: float, k_wall: int, k_partition: int, k_pit: int) -> void:
+	func configure(level: Node, cell: float, k_wall: int, k_partition: int, k_pit: int, k_column: int) -> void:
 		_level = level
 		_cell = cell
 		_k_wall = k_wall
 		_k_partition = k_partition
 		_k_pit = k_pit
+		_k_column = k_column
 
 	func _draw() -> void:
 		if _level == null:
@@ -741,7 +862,7 @@ class AreasGridMap:
 		var pit_col := Color(1.0, 0.05, 0.02, 0.7)
 		for c: Vector2i in grid.keys():
 			var t: int = grid[c]
-			if t != _k_wall and t != _k_partition:
+			if t != _k_wall and t != _k_partition and t != _k_column:
 				continue
 			var rx := pad + float(c.x - gmin.x) * px
 			var ry := pad + float(c.y - gmin.y) * px
