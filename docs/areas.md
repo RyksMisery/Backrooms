@@ -49,8 +49,10 @@ Areas may be rotated when placed.
 
 ## Connection Rules
 
-- Inter-area passages are 3 panels wide for now.
-- Passage size may be changed later, but that is a separate design topic.
+- Passage size is a spectrum: from a 1x1 crawl-hole (crouch) through door-sized
+  and wide openings up to the FULL shared wall. At full width the two areas
+  merge into one space (as the 4 hub halls). Default is a wide passage (~3
+  panels).
 - Passages are cut only in walls that touch a connected neighboring area.
 - External walls and non-touching walls must not receive passages.
 - Adjacent areas should be resolved into shared logical wall geometry by the
@@ -106,12 +108,19 @@ also place decorative full office doors on blind walls opposite side passages
 into divided office rooms; these use the same visual treatment and protrusion
 from the wall plane, but are not navigable openings.
 
-Decorative white doors are a reusable labyrinth element, not only an office
-detail. Wherever a decorative `3d/wite_door.glb` door is placed against a blind
-wall, use the calibrated wall offset from the current prototype:
-`door_depth * 0.5 - 0.1185 m` from the wall plane toward the room-facing side.
-If a baseboard would run through the door footprint, split or remove the
-baseboard in that footprint so the door sits cleanly against the wall.
+Decorative (fake) white doors are a reusable labyrinth element, not only an
+office detail. In thick walls (3 panels), the door rule is the paired
+opening-pocket module: the visible door opening and the pocket behind it must
+share the calibrated office opening size (width `_opening_width()`, height
+`DOOR_HEIGHT + DOOR_TOP_CLEARANCE`). The pocket is blocked by a full door with
+collision and can reserve space for future noclip areas. A niche is only a
+local change in blind-wall thickness around this module: it may be 1 cell wide
+or widened to match local corridor geometry, but it does not redefine the
+opening-pocket size. This keeps the door module independent from decorative
+wall shaping. Greedy wall merging should break the baseboard cleanly at niche
+jambs, avoiding old per-wall baseboard cuts. On thin (0.5-panel) partitions
+there is no niche or pocket — those use the cut opening + door, which is
+itself dual-purpose (reconfigurable entrances on ready openings).
 
 For any internal partition with the same 0.5-panel thickness as the office
 partitions, office-style doors, frames, and openings use the calibrated office
@@ -119,6 +128,37 @@ placement from this prototype across the whole labyrinth. Keep the same
 room-facing protrusion, frame placement on both sides, lintel height, reveal
 trim, and baseboard-color frame/reveal treatment unless a specific area design
 explicitly overrides it.
+
+## Open-Area Dressing: Mixed Partition Weight (Atmosphere, Not Density)
+
+Reference: `backrooms/screenshots/new/*.png` (Sketchfab "Backrooms VR" walkthrough shots) and the
+floor-plan reconstruction done from `backrooms/backrooms_vr/scene.gltf` (projected wall triangles,
+not a usable asset — see project chat log for how/why).
+
+Large open area types (`column_hall`, `room_pillars`, `room_well`, and similar "hall" archetypes)
+should not stay architecturally clean. The reference shows big open rooms broken up by a small
+number of free-standing elements that deliberately mix wall-weight classes which normally signal
+different things to the player:
+
+- a thick, column-like block that reads as structural/load-bearing, placed close to
+- a thin (0.25-0.5 panel) free-standing partition stub that does not connect to another wall on
+  one or both ends (a "floating" partial divider, not a full room split), and
+- occasional off-grid/angled thin fins, used purely as visual clutter, not as navigation logic.
+
+The point is NOT maze density — this is not a partition grid meant to force a route (that is
+`maze_wilson`'s job, see rules below). A large room can keep a mostly-direct, readable line of
+sight; 1-2 mixed-weight elements per room are enough. Their function is purely atmospheric: wall
+thickness normally tells the player "this blocks you" vs "this is decorative, walk around it";
+mixing classes without a consistent rule makes that read unreliable on purpose, which is the
+desired backrooms unease.
+
+This also extends to `maze_wilson`-style areas, in a maze-specific form — see
+`templates.md`, "Хаос в maze-областях" for the exact rules (thickness classes, false-window
+recess, where it's allowed relative to the spanning-tree path). The base maze rule below (uniform
+0.25 thickness, spanning-tree driven) still governs the regular grid; the dressing is an
+additional, sparse layer on top of it, not a replacement.
+
+Status: noted for later, not implemented in any template yet.
 
 ## Light Placement
 
@@ -143,6 +183,7 @@ Generation should use a common logical occupancy map first:
 - columns;
 - partitions;
 - pit cells;
+- niche cells (1-cell pocket behind a fake door; open in geometry, not a passage);
 - light cells;
 - visibility/light zones.
 

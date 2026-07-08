@@ -5,6 +5,7 @@ extends Node3D
 # (перегородка/проём), вся геометрия/карта/свет деривируются из одной сетки.
 # level_blueprint.gd при этом не трогается (заморожен как вариант 1).
 
+const GAME_FONT := preload("res://fonts/VCR_OSD_Mono_cyr.ttf")
 const CELL := 1.25
 const ROOM_CELLS := 15
 const WALL_CELLS := 3
@@ -17,12 +18,23 @@ const LIGHT_MARGIN := 1
 const SHADOW_CASTERS := 0                       # сколько ближних ламп дают тени
 const CONTACT_SHADOW_ALPHA := 0.85              # плотность контактного пятна
 
+# Потолочный светильник: модель из библиотеки вместо плоской эмиссив-панели.
+const USE_LIGHT_MODEL := false
+const LIGHT_MODEL_PATH := "res://objects/Light_Rail_01.glb"
+const LIGHT_MODEL_LEN := 1.0                    # длина рейла как доля длинной стороны панели
+
 # Калибровка офисного проёма (из блюпринта).
 const DOOR_WIDTH := 1.008042
 const DOOR_HEIGHT := 2.116508
 const DOOR_SIDE_CLEARANCE := 0.18
 const DOOR_TOP_CLEARANCE := 0.97
 const PARTITION_T := 0.5                        # тонкая перегородка, панели
+const OFFICE_DOOR_SCALE := 1.5
+const OFFICE_DOOR_DEPTH := 0.1808
+const OFFICE_REVEAL_TRIM_T := 0.08
+const OFFICE_DOOR_PANEL := "res://3d/wite_door.glb"
+# Проёмы офиса: 3 пустых (рама+откос) + 1 полная закрытая дверь.
+const OFFICE_DOOR_CENTER := Vector2(11.5, 7.5)  # полная дверь, горизонтальная линия
 
 # Провал (логика level0): проход ровно 1 плитка по краям и между ячейками,
 # размер дыры — остаток (может быть дробным). 15 = 2·край + N·дыра + (N−1)·катвок.
@@ -52,6 +64,8 @@ var _grid: Dictionary = {}            # Vector2i -> тип клетки
 var _light_block: Dictionary = {}     # Vector2i -> true (потолок занят)
 var _area_id: Dictionary = {}         # Vector2i -> id области (слой area_id)
 var _pit_rects: Array[Rect2] = []     # реальные дыры (глоб. панели) для карты
+var _baseboard_cuts: Array[Rect2] = []  # зоны без плинтуса (под дверями), мир XZ
+var _office_door_openings: Array = []   # офисные проёмы (рамка вместо двери)
 var _gmin := Vector2i(0, 0)
 var _gmax := Vector2i(0, 0)
 
@@ -62,6 +76,7 @@ var _lamps: Array[OmniLight3D] = []
 var _player_ref: CharacterBody3D
 var _chair_pos := Vector3.ZERO
 var _blob_texture: ImageTexture
+var _light_model_scene: PackedScene
 var _hud_label: Label
 var _minimap: Control
 var _map_down := false
@@ -85,9 +100,11 @@ func _ready() -> void:
 	_build_grid()                   # полы/стены/area_id всех областей
 	_build_area_content()           # перегородки, провалы по типу области
 	_carve_passages()               # проходы в общих стенах
+	_build_office_door_openings()   # перемычки над офисными проёмами (рамка вместо двери)
 	_derive_geometry()              # сетка -> меш + коллизия
+	_add_lights()                   # панели-меши в поток ДО запекания + источники
 	_commit()
-	_add_lights()
+	_place_all_office_doors()       # модели дверей/рам офиса (после запекания)
 	_spawn_player()
 	_build_hud()
 
@@ -139,6 +156,11 @@ func _init_areas() -> void:
 		{"id": "branch_e", "name": "РАЗВЕТВЛЕНИЕ В", "cell": Vector2i(2, 1), "type": "branch", "rot": 0},
 		{"id": "branch_s", "name": "РАЗВЕТВЛЕНИЕ Ю", "cell": Vector2i(1, 2), "type": "branch", "rot": 1},
 		{"id": "branch_w", "name": "РАЗВЕТВЛЕНИЕ З", "cell": Vector2i(0, 1), "type": "branch", "rot": 2},
+		{"id": "office_nw", "name": "ОФИС СЗ", "cell": Vector2i(0, 0), "type": "office", "rot": 0},
+		{"id": "office_ne", "name": "ОФИС СВ", "cell": Vector2i(2, 0), "type": "office", "rot": 0},
+		{"id": "office_sw", "name": "ОФИС ЮЗ", "cell": Vector2i(0, 2), "type": "office", "rot": 0},
+		{"id": "office_se", "name": "ОФИС ЮВ", "cell": Vector2i(2, 2), "type": "office", "rot": 0},
+		{"id": "hall_empty", "name": "ПУСТОЙ ЗАЛ", "cell": Vector2i(3, 2), "type": "empty", "rot": 0},
 	]
 	_area_by_cell.clear()
 	for area: Dictionary in _areas:
@@ -228,15 +250,274 @@ func _rot_cell(x: int, z: int, k: int) -> Vector2i:
 
 func _build_office(area: Dictionary) -> void:
 	var c: Vector2i = area["cell"]
-	# Крест из тонких перегородок -> 4 подкомнаты, проёмы в каждой.
+	# Крест тонких перегородок: проёмы по 3.5 и 11.5 на каждой линии (как blueprint).
 	var open_w := _opening_width()
 	var lintel := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
 	var openings: Array = [
-		{"center": 3.75, "width": open_w, "height": lintel},
-		{"center": 11.25, "width": open_w, "height": lintel},
+		{"center": 3.5, "width": open_w, "height": lintel},
+		{"center": 11.5, "width": open_w, "height": lintel},
 	]
 	_place_partition_line(c.x, c.y, "z", 7.5, 0.0, 15.0, PARTITION_T, openings.duplicate(true))
 	_place_partition_line(c.x, c.y, "x", 7.5, 0.0, 15.0, PARTITION_T, openings.duplicate(true))
+	# Откосы баребордного цвета на пустых проёмах (не на полной двери).
+	for op: Dictionary in _office_openings():
+		if op["door"]:
+			continue
+		_add_office_reveal(area, op["center"], op["normal"])
+
+
+# Описание 4 проёмов офиса: центр, нормаль перегородки, yaw модели, флаг полной двери.
+func _office_openings() -> Array:
+	return [
+		{"id": "left", "center": Vector2(3.5, 7.5), "normal": Vector2(0.0, 1.0), "yaw": 0.0, "door": false},
+		{"id": "upper", "center": Vector2(7.5, 3.5), "normal": Vector2(1.0, 0.0), "yaw": PI * 0.5, "door": false},
+		{"id": "lower", "center": Vector2(7.5, 11.5), "normal": Vector2(1.0, 0.0), "yaw": PI * 0.5, "door": false},
+		{"id": "right", "center": OFFICE_DOOR_CENTER, "normal": Vector2(0.0, 1.0), "yaw": 0.0, "door": true},
+	]
+
+
+func _add_office_reveal(area: Dictionary, center: Vector2, normal: Vector2) -> void:
+	var c: Vector2i = area["cell"]
+	var wall_t := CELL * 0.5
+	var open_w := _opening_width() * CELL
+	var h := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
+	var trim := OFFICE_REVEAL_TRIM_T
+	var cx := center.x * CELL
+	var cz := center.y * CELL
+	var o := _local_world(c.x, c.y, 0.0, 0.0, 0.0)
+	if absf(normal.y) > 0.0:
+		for sx in [-1.0, 1.0]:
+			_put("base", Vector3(trim, h, wall_t), o + Vector3(cx + sx * open_w * 0.5, h * 0.5, cz), false)
+		_put("base", Vector3(open_w + trim, trim, wall_t), o + Vector3(cx, h - trim * 0.5, cz), false)
+	else:
+		for sz in [-1.0, 1.0]:
+			_put("base", Vector3(wall_t, h, trim), o + Vector3(cx, h * 0.5, cz + sz * open_w * 0.5), false)
+		_put("base", Vector3(wall_t, trim, open_w + trim), o + Vector3(cx, h - trim * 0.5, cz), false)
+
+
+# Перемычки над офисными проёмами (заполняют стену выше двери до потолка).
+func _build_office_door_openings() -> void:
+	var door_h := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
+	for op: Dictionary in _office_door_openings:
+		var cell: Vector2i = op["cell"]
+		var dir: Vector2i = op["dir"]
+		var along: int = op["along"]
+		var base := _area_base(cell.x, cell.y)
+		if dir == Vector2i(1, 0):
+			var x0 := base.x + WALL_CELLS + ROOM_CELLS
+			var zc := base.y + WALL_CELLS + along
+			_put("wall", Vector3(WALL_CELLS * CELL, CEIL_H - door_h, CELL),
+				Vector3((float(x0) + WALL_CELLS * 0.5) * CELL, (door_h + CEIL_H) * 0.5, (float(zc) + 0.5) * CELL))
+		elif dir == Vector2i(0, 1):
+			var z0 := base.y + WALL_CELLS + ROOM_CELLS
+			var xc := base.x + WALL_CELLS + along
+			_put("wall", Vector3(CELL, CEIL_H - door_h, WALL_CELLS * CELL),
+				Vector3((float(xc) + 0.5) * CELL, (door_h + CEIL_H) * 0.5, (float(z0) + WALL_CELLS * 0.5) * CELL))
+
+
+func _place_office_door_frames(scene: PackedScene) -> void:
+	for op: Dictionary in _office_door_openings:
+		var cell: Vector2i = op["cell"]
+		var dir: Vector2i = op["dir"]
+		var along: int = op["along"]
+		var base := _area_base(cell.x, cell.y)
+		var oid := "office_pass_%d_%d" % [cell.x, cell.y]
+		if dir == Vector2i(1, 0):
+			var x0 := base.x + WALL_CELLS + ROOM_CELLS
+			var zc := (float(base.y + WALL_CELLS + along) + 0.5) * CELL
+			_spawn_door_frame_model(scene, Vector3(float(x0) * CELL, 0.0, zc),
+				-PI * 0.5, OFFICE_DOOR_SCALE, "%s_a" % oid, "%s:pass" % oid, -1.0)
+			_spawn_door_frame_model(scene, Vector3(float(x0 + WALL_CELLS) * CELL, 0.0, zc),
+				PI * 0.5, OFFICE_DOOR_SCALE, "%s_b" % oid, "%s:pass" % oid, 1.0)
+		elif dir == Vector2i(0, 1):
+			var z0 := base.y + WALL_CELLS + ROOM_CELLS
+			var xc := (float(base.x + WALL_CELLS + along) + 0.5) * CELL
+			_spawn_door_frame_model(scene, Vector3(xc, 0.0, float(z0) * CELL),
+				PI, OFFICE_DOOR_SCALE, "%s_a" % oid, "%s:pass" % oid, -1.0)
+			_spawn_door_frame_model(scene, Vector3(xc, 0.0, float(z0 + WALL_CELLS) * CELL),
+				0.0, OFFICE_DOOR_SCALE, "%s_b" % oid, "%s:pass" % oid, 1.0)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Двери и рамы офиса (модели wite_door.glb, после _commit)
+# ─────────────────────────────────────────────────────────────
+
+func _place_all_office_doors() -> void:
+	var scene := load(OFFICE_DOOR_PANEL) as PackedScene
+	if scene == null:
+		return
+	for area: Dictionary in _areas:
+		if String(area["type"]) != "office":
+			continue
+		var oid := String(area["id"])
+		var cell: Vector2i = area["cell"]
+		_place_office_decor_doors(area, scene)
+		for op: Dictionary in _office_openings():
+			var center: Vector2 = op["center"]
+			var normal: Vector2 = op["normal"]
+			var yaw: float = op["yaw"]
+			var opening_id := "%s:%s" % [oid, String(op["id"])]
+			# Правило: проём в зоне основного прохода — дверь/раму не ставим.
+			if _door_hits_passage(_local_world(cell.x, cell.y, center.x, center.y, 0.0), normal, _opening_width() * CELL):
+				continue
+			if op["door"]:
+				# Полная закрытая дверь: две створки (перёд/зад) + коллизия.
+				_spawn_floor_model(scene, _office_opening_world_pos(area, center, normal),
+					yaw, OFFICE_DOOR_SCALE, "%s_door" % oid, opening_id, 1.0, true, "door")
+				_spawn_floor_model(scene, _office_opening_world_pos(area, center, -normal),
+					yaw + PI, OFFICE_DOOR_SCALE, "%s_door_back" % oid, opening_id, -1.0, true, "door")
+			else:
+				# Пустой проём: рама с обеих сторон, без коллизии.
+				for side: float in [-1.0, 1.0]:
+					var p := _office_opening_world_pos(area, center, normal * side)
+					var side_yaw := yaw + (PI if side < 0.0 else 0.0)
+					_spawn_door_frame_model(scene, p, side_yaw, OFFICE_DOOR_SCALE, "%s_frame" % oid, opening_id, side)
+	_place_office_door_frames(scene)   # офисные проёмы к пристроенным залам
+
+
+# Точки 8 декор-дверей офиса: [точка на внешней стене (панели), нормаль внутрь].
+func _office_decor_spots() -> Array:
+	return [
+		[Vector2(0.0, 3.5), Vector2(1.0, 0.0)],     # NW: запад, напротив "upper"
+		[Vector2(3.5, 0.0), Vector2(0.0, 1.0)],     # NW: север, напротив "left"
+		[Vector2(15.0, 3.5), Vector2(-1.0, 0.0)],   # NE: восток, напротив "upper"
+		[Vector2(11.5, 0.0), Vector2(0.0, 1.0)],    # NE: север, напротив "right"
+		[Vector2(3.5, 15.0), Vector2(0.0, -1.0)],   # SW: юг, напротив "left"
+		[Vector2(0.0, 11.5), Vector2(1.0, 0.0)],    # SW: запад, напротив "lower"
+		[Vector2(11.5, 15.0), Vector2(0.0, -1.0)],  # SE: юг, напротив "right"
+		[Vector2(15.0, 11.5), Vector2(-1.0, 0.0)],  # SE: восток, напротив "lower"
+	]
+
+
+func _decor_door_pos(area: Dictionary, wp: Vector2, nrm: Vector2) -> Vector3:
+	var c: Vector2i = area["cell"]
+	var decor_off := OFFICE_DOOR_DEPTH * 0.5 - 0.1185
+	return _local_world(c.x, c.y, wp.x, wp.y, 0.0) + Vector3(nrm.x * decor_off, 0.0, nrm.y * decor_off)
+
+
+# Декоративные двери: на внешней стене каждой комнаты напротив реального проёма.
+# Правило: если дверь попадает в зону основного прохода — её не ставим.
+func _place_office_decor_doors(area: Dictionary, scene: PackedScene) -> void:
+	var oid := String(area["id"])
+	var open_w := _opening_width() * CELL
+	var i := -1
+	for s in _office_decor_spots():
+		i += 1
+		var wp: Vector2 = s[0]
+		var nrm: Vector2 = s[1]
+		var pos := _decor_door_pos(area, wp, nrm)
+		if _door_hits_passage(pos, nrm, open_w):
+			continue
+		var yaw := atan2(nrm.x, nrm.y) + PI
+		_spawn_floor_model(scene, pos, yaw, OFFICE_DOOR_SCALE,
+			"%s_decor_%d" % [oid, i], "%s:decor_%d" % [oid, i], 1.0, false, "decor_door")
+
+
+# Зоны без плинтуса под декор-дверями (те, что реально ставятся).
+func _collect_baseboard_cuts() -> void:
+	var open_w := _opening_width() * CELL
+	for area: Dictionary in _areas:
+		if String(area["type"]) != "office":
+			continue
+		for s in _office_decor_spots():
+			var wp: Vector2 = s[0]
+			var nrm: Vector2 = s[1]
+			var pos := _decor_door_pos(area, wp, nrm)
+			if _door_hits_passage(pos, nrm, open_w):
+				continue
+			_baseboard_cuts.append(_door_cut_rect(pos, nrm, open_w))
+
+
+func _door_cut_rect(pos: Vector3, nrm: Vector2, width_m: float) -> Rect2:
+	var perp := 2.0   # глубина зоны поперёк стены (накрывает примыкающую клетку пола)
+	if absf(nrm.x) > 0.5:   # стена вдоль Z (нормаль по X)
+		return Rect2(pos.x - perp * 0.5, pos.z - width_m * 0.5, perp, width_m)
+	return Rect2(pos.x - width_m * 0.5, pos.z - perp * 0.5, width_m, perp)
+
+
+# Попадает ли след двери (по ширине вдоль стены) в клетку основного прохода.
+func _door_hits_passage(pos: Vector3, nrm: Vector2, width_m: float) -> bool:
+	var along := Vector2(-nrm.y, nrm.x)
+	var half := width_m * 0.5
+	var steps := 4
+	for i in range(-steps, steps + 1):
+		var t := (float(i) / float(steps)) * half
+		var wx := pos.x + along.x * t
+		var wz := pos.z + along.y * t
+		var cell := Vector2i(floori(wx / CELL), floori(wz / CELL))
+		if _grid.get(cell, K_SOLID) == K_PASSAGE:
+			return true
+	return false
+
+
+func _office_opening_world_pos(area: Dictionary, center: Vector2, normal: Vector2) -> Vector3:
+	var cell: Vector2i = area["cell"]
+	var wall_t := CELL * 0.5
+	var face_offset := (wall_t - OFFICE_DOOR_DEPTH) * 0.5 + 0.02
+	var w := _local_world(cell.x, cell.y, center.x, center.y, 0.0)
+	return w + Vector3(normal.x * face_offset, 0.0, normal.y * face_offset)
+
+
+func _spawn_floor_model(scene: PackedScene, floor_pos: Vector3, yaw: float, scl: float,
+		node_name: String, opening_id: String, side: float, collide: bool, kind: String) -> void:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return
+	_apply_door_frame_material(inst)
+	_place_floor_model_instance(inst, floor_pos, yaw, scl, node_name)
+	_mark_office_opening_node(inst, opening_id, kind, side)
+	if collide:
+		_add_model_collision(inst)
+
+
+func _spawn_door_frame_model(scene: PackedScene, floor_pos: Vector3, yaw: float, scl: float,
+		node_name: String, opening_id: String, side: float) -> void:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return
+	_keep_door_frame_only(inst)
+	_place_floor_model_instance(inst, floor_pos, yaw, scl, node_name)
+	_mark_office_opening_node(inst, opening_id, "frame", side)
+
+
+func _keep_door_frame_only(root: Node3D) -> void:
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		if node.name == "Difference2" or node.name == "Difference22":
+			(node as MeshInstance3D).material_override = _mat_base
+			continue
+		var parent := node.get_parent()
+		if parent != null:
+			parent.remove_child(node)
+		node.free()
+
+
+func _apply_door_frame_material(root: Node3D) -> void:
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		if node.name == "Difference2" or node.name == "Difference22":
+			(node as MeshInstance3D).material_override = _mat_base
+
+
+func _place_floor_model_instance(inst: Node3D, floor_pos: Vector3, yaw: float, scl: float, node_name: String) -> void:
+	inst.name = node_name
+	add_child(inst)
+	inst.scale = Vector3(scl, scl, scl)
+	inst.rotation.y = yaw
+	inst.position = floor_pos
+	var box := _node_world_aabb(inst)
+	if box.size.y > 0.0:
+		var center := box.position + box.size * 0.5
+		inst.position.x += floor_pos.x - center.x
+		inst.position.y += floor_pos.y - box.position.y
+		inst.position.z += floor_pos.z - center.z
+
+
+func _mark_office_opening_node(node: Node3D, opening_id: String, kind: String, side: float) -> void:
+	node.add_to_group("office_opening")
+	node.set_meta("office_kind", kind)
+	node.set_meta("opening_id", opening_id)
+	node.set_meta("opening_side", side)
+	if kind == "door":
+		node.add_to_group("office_door")
 
 
 func _build_pit(area: Dictionary) -> void:
@@ -295,18 +576,42 @@ func _place_column(area: Dictionary, lx: int, lz: int, w: int, h: int) -> void:
 
 
 func _carve_passages() -> void:
-	# Два прохода на стену (позиции 3 и 9, как в blueprint hall↔branch).
-	# Симметричны относительно центра → совпадают со входами разветвления
-	# при любом повороте области.
-	var ranges := [Vector2i(3, 6), Vector2i(9, 12)]
-	for area: Dictionary in _areas:
-		var c: Vector2i = area["cell"]
-		if _area_by_cell.has(c + Vector2i(1, 0)):
-			for rg: Vector2i in ranges:
-				_carve_passage(area, Vector2i(1, 0), rg.x, rg.y)
-		if _area_by_cell.has(c + Vector2i(0, 1)):
-			for rg: Vector2i in ranges:
-				_carve_passage(area, Vector2i(0, 1), rg.x, rg.y)
+	# Каждая общая стена прорубается один раз. Формат: [ячейка, dir(E/S), a0, a1].
+	# Спицы зал↔разветвление — по 2 прохода (3/9). Кольцо разветвление↔офис —
+	# на позициях выходов blueprint (рукава у дальнего края, 0..3 / 12..15).
+	var E := Vector2i(1, 0)
+	var S := Vector2i(0, 1)
+	var carves := [
+		# спицы зал↔разветвление
+		[Vector2i(1, 1), E, 3, 6], [Vector2i(1, 1), E, 9, 12],   # зал↔branch_e
+		[Vector2i(1, 1), S, 3, 6], [Vector2i(1, 1), S, 9, 12],   # зал↔branch_s
+		[Vector2i(1, 0), S, 3, 6], [Vector2i(1, 0), S, 9, 12],   # branch_n↔зал
+		[Vector2i(0, 1), E, 3, 6], [Vector2i(0, 1), E, 9, 12],   # branch_w↔зал
+		# кольцо разветвление↔офис
+		[Vector2i(0, 0), E, 0, 3],     # office_nw↔branch_n
+		[Vector2i(0, 0), S, 0, 3],     # office_nw↔branch_w
+		[Vector2i(1, 0), E, 0, 3],     # branch_n↔office_ne
+		[Vector2i(2, 0), S, 12, 15],   # office_ne↔branch_e
+		[Vector2i(2, 1), S, 12, 15],   # branch_e↔office_se
+		[Vector2i(0, 2), E, 12, 15],   # office_sw↔branch_s
+		[Vector2i(1, 2), E, 12, 15],   # branch_s↔office_se
+		[Vector2i(0, 1), S, 0, 3],     # branch_w↔office_sw
+	]
+	for cc in carves:
+		var from_cell: Vector2i = cc[0]
+		if _area_by_cell.has(from_cell):
+			_carve_passage(_area_by_cell[from_cell], cc[1], cc[2], cc[3])
+	# Офисный проём (рамка вместо двери): office_se ↔ пустой зал, на месте декор-двери
+	# (z=11.5, клетка 11). Декор-дверь там сама уберётся правилом «дверь в проходе».
+	_carve_office_opening(Vector2i(2, 2), Vector2i(1, 0), 11)
+
+
+# Узкий проём (1 клетка) с последующей перемычкой и рамами — «офисный проём».
+func _carve_office_opening(cell: Vector2i, dir: Vector2i, along: int) -> void:
+	if not _area_by_cell.has(cell):
+		return
+	_carve_passage(_area_by_cell[cell], dir, along, along + 1)
+	_office_door_openings.append({"cell": cell, "dir": dir, "along": along})
 
 
 # along0/along1 — диапазон прохода в панелях вдоль общей стены (произвольный).
@@ -428,7 +733,8 @@ func _derive_geometry() -> void:
 		var fcz := (float(r.position.y) + float(r.size.y) * 0.5) * CELL
 		_put("floor", fs, Vector3(fcx, -SLAB_T * 0.5, fcz), true)
 		_put("ceil", fs, Vector3(fcx, CEIL_H + SLAB_T * 0.5, fcz), false)
-	# Стены — greedy-слияние клеток K_WALL в прямоугольники.
+	# Стены — greedy-слияние клеток K_WALL в прямоугольники. Плинтус — простым
+	# полным боксом на каждую стену (старый подход; вырезы под двери — позже).
 	for r: Rect2i in _merge_cells(K_WALL):
 		var size := Vector3(float(r.size.x) * CELL, CEIL_H, float(r.size.y) * CELL)
 		var pos := Vector3(
@@ -591,8 +897,8 @@ func _add_grid_lights(area: Dictionary) -> void:
 			var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
 			if _light_blocked(cell):
 				continue
-			var pos := _local_world(c.x, c.y, float(lx) + 0.5, float(lz) + 0.5, CEIL_H - 0.03)
-			_put("lamp", Vector3(CELL - 0.05, 0.06, CELL - 0.05), pos, false)
+			var pos := _local_world(c.x, c.y, float(lx) + 0.5, float(lz) + 0.5, CEIL_H + 0.02)
+			_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
 			_spawn_lamp_source(pos)
 
 
@@ -611,8 +917,8 @@ func _add_branch_lights(area: Dictionary) -> void:
 				var t := sx
 				sx = sz
 				sz = t
-			var pos := _local_world(c.x, c.y, p.x, p.y, CEIL_H - 0.03)
-			_put("lamp", Vector3(sx - 0.05, 0.06, sz - 0.05), pos, false)
+			var pos := _local_world(c.x, c.y, p.x, p.y, CEIL_H + 0.02)
+			_emit_ceiling_light(pos, Vector3(sx - 0.05, 0.06, sz - 0.05))
 			_spawn_lamp_source(pos)
 
 
@@ -625,6 +931,42 @@ func _spawn_lamp_source(pos: Vector3) -> void:
 	l.position = pos + Vector3(0, -0.32, 0)
 	add_child(l)
 	_lamps.append(l)
+
+
+# Видимая фикстура: модель из библиотеки или плоская эмиссив-панель.
+func _emit_ceiling_light(pos: Vector3, size: Vector3) -> void:
+	if USE_LIGHT_MODEL:
+		_spawn_light_model(pos, size)
+	else:
+		_put("lamp", size, pos, false)
+
+
+func _spawn_light_model(pos: Vector3, size: Vector3) -> void:
+	if _light_model_scene == null:
+		_light_model_scene = load(LIGHT_MODEL_PATH) as PackedScene
+	if _light_model_scene == null:
+		return
+	var inst := _light_model_scene.instantiate() as Node3D
+	if inst == null:
+		return
+	inst.name = "ceiling_light"
+	add_child(inst)
+	var box := _node_world_aabb(inst)
+	if box.size.x <= 0.0 or box.size.z <= 0.0:
+		return
+	# Рейл ориентируем вдоль длинной стороны панели и тянем под неё.
+	var along_z := size.z > size.x
+	if along_z:
+		inst.rotation.y = PI * 0.5
+	box = _node_world_aabb(inst)
+	var model_long := maxf(box.size.x, box.size.z)
+	var foot_long := maxf(size.x, size.z)
+	var scl := (foot_long * LIGHT_MODEL_LEN) / model_long
+	inst.scale = Vector3(scl, scl, scl)
+	box = _node_world_aabb(inst)
+	var center := box.position + box.size * 0.5
+	# По центру клетки, верх рейла у потолка.
+	inst.position += Vector3(pos.x - center.x, CEIL_H - box.end.y, pos.z - center.z)
 
 
 func _rot_point(px: float, pz: float, k: int) -> Vector2:
@@ -701,14 +1043,19 @@ func _build_hud() -> void:
 	add_child(canvas)
 	_hud_label = Label.new()
 	_hud_label.position = Vector2(16, 12)
+	_hud_label.add_theme_font_override("font", GAME_FONT)
 	_hud_label.add_theme_font_size_override("font_size", 22)
 	_hud_label.text = ""
 	canvas.add_child(_hud_label)
 	var map := AreasGridMap.new()
 	map.configure(self, CELL, K_WALL, K_PARTITION, K_PIT, K_COLUMN)
-	var vp := get_viewport().get_visible_rect().size
-	map.size = Vector2(360, 360)
-	map.position = Vector2(vp.x - 372, 12)
+	# Якорим к правому верхнему углу — не зависит от итогового размера окна.
+	map.anchor_left = 1.0
+	map.anchor_right = 1.0
+	map.offset_left = -372
+	map.offset_top = 12
+	map.offset_right = -12
+	map.offset_bottom = 372
 	map.visible = false
 	canvas.add_child(map)
 	_minimap = map
@@ -797,7 +1144,7 @@ func _commit() -> void:
 		add_child(mi)
 
 
-func _put(st_name: String, size: Vector3, pos: Vector3, collide := true) -> void:
+func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_base := true) -> void:
 	_st[st_name].append_from(_get_box(size), 0, Transform3D(Basis(), pos))
 	if collide:
 		if not _shape_cache.has(size):
@@ -808,9 +1155,9 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true) -> void
 		cs.shape = _shape_cache[size]
 		cs.position = pos
 		_body.add_child(cs)
-	if st_name == "wall" and pos.y - size.y * 0.5 < 0.05:
-		var base_size := Vector3(size.x + 0.05, 0.12, size.z + 0.05)
-		_st["base"].append_from(_get_box(base_size), 0, Transform3D(Basis(), Vector3(pos.x, 0.06, pos.z)))
+	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05:
+		var bs := Vector3(size.x + 0.05, 0.12, size.z + 0.05)
+		_st["base"].append_from(_get_box(bs), 0, Transform3D(Basis(), Vector3(pos.x, 0.06, pos.z)))
 
 
 func _get_box(size: Vector3) -> BoxMesh:

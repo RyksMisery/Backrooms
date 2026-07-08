@@ -1,4 +1,5 @@
 extends Node3D
+const GAME_FONT := preload("res://fonts/VCR_OSD_Mono_cyr.ttf")
 # ════════════════════════════════════════════════════════════════════
 # LEVEL 0 v3 — базовый лабиринт укрупнённых комнат
 #
@@ -1670,6 +1671,7 @@ func _setup_hud() -> void:
 	bg.content_margin_bottom = 5
 	_hud_label.add_theme_stylebox_override("normal", bg)
 	_hud_label.add_theme_color_override("font_color", Color(0.85, 0.85, 0.80))
+	_hud_label.add_theme_font_override("font", GAME_FONT)
 	_hud_label.add_theme_font_size_override("font_size", 32)   # текст ×2
 	root.add_child(_hud_label)
 

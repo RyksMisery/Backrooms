@@ -1,5 +1,6 @@
 extends Node3D
 
+const GAME_FONT := preload("res://fonts/VCR_OSD_Mono_cyr.ttf")
 const CELL := 1.25
 const ROOM_CELLS := 15
 const WALL_CELLS := 3
@@ -493,8 +494,8 @@ func _node_world_aabb(root: Node3D) -> AABB:
 
 func _build_column_hall(area: Dictionary) -> void:
 	for x in [3, 9]:
-		for z in [3, 9]:
-			_add_cell_wall(area, Rect2i(x, z, 2, 2))
+		_add_cell_wall(area, Rect2i(x, 3, 2, 2))
+		_add_cell_wall(area, Rect2i(x, 10, 2, 2))
 
 
 func _build_branch(area: Dictionary) -> void:
@@ -615,8 +616,13 @@ func _make_omni_lamp() -> OmniLight3D:
 func _spawn_player() -> void:
 	var player_scene := preload("res://player.tscn")
 	var player := player_scene.instantiate() as CharacterBody3D
-	player.position = _area_origin(_area_by_cell[Vector2i(0, 1)]) + Vector3(CELL * 1.5, 1.2, ROOM * 0.5)
-	player.rotation.y = -PI * 0.5
+	var hall_origin := _area_origin(_area_by_cell[Vector2i(0, 1)])
+	var branch_origin := _area_origin(_area_by_cell[Vector2i(1, 1)])
+	player.position = hall_origin + Vector3(CELL * 3.0, 1.2, ROOM * 0.5)
+	var look := branch_origin + Vector3(ROOM * 0.5, 1.2, ROOM * 0.5) - player.position
+	look.y = 0.0
+	look = look.normalized()
+	player.rotation.y = atan2(-look.x, -look.z)
 	add_child(player)
 	_player_ref = player
 
@@ -626,6 +632,7 @@ func _build_hud() -> void:
 	add_child(canvas)
 	_hud_label = Label.new()
 	_hud_label.position = Vector2(16, 12)
+	_hud_label.add_theme_font_override("font", GAME_FONT)
 	_hud_label.add_theme_font_size_override("font_size", 24)
 	canvas.add_child(_hud_label)
 	_minimap = AreasMiniMap.new()
@@ -846,7 +853,7 @@ class AreasMiniMap:
 			"office_1_top", "office_1_bottom":
 				rects = _level._office_1_partition_rects()
 			"column_hall":
-				rects = [Rect2i(3, 3, 2, 2), Rect2i(9, 3, 2, 2), Rect2i(3, 9, 2, 2), Rect2i(9, 9, 2, 2)]
+				rects = [Rect2i(3, 3, 2, 2), Rect2i(9, 3, 2, 2), Rect2i(3, 10, 2, 2), Rect2i(9, 10, 2, 2)]
 			"branch":
 				rects = [Rect2i(0, 6, 15, 3), Rect2i(3, 0, 1, 2), Rect2i(3, 4, 1, 2), Rect2i(3, 9, 1, 2), Rect2i(3, 13, 1, 2), Rect2i(7, 0, 1, 2), Rect2i(7, 4, 1, 2), Rect2i(7, 9, 1, 2), Rect2i(7, 13, 1, 2), Rect2i(11, 0, 1, 2), Rect2i(11, 4, 1, 2), Rect2i(11, 9, 1, 2), Rect2i(11, 13, 1, 2)]
 			"office_2":

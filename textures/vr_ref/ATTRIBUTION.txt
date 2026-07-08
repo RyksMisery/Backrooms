@@ -1,0 +1,6 @@
+Reference-only images, not used as tiling materials (see test_level_vr_compare.gd).
+Source: "Backrooms VR" by carlcapu9
+https://sketchfab.com/3d-models/backrooms-vr-d9b98eca8d064d0eafcd7f5484bb61ed
+License: CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+Credit required if shared: "This work is based on 'Backrooms VR' by carlcapu9,
+licensed under CC-BY-4.0."

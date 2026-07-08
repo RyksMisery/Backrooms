@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://test_level_vr_compare.gd" id="1_vrcmp"]
+
+[node name="TestLevelVRCompare" type="Node3D"]
+script = ExtResource("1_vrcmp")

@@ -1,4 +1,5 @@
 extends Node3D
+const GAME_FONT := preload("res://fonts/VCR_OSD_Mono_cyr.ttf")
 # ════════════════════════════════════════════════════════════════════
 # LEVEL 2 — модульный лабиринт через СТЫКОВКУ ПО ДВЕРЯМ (подход B)
 #
@@ -274,6 +275,7 @@ func _setup_hud() -> void:
 	var canvas := CanvasLayer.new()
 	add_child(canvas)
 	_hud_label = Label.new()
+	_hud_label.add_theme_font_override("font", GAME_FONT)
 	_hud_label.add_theme_font_size_override("font_size", 22)
 	_hud_label.position = Vector2(12, 10)
 	_hud_label.text = "Комната: %s" % _current_room_name

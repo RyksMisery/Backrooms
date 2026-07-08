@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://tmara3vaf08t"]
+
+[ext_resource type="Script" uid="uid://b1cohall1ak2x" path="res://level_areas_c.gd" id="1_areasc"]
+
+[node name="LevelAreasC" type="Node3D" unique_id=522698085]
+script = ExtResource("1_areasc")
