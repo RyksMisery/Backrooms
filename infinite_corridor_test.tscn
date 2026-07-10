@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://woyl54j7wf40"]
 
-[ext_resource type="Script" path="res://infinite_corridor_test.gd" id="1_infco"]
+[ext_resource type="Script" uid="uid://nprtrtbjh8hq" path="res://infinite_corridor_test.gd" id="1_infco"]
 
-[node name="InfiniteCorridorTest" type="Node3D"]
+[node name="InfiniteCorridorTest" type="Node3D" unique_id=590699790]
 script = ExtResource("1_infco")
