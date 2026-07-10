@@ -89,38 +89,68 @@ divider is needed. In that case, place the divider on the same centerline that
 a full 1-panel partition would use, unless the specific area layout says
 otherwise.
 
+Floor baseboards are not placed on partition/wall elements thinner than
+0.5 panel. In walls that normally have baseboards, a see-through slit is cut
+directly through a 1-panel grid opening. The central 0.25-panel slit stays
+open down to the floor; the two solid side posts receive only short decorative
+baseboard planks matching the normal baseboard height and thickness. Thin
+walls without baseboards may keep the direct slit method without these planks.
+Office opening edge liners still use the
+baseboard-colored material as aperture trim; that is not the same as a floor
+baseboard. Sub-0.5-panel filler pieces may force a baseboard only when they
+are explicit continuations of a thick wall around an office pocket/jamb; this
+preserves the old good-looking niche behavior without enabling baseboards on
+free thin partitions or clear slits.
+
 Office-like internal openings use the white door module as their reference
 size. Door openings keep the same width as the scaled `3d/wite_door.glb`
 door plus 0.18 m side clearance on each side, and the lintel starts at the
-scaled door height plus 0.97 m. Empty office openings receive only the door
-frame/trim from `3d/wite_door.glb` on both sides of the partition. The frame
-uses the baseboard material color. Empty openings also receive baseboard-color
-inner reveals on both sides and under the lintel, spanning the full thickness
-of the office partition and meeting the frame tightly. Full office doors use
-the same placement; their frames use the baseboard material color, while door
-leaves and handles keep the original white-door materials. Full office doors
-must include collision so the player cannot pass through the closed door.
+scaled door height plus 0.97 m. The canonical empty office opening is the
+office-corridor prototype: frame/trim from `3d/wite_door.glb` on both sides
+of the partition, frame material overridden to the baseboard material color,
+and each frame moved 0.015 m outward from its side so it barely protrudes
+past the floor baseboard. The internal perimeter is not a recessed reveal:
+it is a baseboard-color edge liner placed exactly on the aperture edge and
+spanning the thickness between the two frames.
+
+An "office opening" and a "door in an office opening" are separate elements.
+The office opening owns the aperture, lintel, edge liner, and the two frames.
+The door element is only the door panel/leaf placed at the exact center of the
+opening depth (`_office_opening_center_world_pos`), using the same yaw as the
+opening. An "office opening with door" is therefore composed as
+office-opening + door-panel. Door leaves and handles keep the original
+white-door materials. Closed door panels must include collision so the player
+cannot pass through them.
+
 Office openings and office doors are reusable semantic elements: nodes should
 be marked with `office_opening`, full door nodes also with `office_door`, and
 each should carry an `opening_id` so future labyrinth reconfiguration
 mechanics can open some office passages while closing others. Office areas may
 also place decorative full office doors on blind walls opposite side passages
-into divided office rooms; these use the same visual treatment and protrusion
-from the wall plane, but are not navigable openings.
+into divided office rooms; these use the same visual treatment, but are not
+navigable openings. A decorative full door in any thick blind wall must sit in
+a niche/pocket, never as a flat door over an uninterrupted wall plane.
 
 Decorative (fake) white doors are a reusable labyrinth element, not only an
-office detail. In thick walls (3 panels), the door rule is the paired
+office detail. In thick walls (3 panels), the door rule is always the paired
 opening-pocket module: the visible door opening and the pocket behind it must
 share the calibrated office opening size (width `_opening_width()`, height
 `DOOR_HEIGHT + DOOR_TOP_CLEARANCE`). The pocket is blocked by a full door with
-collision and can reserve space for future noclip areas. A niche is only a
-local change in blind-wall thickness around this module: it may be 1 cell wide
-or widened to match local corridor geometry, but it does not redefine the
-opening-pocket size. This keeps the door module independent from decorative
-wall shaping. Greedy wall merging should break the baseboard cleanly at niche
-jambs, avoiding old per-wall baseboard cuts. On thin (0.5-panel) partitions
-there is no niche or pocket — those use the cut opening + door, which is
-itself dual-purpose (reconfigurable entrances on ready openings).
+collision and can reserve space for future noclip areas. For any niche,
+passage, or corridor face in a thick wall, place a virtual office partition
+module of thickness `0.5` panel from the wall face into the wall, then compute
+the opening center at the center of that virtual module. Door panels, frames,
+and reveals are then computed from that opening center with the same formulas
+as a real 0.5-panel office partition. Frames protrude 0.015 m outward from
+their side, and the internal perimeter uses the same edge liner on the
+aperture edge. A niche is the required local change in
+blind-wall thickness around this module: it may be 1 cell wide or widened to
+match local corridor geometry, but it does not redefine the opening-pocket
+size. This keeps the door module independent from decorative wall shaping.
+Greedy wall merging should break the baseboard cleanly at niche jambs,
+avoiding old per-wall baseboard cuts. On thin (0.5-panel) partitions there is
+no niche or pocket — those use the same office opening center directly on the
+partition centerline.
 
 For any internal partition with the same 0.5-panel thickness as the office
 partitions, office-style doors, frames, and openings use the calibrated office

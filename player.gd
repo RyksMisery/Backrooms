@@ -13,6 +13,9 @@ const CROUCH_CAM_Y  = -0.4
 const CAM_FOV_DEFAULT  := 75.0
 const CAM_LEVEL_SPEED  := 3.0
 const CAM_LEVEL_MOVE_THRESHOLD := 0.4
+const MOBILE_CONTROLS_SCENE := preload("res://mobile_controls.tscn")
+const MOBILE_LOOK_SENSITIVITY := 0.006
+const MOBILE_LOOK_ZONE_X := 0.45
 
 # Параметры мягкого свечения игрока (OmniLight3D)
 const FL_RANGE  := 5.5   # радиус свечения в метрах
@@ -28,6 +31,7 @@ var _step_dist = 0.0
 var _is_crouching := false
 var _col_shape: CollisionShape3D
 var _flashlight: OmniLight3D
+var _mobile_controls: CanvasLayer
 
 func _ready():
 	await get_tree().process_frame
@@ -48,6 +52,7 @@ func _ready():
 	floor_constant_speed = true             # ровная скорость на стыках/уклонах
 	_setup_footsteps()
 	_setup_flashlight()
+	_setup_mobile_controls()
 
 func _setup_footsteps():
 	_step_player = AudioStreamPlayer.new()
@@ -69,6 +74,11 @@ func _setup_flashlight() -> void:
 func _toggle_flashlight() -> void:
 	if _flashlight:
 		_flashlight.visible = !_flashlight.visible
+
+func _setup_mobile_controls() -> void:
+	_mobile_controls = MOBILE_CONTROLS_SCENE.instantiate() as CanvasLayer
+	if _mobile_controls != null:
+		add_child(_mobile_controls)
 
 # ---------------------------------------------------------------
 # Телепортация с эффектом вспышки + расширения FOV
@@ -125,6 +135,10 @@ func _input(event):
 	if event is InputEventMouseMotion:
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		camera.rotate_x(-event.relative.y * mouse_sensitivity)
+		camera.rotation.x = clamp(camera.rotation.x, -1.2, 1.2)
+	if event is InputEventScreenDrag and event.position.x >= get_viewport().get_visible_rect().size.x * MOBILE_LOOK_ZONE_X:
+		rotate_y(-event.relative.x * MOBILE_LOOK_SENSITIVITY)
+		camera.rotate_x(-event.relative.y * MOBILE_LOOK_SENSITIVITY)
 		camera.rotation.x = clamp(camera.rotation.x, -1.2, 1.2)
 	if event.is_action_pressed("ui_cancel"):
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)

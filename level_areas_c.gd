@@ -15,6 +15,7 @@ const SLAB_T := 0.20
 
 const LIGHT_STEP := 2
 const LIGHT_MARGIN := 1
+const SINGLE_LIGHT_CLEAR_CELLS := 2
 const SHADOW_CASTERS := 0                       # сколько ближних ламп дают тени
 # Управление включёнными лампами (не тенями — самим светом). Раньше все
 # OmniLight3D по всему уровню висели enabled всегда, независимо от того, где
@@ -30,11 +31,8 @@ const SHADOW_CASTERS := 0                       # сколько ближних 
 # кадр: всегда светит область игрока + все области, РЕАЛЬНО связанные с ней
 # проходом (не просто соседние по сетке клеток — проверяем occupancy на
 # стыке, см. _cells_connected). Всё остальное — темно.
-# hall_nw/ne/sw/se — единственное место, где несколько area-id образуют одно
-# открытое помещение без стен между ними (см. merge в _carve_passages); для
-# всех остальных областей "своя группа" — просто она сама (там границы —
-# настоящие стены).
-const HUB_GROUP_IDS := ["hall_nw", "hall_ne", "hall_sw", "hall_se"]
+# Если несколько area читаются как одно помещение/шаблон, они получают общий
+# `area_group`; пул света и теней использует эту группу вместо сырого area-id.
 const CONTACT_SHADOW_ALPHA := 0.85              # плотность контактного пятна
 
 # Потолочный светильник: модель из библиотеки вместо плоской эмиссив-панели.
@@ -42,7 +40,7 @@ const USE_LIGHT_MODEL := false
 const LIGHT_MODEL_PATH := "res://objects/Light_Rail_01.glb"
 const LIGHT_MODEL_LEN := 1.0                    # длина рейла как доля длинной стороны панели
 
-# Калибровка офисного проёма (из блюпринта).
+# Калибровка офисного проёма и отдельной дверной панели.
 const DOOR_WIDTH := 1.008042
 const DOOR_HEIGHT := 2.116508
 const DOOR_SIDE_CLEARANCE := 0.18
@@ -51,8 +49,9 @@ const PARTITION_T := 0.5                        # тонкая перегоро�
 const OFFICE_DOOR_SCALE := 1.5
 const OFFICE_DOOR_DEPTH := 0.1808
 const OFFICE_REVEAL_TRIM_T := 0.08
+const OFFICE_FRAME_OUTSET := 0.015
 const OFFICE_DOOR_PANEL := "res://3d/wite_door.glb"
-# Проёмы офиса: 3 пустых (рама+откос) + 1 полная закрытая дверь.
+# Проёмы офиса: 3 пустых + 1 проём с отдельной дверной панелью.
 const OFFICE_DOOR_CENTER := Vector2(11.5, 7.5)  # полная дверь, горизонтальная линия
 
 # Провал (логика level0): проход ровно 1 плитка по краям и между ячейками,
@@ -100,7 +99,7 @@ const LAMP_RANGE_OLD := 7.0
 const LAMP_ATTEN_OLD := 1.0
 # Опциональный fps-оптимизированный свет (клавиша 2): малый радиус (цена освещения
 # — в радиусе/перекрытии), низкое затухание + чуть выше энергия для заливки.
-# Значения подобраны живым слайдером ([ ] - =): R×1.21, E×1.10 к базе радиуса 6.
+# Значения зафиксированы после ручной настройки; рантайм-крутилки удалены.
 const TUNED_RANGE := 7.25         # мягкие лампы
 const TUNED_ATTEN := 0.45
 const TUNED_RANGE_TIGHT := 5.45   # тугие лампы (большие залы)
@@ -112,8 +111,8 @@ const AMBIENT_COLOR := Color(0.90, 0.88, 0.50)        # тёплый (дефол
 # сильнее дефолта → тени уходят в насыщенный жёлтый, а не в нейтраль/синь.
 const TUNED_AMBIENT_COLOR := Color(0.95, 0.86, 0.28)  # насыщенный тёплый жёлтый
 const TUNED_AMBIENT_ENERGY := 0.035                   # как дефолт — контраст/глубина теней не меняются
-# Пресет «0» (клавиша 0) — зафиксированный настроенный вид: опт-база × живой слайдер
-# (R×1.10, A×1.46, E×1.00) + тёплая жёлтая тень.
+# Пресет «0» (клавиша 0) — зафиксированный настроенный вид поверх опт-базы
+# + тёплая жёлтая тень.
 const P0_RANGE := 7.98           # TUNED_RANGE 7.25 × 1.10
 const P0_ATTEN := 0.66           # TUNED_ATTEN 0.45 × 1.46
 const P0_RANGE_TIGHT := 6.00     # TUNED_RANGE_TIGHT 5.45 × 1.10
@@ -134,6 +133,42 @@ const HUB_SEAM_STEP := 3        # шаг ламп в стыковых полос
 const LAMP_FADE_ENABLED := false   # выкл: прироста FPS не дал, а дальние лужи гасли
 const LAMP_FADE_BEGIN := 28.0   # с какой дистанции лампа начинает гаснуть, м
 const LAMP_FADE_LENGTH := 8.0   # длина затухания, м (дальше begin+length — не рисуется)
+# AreaLight3D (Godot 4.7+): прямоугольный runtime-свет от видимых панелей.
+# Создаём через ClassDB, чтобы проект оставался открываемым в 4.6.x.
+const AREA_LIGHT_DEFAULT_ON := true
+const AREA_LIGHT_DISABLE_ON_ANDROID := false
+const AREA_LIGHT_RANGE_MUL := 1.0
+const AREA_LIGHT_PANEL_RANGE_DEFAULT_ON := false
+const AREA_LIGHT_PANEL_RANGE_ON_ANDROID := false
+const AREA_LIGHT_RANGE_TEST_OFF := 0.05
+const AREA_LIGHT_ENERGY_MUL := 2.0
+const AREA_LIGHT_SHADOWS := false
+const AREA_LIGHT_PANEL_Y_OFFSET := -0.04
+const AREA_LIGHT_BOUNCE_RANGE := 8.0
+const AREA_LIGHT_BOUNCE_ENERGY := 0.36
+const AREA_LIGHT_BOUNCE_ATTEN := 1.0
+const AREA_LIGHT_BOUNCE_Y_OFFSET := -0.75
+const AREA_LIGHT_FAR_BOUNCE_ENABLED := true
+const AREA_LIGHT_FAR_BOUNCE_HOPS := 2
+const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := 0.45
+const AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL := 0.30
+const AREA_LIGHT_BOUNCE_SHADOWS := true
+const AREA_LIGHT_BOUNCE_SHADOW_CASTERS := 10
+const AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST := 5.0
+const AREA_LIGHT_BOUNCE_SHADOW_FADE_DIST := 11.0
+const AREA_LIGHT_BOUNCE_SHADOW_OPACITY := 0.74
+const AREA_LIGHT_BOUNCE_SHADOW_BLUR := 2.25
+const AREA_LIGHT_BOUNCE_SHADOW_BIAS := 0.06
+const AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS := 1.25
+const AREA_LIGHT_BOUNCE_SHADOWS_ON_ANDROID := false
+const ACTIVE_LIGHT_NEIGHBORS_ON_ANDROID := false
+const AREA_LIGHT_WORLD_LAYER := 1 << 0
+const AREA_LIGHT_CEILING_FILL_LAYER := 1 << 1
+const AREA_LIGHT_CEILING_GLOW_ENABLED := false
+const AREA_LIGHT_CEILING_GLOW_RADIUS_PAD := 1.35
+const AREA_LIGHT_CEILING_GLOW_Y := CEIL_H - 0.015
+const AREA_LIGHT_FACE_EPS := 0.03
+const AREA_LIGHT_SIGN_PLATES := false
 # Гул: ядро плотности ламп (σ, м) и насыщение (acc для полной громкости в зале).
 const HUM_SIGMA := 4.0
 const HUM_FULL := 5.0
@@ -142,6 +177,12 @@ const FLICK_PATTERN := [
 	["on", 3.0], ["dot", 1.0], ["dot", 1.0],
 	["on", 3.0], ["dot", 1.0], ["dot", 1.0], ["dot", 1.0],
 ]
+const FLICK_STUTTER_FULL_CHANCE := 0.35
+const FLICK_STUTTER_LOW_CHANCE := 0.35
+const FLICK_STUTTER_LOW_LEVEL := 0.08
+const FLICK_STUTTER_DIM_MAX := 0.16
+const FLICK_PANEL_MIN_LEVEL := 0.52
+const FLICK_PANEL_EMISSION_MIN_LEVEL := 0.32
 
 const PASSAGE_W := 3                            # ширина прохода между областями, плитки
 
@@ -182,26 +223,36 @@ const K_PASSAGE := 3
 const K_PARTITION := 4
 const K_PIT := 5
 const K_COLUMN := 6
-const K_NICHE := 7    # ниша под фальш-дверью: открыта в геометрии, но НЕ проход
+const K_NICHE := 7    # ниша/карман офисного проёма: открыта в геометрии, но НЕ проход
 
 # Нарисованный шаблон «офис-коридор» (rooms/ofice_corridor.png), интерьер 15×15.
 # Перегородки 0.5 на линиях (рёбрах), проёмы калиброванные с перемычкой сверху.
 # # перегородка · R проём с закрытой дверью · G открытый проём · . нет стены.
 # Вертикали: [x, строка по z=0..14]; горизонтали: [z, строка по x=0..14].
+const OC_CORRIDOR_WALL_LINE := 10.75 # ось 0.5-стены; лицевая грань коридора на шве x=11
+const OC_CORRIDOR_ROOM_FACE := OC_CORRIDOR_WALL_LINE - PARTITION_T * 0.5
+const OC_ENTRY_BAFFLE_Z := -1.0
+const OC_ENTRY_BAFFLE_THICK := 0.25
+const OC_ENTRY_BAFFLE_FROM_X := 12.0
+const OC_ENTRY_BAFFLE_TO_X := 15.0
+const OC_ENTRY_BAFFLE_OPEN_W := 1.5
+const OC_ENTRY_BAFFLE_OPEN_H := 3.5
 const OC_VLINES := [
 	[5, "##....###..##.."],   # разделитель комнат; нижняя крайняя панель у противоположной стены
-	[11, "#R##R##R##R##G#"],  # левая стена коридора (двери)
-	[15, "#R##R##R##R##R#"],  # правая стена коридора (двери)
+	[OC_CORRIDOR_WALL_LINE, "#R##R##R##R##G#"],  # левая стена коридора (двери)
 ]
+const OC_BLIND_WALL_OPENINGS := [1.5, 4.5, 7.5, 10.5, 13.5] # проёмы в сплошной стене x=15
 const OC_HLINES := [
 	[4, "########G##...."],   # верхняя перегородка комнат (проём отодвинут от коридора)
 	[11, "#G#########...."],  # нижняя перегородка комнат (проём на 1 клетку от глухой стены)
 ]
-# Светильники — локальные клетки (x, z).
-const OC_LIGHTS := [
-	[2, 1], [7, 1], [12, 1], [13, 1], [12, 4], [13, 4], [2, 6], [7, 6],
-	[12, 7], [13, 7], [2, 8], [7, 8], [12, 10], [13, 10], [2, 13], [7, 13],
-	[12, 13], [13, 13],
+# Светильники — локальные клетки (x, z). Комнаты и коридор идут через общий
+# фильтр одиночных панелей; коридорная шахматка держится за счёт ширины 4 клетки.
+const OC_ROOM_LIGHTS := [
+	[2, 1], [7, 1], [2, 6], [7, 6], [2, 8], [7, 8], [2, 13], [7, 13],
+]
+const OC_CORRIDOR_LIGHTS := [
+	[12, 1], [13, 4], [12, 7], [13, 10], [12, 13],
 ]
 
 # Шаблон «room_2» (rooms/room 2.png): открытая комната с ломаными офисными
@@ -307,13 +358,18 @@ var _area_by_cell: Dictionary = {}    # Vector2i(cell) -> area
 var _noclip_return_doors: Array = []  # финальные офисные двери-ноклипы в начало
 
 var _lamps: Array[OmniLight3D] = []
+var _area_lamps: Array[Light3D] = []
+var _area_bounce_lamps: Array[OmniLight3D] = []
+var _legacy_aux_lights: Array[Light3D] = []
+var _area_aux_lights: Array[Light3D] = []
+var _ceiling_light_cells: Dictionary = {}
 var _flicker: Array = []              # мерцающие панели-подсказки у верного прохода
 var _drawn_lights: Array = []         # свет нарисованного шаблона (мир, у потолка)
 var _oc_openings: Array = []          # офисные проёмы шаблона {area,center,normal,door}
-var _oc_end_door := {}                # торцевая декор-дверь коридора {pos,yaw}
+var _office_wall_openings: Array = [] # офисные проёмы на глухих/толстых стенах {area,center,nrm,opening_id,door_panel}
 var _maze_start_doors: Array = []      # лабиринт(ы): [{area,wp,nrm}, ...] у входа (только автономный превью)
 var _maze_finish_doors: Array = []     # лабиринт(ы): [{area,wp,nrm,side,lo,hi,real_exit}, ...] у выхода;
-									   # real_exit=false -> декор-дверь+знак EXIT (тупик), true -> настоящий
+									   # real_exit=false -> офисный проём с дверью + знак EXIT (тупик), true -> настоящий
 									   # проход дальше (лейн side/lo/hi для _carve_passage), без декора
 var _macro_dfs_edges: Array = []      # [[Vector2i,Vector2i], ...] рёбра остова макро-графа
 var _macro_dfs_entry := Vector2i.ZERO # первая новая клетка остова (южнее углового зала (3,3))
@@ -327,14 +383,16 @@ var _hud_label: Label
 var _minimap: Control
 var _env: Environment                   # для переключения ambient в рантайме
 var _light_new := true                  # режим света: ON=новый, OFF=старый (G)
+var _area_light_mode := AREA_LIGHT_DEFAULT_ON
+var _area_lights_supported := false
+var _area_bounce_mode := true
+var _area_panel_range_mode := AREA_LIGHT_PANEL_RANGE_DEFAULT_ON
+var _render_diag := ""
 var _tuned_on := false                   # опциональный fps-оптимизированный свет (клавиша 2)
 var _fog_on := false                     # тёплый distance-туман (клавиша 3)
 var _p0_on := false                      # зафиксированный пресет света (клавиша 0)
 var _post_on := true                    # диагностика: SSAO+glow (H)
-var _range_mul := 1.0                    # живая подстройка радиуса ламп ([ ])
-var _energy_mul := 1.0                   # живая подстройка энергии ламп (- =)
-var _atten_mul := 1.0                    # живая подстройка затухания/размытия края (, .)
-var _tight_range_mul := 1.0              # отдельный радиус ТОЛЬКО тугих ламп зала (; ')
+var _next_area_light_size := Vector2(CELL - 0.05, CELL - 0.05)
 
 # Звук: гул ламп (порт алгоритма из level0) + отдельный звук мерцающей лампы.
 var _mix_rate := 48000.0
@@ -364,10 +422,12 @@ var _mat_wall: StandardMaterial3D
 var _mat_floor: StandardMaterial3D
 var _mat_ceil: StandardMaterial3D
 var _mat_lamp: StandardMaterial3D
+var _mat_lamp_glow: ShaderMaterial
 var _mat_base: StandardMaterial3D
 var _mat_pit: StandardMaterial3D
 var _mat_round_lamp: StandardMaterial3D
 var _mat_void: ShaderMaterial
+var _lamp_glow_mi: MeshInstance3D
 var _pit_fall_rects: Array[Rect2] = []   # мир-AABB дыр провала (для детекта падения)
 var _pit_fall_t := -1.0                  # таймер полёта (<0 — не падаем)
 var _flash_overlay: ColorRect            # полноэкранная вспышка ноклипа
@@ -381,6 +441,14 @@ func _ready() -> void:
 	if randomize_maze_seed:
 		randomize()
 		maze_seed = randi()
+	_area_lights_supported = ClassDB.class_exists("AreaLight3D") and not (AREA_LIGHT_DISABLE_ON_ANDROID and OS.has_feature("android"))
+	if not _area_lights_supported:
+		_area_light_mode = false
+	if OS.has_feature("android") and _area_lights_supported:
+		_area_panel_range_mode = AREA_LIGHT_PANEL_RANGE_ON_ANDROID
+	if OS.has_feature("android"):
+		_post_on = false
+	_render_diag = _make_render_diagnostic()
 	_make_materials()
 	_setup_environment()
 	_body = StaticBody3D.new()
@@ -393,20 +461,18 @@ func _ready() -> void:
 	for cfg in _pit_exit_configs():
 		_build_pit_exit(cfg["cell"], cfg["dir"], cfg["lane"])   # 0.5-перегородка + офисный проём на выходе провала
 	_build_office_door_openings()   # перемычки над офисными проёмами (рамка вместо двери)
-	_carve_decor_door_niches()      # ниши 1×1 под фальш-дверями (плинтус + резерв ноклип)
+	_carve_office_wall_opening_niches() # ниши 1×1 под офисные проёмы (плинтус + резерв ноклип)
 	_derive_geometry()              # сетка -> меш + коллизия
 	_add_lights()                   # панели-меши в поток ДО запекания + источники
 	_normalize_lamp_energy()        # яркость по плотности (новый режим): без пересвета залов
 	_commit()
+	_apply_area_light_mode()
 	_place_all_office_doors()       # модели дверей/рам офиса (после запекания)
 	for cfg in _pit_exit_configs():
 		_place_pit_exit_frame(cfg["cell"], cfg["dir"], cfg["lane"])         # рама офисного проёма на выходе зала-провала
 	for cfg in _pit_exit_configs():
 		_place_pit_exit_texture_sign(cfg["cell"], cfg["dir"], cfg["lane"])  # РАБОЧИЙ знак над дверью: светящаяся плита + текстура
-	# _place_exit_sign_experiments()  # варианты-плиты на стене (сохранены, отключены)
-	# _place_pit_exit_sign()          # вариант на glb-модели (сохранён, не используется)
-	_place_office_corridor_doors()  # двери/рамы офисных проёмов шаблона (R/G)
-	_place_maze_wilson_doors()      # тест-лабиринт: декор-двери входа/выхода
+	_place_office_opening_models()  # модели офисных проёмов и дверных панелей
 	_place_maze_wilson_sign()       # тест-лабиринт: знак EXIT над выходом
 	_place_noclip_return_doors()    # финальная дверь: ноклип-телепорт в старт
 	_place_pit_warning_sign()       # табличка «скользко» в проходе перед провалом
@@ -444,6 +510,14 @@ func _input(event: InputEvent) -> void:
 		if _p0_on:
 			_tuned_on = false
 		_apply_preset0()
+	elif ke.keycode == KEY_9:
+		_area_light_mode = not _area_light_mode
+		if _area_light_mode and not _area_lights_supported:
+			_area_light_mode = false
+		_apply_area_light_mode()
+	elif ke.keycode == KEY_8:
+		_area_panel_range_mode = not _area_panel_range_mode
+		_apply_area_panel_range_mode()
 	elif ke.keycode == KEY_3 and _env != null:
 		_fog_on = not _fog_on              # тёплый distance-туман
 		_env.fog_enabled = _fog_on
@@ -451,22 +525,6 @@ func _input(event: InputEvent) -> void:
 		_post_on = not _post_on           # диагностика: пост-обработка
 		_env.ssao_enabled = _post_on
 		_env.glow_enabled = _post_on
-	elif ke.keycode == KEY_BRACKETLEFT:
-		_tune_lamps(1.0 / 1.1, 1.0)        # радиус −
-	elif ke.keycode == KEY_BRACKETRIGHT:
-		_tune_lamps(1.1, 1.0)              # радиус +
-	elif ke.keycode == KEY_MINUS:
-		_tune_lamps(1.0, 1.0 / 1.1)        # энергия −
-	elif ke.keycode == KEY_EQUAL:
-		_tune_lamps(1.0, 1.1)              # энергия +
-	elif ke.keycode == KEY_COMMA:
-		_tune_lamps(1.0, 1.0, 1.0 / 1.1)   # затухание − (край чётче)
-	elif ke.keycode == KEY_PERIOD:
-		_tune_lamps(1.0, 1.0, 1.1)         # затухание + (край мягче/размытее)
-	elif ke.keycode == KEY_SEMICOLON:
-		_tune_tight_range(1.0 / 1.1)       # радиус зала − (только тугие лампы)
-	elif ke.keycode == KEY_APOSTROPHE:
-		_tune_tight_range(1.1)             # радиус зала + (только тугие лампы)
 
 
 func _process(delta: float) -> void:
@@ -475,11 +533,10 @@ func _process(delta: float) -> void:
 	_check_pit_fall(delta)
 	_update_flash(delta)
 	if _hud_label != null:
-		_hud_label.text = "%s\n%d fps\nсвет:%s (G)\nпост:%s (H)\nопт:%s (2)\nпресет0:%s (0)\nтуман:%s (3)\nR×%.2f  [ ]\nE×%.2f  - =\nA×%.2f  , .\nRзал×%.2f  ; '\nкарта (M)" % [
-			_current_area_name(), Engine.get_frames_per_second(),
-			("ON" if _light_new else "OFF"), ("ON" if _post_on else "OFF"),
-			("ON" if _tuned_on else "OFF"), ("ON" if _p0_on else "OFF"),
-			("ON" if _fog_on else "OFF"), _range_mul, _energy_mul, _atten_mul, _tight_range_mul]
+		_hud_label.text = "%s\n%s\n%d fps\nсвет:%s (G)\nArea:%s (9)\nAreaR:%s (8)\nпост:%s (H)\nопт:%s (2)\nпресет0:%s (0)\nкарта (M)" % [
+			_current_area_name(), _render_diag, Engine.get_frames_per_second(),
+			("ON" if _light_new else "OFF"), _area_light_mode_label(), ("ON" if _area_panel_range_mode else "OFF"), ("ON" if _post_on else "OFF"),
+			("ON" if _tuned_on else "OFF"), ("ON" if _p0_on else "OFF")]
 	if _minimap != null and _minimap.visible:
 		_minimap.queue_redraw()
 	_update_pit_flicker(delta)
@@ -524,11 +581,13 @@ func _init_areas() -> void:
 		if preview_template == "maze_wilson_x2_chaos":
 			# Нужна пара областей (как maze_wilson_x2 в живой цепочке), но
 			# автономная — без maze_real_entrance/maze_exit_real оба конца
-			# получают декор-дверь вместо настоящего стыка с соседями.
+			# получают офисный проём с дверью вместо настоящего стыка с соседями.
 			_areas[0]["maze_pair_cell"] = Vector2i(0, 1)
+			_areas[0]["area_group"] = "preview_maze"
 			_areas.append({
 				"id": "preview_tail", "name": preview_template.to_upper() + " (юг)",
 				"cell": Vector2i(0, 1), "type": "maze_wilson_x2_tail", "rot": 0, "axis": "z",
+				"area_group": "preview_maze",
 			})
 		_area_by_cell.clear()
 		for area: Dictionary in _areas:
@@ -538,10 +597,10 @@ func _init_areas() -> void:
 	# стен). Из каждого зала наружу — прямые двойные коридоры без перегородок.
 	# axis — ось, вдоль которой тянется коридор (между залом и краем уровня).
 	_areas = [
-		{"id": "hall_nw", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(1, 1), "type": "column_hall", "rot": 0},
-		{"id": "hall_ne", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(2, 1), "type": "column_hall", "rot": 0},
-		{"id": "hall_sw", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(1, 2), "type": "column_hall", "rot": 0},
-		{"id": "hall_se", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(2, 2), "type": "column_hall", "rot": 0},
+		{"id": "hall_nw", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(1, 1), "type": "column_hall", "rot": 0, "area_group": "hub_core"},
+		{"id": "hall_ne", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(2, 1), "type": "column_hall", "rot": 0, "area_group": "hub_core"},
+		{"id": "hall_sw", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(1, 2), "type": "column_hall", "rot": 0, "area_group": "hub_core"},
+		{"id": "hall_se", "name": "КОЛОННЫЙ ЗАЛ", "cell": Vector2i(2, 2), "type": "column_hall", "rot": 0, "area_group": "hub_core"},
 		# Разветвители из level_areas 1:1 (рёбра, сдвоенный свет), повёрнуты
 		# входом к залу. rot по сторонам: С=3, Ю=1, З=2, В=0 — как в оригинале.
 		{"id": "cor_n_w", "name": "РАЗВЕТВИТЕЛЬ СЗ", "cell": Vector2i(1, 0), "type": "branch", "rot": 3},
@@ -594,7 +653,7 @@ func _append_ring_and_spine() -> void:
 			# Реальный стык: room3 к северу от неё уже открывает проход в
 			# SPINE_EXIT_LANE (9..12) — при MAZE_CELL=1 это ровно подклетки-
 			# столбцы 9,10,11 (панель = ячейка 1:1); вход — диапазон [9,12), не
-			# одна точка, поэтому декор-дверь тут не строим, там настоящий проём.
+			# одна точка, поэтому офисную дверь тут не строим, там настоящий проём.
 			entry["maze_entrance_side"] = "S"
 			entry["maze_entrance_lo"] = 9
 			entry["maze_entrance_hi"] = 12
@@ -660,11 +719,12 @@ func _append_south_chain() -> void:
 		return
 	_areas.append({
 		"id": "chain_maze", "name": "МЕШ-ЛАБИРИНТ", "cell": Vector2i(3, 4), "type": "maze_wilson_x2", "rot": 0,
+		"area_group": "chain_maze",
 		"maze_pair_cell": Vector2i(3, 5),
 		"maze_entrance_side": "N", "maze_entrance_lo": 6, "maze_entrance_hi": 9, "maze_real_entrance": true,
 		"maze_exit_lo": 6, "maze_exit_hi": 9, "maze_exit_real": true,
 	})
-	_areas.append({"id": "chain_maze_tail", "name": "МЕШ-ЛАБИРИНТ (юг)", "cell": Vector2i(3, 5), "type": "maze_wilson_x2_tail", "rot": 0})
+	_areas.append({"id": "chain_maze_tail", "name": "МЕШ-ЛАБИРИНТ (юг)", "cell": Vector2i(3, 5), "type": "maze_wilson_x2_tail", "rot": 0, "area_group": "chain_maze"})
 	_areas.append({"id": "chain_pit", "name": "ЗАЛ-ПРОВАЛ", "cell": Vector2i(3, 6), "type": "pit", "rot": 0})
 	_areas.append({"id": "chain_office", "name": "ОФИСЫ", "cell": Vector2i(3, 7), "type": "office_corridor", "rot": 0})
 
@@ -948,7 +1008,7 @@ func _build_lit_hall(area: Dictionary) -> void:
 		pil.append(Vector2(15.0, z))
 	for p: Vector2 in pil:
 		_put("wall", Vector3(0.5 * CELL, CEIL_H, 0.5 * CELL),
-			_local_world(c.x, c.y, p.x, p.y, CEIL_H * 0.5))
+			_local_world(c.x, c.y, p.x, p.y, CEIL_H * 0.5), true, true, true)
 
 
 # Сборка шаблона «офис-коридор» по офисной системе: перегородки 0.5 на линиях,
@@ -958,34 +1018,41 @@ func _build_office_corridor(area: Dictionary) -> void:
 	for vl in OC_VLINES:
 		_oc_line(area, "z", float(vl[0]), String(vl[1]))
 	for hl in OC_HLINES:
-		_oc_line(area, "x", float(hl[0]), String(hl[1]))
+		_oc_line(area, "x", float(hl[0]), String(hl[1]), OC_CORRIDOR_ROOM_FACE)
+	for z: float in OC_BLIND_WALL_OPENINGS:
+		var wall_wp := _oc_transform_point(area, Vector2(15.0, z))
+		var wall_nrm := _oc_transform_normal(area, Vector2(-1.0, 0.0))
+		_add_office_wall_opening(area, wall_wp, wall_nrm, "oc:wall_opening", true)
+	_oc_partition_line_with_opening(area, "x", OC_ENTRY_BAFFLE_Z,
+		OC_ENTRY_BAFFLE_FROM_X, OC_ENTRY_BAFFLE_TO_X, OC_ENTRY_BAFFLE_THICK,
+		OC_ENTRY_BAFFLE_FROM_X, OC_ENTRY_BAFFLE_OPEN_W,
+		OC_ENTRY_BAFFLE_OPEN_H, false)
 	# В средней большой комнате: две пристенные панели у стены коридора.
-	# Касаются внутренней грани стены x=11 и выступают в комнату на 1/4 клетки.
+	# Касаются комнатной грани сдвинутой стены и выступают в комнату на 1/4 клетки.
 	var panel_depth := 0.25
 	var panel_len := 1.5
-	var panel_x := 11.0 - PARTITION_T * 0.5 - panel_depth * 0.5
+	var panel_x := OC_CORRIDOR_WALL_LINE - PARTITION_T * 0.5 - panel_depth * 0.5
 	for panel_z in [4.0 + panel_len * 0.5, 11.0 - panel_len * 0.5]:
 		_oc_add_wall_box(area, Vector2(panel_x, panel_z), Vector2(panel_depth, panel_len), 0.0, CEIL_H)
-	for lp in OC_LIGHTS:
+	for lp in OC_ROOM_LIGHTS:
+		_drawn_lights.append(_oc_local_world(area, float(lp[0]) + 0.5, float(lp[1]) + 0.5, CEIL_H + 0.02))
+	for lp in OC_CORRIDOR_LIGHTS:
 		_drawn_lights.append(_oc_local_world(area, float(lp[0]) + 0.5, float(lp[1]) + 0.5, CEIL_H + 0.02))
 	# Торцевой проём-карман у ЮЖНОГО конца. Ниша — только локальное расширение
-	# глухой стены на ширину коридора; сама связка дверь+карман остаётся
-	# калиброванным офисным проёмом. Спавн — с северного конца.
+	# глухой стены на ширину коридора; в торце остаётся пустой офисный проём.
 	var end_center_x := 13.0
 	var niche_min := 11
 	var niche_max := 15
-	var end_side_line := 11.0
+	var end_side_line := OC_CORRIDOR_WALL_LINE
 	for lx in range(niche_min, niche_max):
 		_oc_set_cell(area, lx, ROOM_CELLS, K_NICHE)
 	_oc_partition_segment(area, "z", end_side_line, 15.0, 16.0, PARTITION_T, 0.0, CEIL_H)
-	# Дверь по центру; устье ниши расширено на всю ширину коридора.
 	var end_wp := _oc_transform_point(area, Vector2(end_center_x, 16.0))
 	var end_nrm := _oc_transform_normal(area, Vector2(0.0, -1.0))
-	_oc_end_door = {
-		"pos": _decor_door_pos(area, end_wp, end_nrm),
-		"yaw": atan2(end_nrm.x, end_nrm.y) + PI,
-	}
-	# Карман за дверью: по размеру того же калиброванного офисного проёма.
+	var end_center := _office_opening_center_from_face(end_wp, end_nrm)
+	_add_office_opening_liner(area, end_center, end_nrm)
+	_register_office_wall_opening(area, end_center, end_nrm, "oc:end_opening", false)
+	# Карман за проёмом: по размеру того же калиброванного офисного проёма.
 	var open_w := _opening_width()
 	var open_left := end_center_x - open_w * 0.5
 	var open_right := end_center_x + open_w * 0.5
@@ -995,10 +1062,10 @@ func _build_office_corridor(area: Dictionary) -> void:
 		_oc_set_cell(area, lx, ROOM_CELLS + 1, K_NICHE)
 	if open_left > float(pocket_min):
 		var w_left := open_left - float(pocket_min)
-		_oc_add_wall_box(area, Vector2(float(pocket_min) + w_left * 0.5, 16.5), Vector2(w_left, 1.0), 0.0, CEIL_H)
+		_oc_add_wall_box(area, Vector2(float(pocket_min) + w_left * 0.5, 16.5), Vector2(w_left, 1.0), 0.0, CEIL_H, true)
 	if float(pocket_max) > open_right:
 		var w_right := float(pocket_max) - open_right
-		_oc_add_wall_box(area, Vector2(open_right + w_right * 0.5, 16.5), Vector2(w_right, 1.0), 0.0, CEIL_H)
+		_oc_add_wall_box(area, Vector2(open_right + w_right * 0.5, 16.5), Vector2(w_right, 1.0), 0.0, CEIL_H, true)
 	var lintel := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
 	_oc_add_wall_box(area, Vector2(end_center_x, 16.5), Vector2(open_w, 1.0), lintel, CEIL_H - lintel)
 
@@ -1032,19 +1099,19 @@ func _oc_transform_normal(area: Dictionary, n: Vector2) -> Vector2:
 
 
 func _oc_set_cell(area: Dictionary, lx: int, lz: int, t: int) -> void:
-	var c: Vector2i = area["cell"]
 	var base := _area_base_cell(area)
 	var p := _oc_transform_point(area, Vector2(float(lx) + 0.5, float(lz) + 0.5))
 	_set_cell(Vector2i(base.x + WALL_CELLS + int(floor(p.x)), base.y + WALL_CELLS + int(floor(p.y))), t)
 
 
-func _oc_add_wall_box(area: Dictionary, center: Vector2, size_panels: Vector2, bottom: float, height: float) -> void:
+func _oc_add_wall_box(area: Dictionary, center: Vector2, size_panels: Vector2, bottom: float, height: float,
+		force_base := false) -> void:
 	var c: Vector2i = area["cell"]
 	var p := _oc_transform_point(area, center)
 	var size := Vector3(size_panels.x * CELL, height, size_panels.y * CELL)
 	if int(area.get("rot", 0)) % 2 != 0:
 		size = Vector3(size.z, size.y, size.x)
-	_put("wall", size, _local_world(c.x, c.y, p.x, p.y, bottom + height * 0.5))
+	_put("wall", size, _local_world(c.x, c.y, p.x, p.y, bottom + height * 0.5), true, true, force_base)
 
 
 func _oc_partition_segment(area: Dictionary, axis: String, line: float,
@@ -1052,6 +1119,20 @@ func _oc_partition_segment(area: Dictionary, axis: String, line: float,
 	var t := _oc_transform_line(area, axis, line, a, b, [])
 	var c: Vector2i = area["cell"]
 	_partition_segment(c.x, c.y, String(t["axis"]), float(t["line"]), float(t["from"]), float(t["to"]), thick, bottom, height)
+
+
+func _oc_partition_line_with_opening(area: Dictionary, axis: String, line: float,
+		a: float, b: float, thick: float, open_from: float, open_width: float, open_h: float,
+		add_base := true) -> void:
+	var ops := [{
+		"center": open_from + open_width * 0.5,
+		"width": open_width,
+		"height": open_h,
+	}]
+	var t := _oc_transform_line(area, axis, line, a, b, ops)
+	var c: Vector2i = area["cell"]
+	_place_partition_line(c.x, c.y, String(t["axis"]), float(t["line"]),
+		float(t["from"]), float(t["to"]), thick, t["ops"], add_base)
 
 
 func _oc_transform_line(area: Dictionary, axis: String, line: float, a: float, b: float, ops: Array) -> Dictionary:
@@ -1089,7 +1170,7 @@ func _build_room_2(area: Dictionary) -> void:
 	# Колонна в стыке верхнего коридора со световыми панелями: ставим в видимом
 	# углу, а не по оси пересечения, где она тонула бы в стенах.
 	_put("wall", Vector3(0.5 * CELL, CEIL_H, 0.5 * CELL),
-		_local_world(c.x, c.y, 2.75, 2.75, CEIL_H * 0.5))
+		_local_world(c.x, c.y, 2.75, 2.75, CEIL_H * 0.5), true, true, true)
 	for lp in R2_LIGHTS:
 		_drawn_lights.append(_local_world(c.x, c.y, float(lp[0]) + 0.5, float(lp[1]) + 0.5, CEIL_H + 0.02))
 
@@ -1098,7 +1179,7 @@ func _build_room_2(area: Dictionary) -> void:
 # комната (x/z lo..hi, не целое число клеток — это ОК) — тонкие перегородки
 # 0.5 по каждой стороне, проём по центру калиброван как офисный (ширина/
 # высота — `_opening_width()` и DOOR_HEIGHT+DOOR_TOP_CLEARANCE), но без
-# откосов/рамы («голый» проём). Линии стен считаются по чистому просвету
+# оформления («голый» проём). Линии стен считаются по чистому просвету
 # коридора (3.0 панели от истинной кромки области до ЛИЦА перегородки, а не
 # до её центра): `lo`/`hi` уже включают половину толщины перегородки, так
 # что от кромки 0 (и от кромки ROOM_CELLS) до стены — ровно 3.0 панели
@@ -1178,7 +1259,7 @@ func _stamp_gate_occupancy(area: Dictionary, passages: Array) -> void:
 # Линия перегородки 0.5 с офисными проёмами. Строку режем на участки по '.'
 # (нет стены), внутри участка R/G — офисные проёмы (калиброванная ширина +
 # перемычка). Откосы пустых проёмов добавляем сразу, двери/рамы — после запекания.
-func _oc_line(area: Dictionary, axis: String, line: float, s: String) -> void:
+func _oc_line(area: Dictionary, axis: String, line: float, s: String, to_limit := -1.0) -> void:
 	var c: Vector2i = area["cell"]
 	var open_w := _opening_width()
 	var lintel := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
@@ -1194,16 +1275,24 @@ func _oc_line(area: Dictionary, axis: String, line: float, s: String) -> void:
 		var ops: Array = []
 		for k in range(i, j):
 			if s[k] == "R" or s[k] == "G":
+				var is_door := s[k] == "R"
 				ops.append({"center": float(k) + 0.5, "width": open_w, "height": lintel})
-				_oc_register_opening(area, axis, line, k, s[k] == "R")
-		var tr := _oc_transform_line(area, axis, line, float(i), float(j), ops)
-		_place_partition_line(c.x, c.y, String(tr["axis"]), float(tr["line"]),
-			float(tr["from"]), float(tr["to"]), PARTITION_T, tr["ops"])
+				_oc_register_opening(area, axis, line, k, is_door, open_w, lintel)
+		var seg_from := float(i)
+		var seg_to := float(j)
+		if to_limit >= 0.0:
+			seg_to = minf(seg_to, to_limit)
+		if seg_to <= seg_from + 0.01:
+			i = j
+			continue
+		var line_data := _oc_transform_line(area, axis, line, seg_from, seg_to, ops)
+		_place_partition_line(c.x, c.y, String(line_data["axis"]), float(line_data["line"]),
+			float(line_data["from"]), float(line_data["to"]), PARTITION_T, line_data["ops"])
 		i = j
 
 
-# Запоминаем офисный проём для пост-фазы; для пустого (G) сразу ставим откосы.
-func _oc_register_opening(area: Dictionary, axis: String, line: float, along: int, is_door: bool) -> void:
+# Запоминаем офисный проём для пост-фазы; для пустого (G) добавляем edge-liner.
+func _oc_register_opening(area: Dictionary, axis: String, line: float, along: int, is_door: bool, open_w: float, open_h: float, door_collision := true) -> void:
 	var center: Vector2
 	var normal: Vector2
 	if axis == "z":
@@ -1214,37 +1303,47 @@ func _oc_register_opening(area: Dictionary, axis: String, line: float, along: in
 		normal = Vector2(0.0, 1.0)
 	center = _oc_transform_point(area, center)
 	normal = _oc_transform_normal(area, normal)
-	if not is_door:
-		_add_office_reveal(area, center, normal)
-	_oc_openings.append({"area": area, "center": center, "normal": normal, "door": is_door})
+	_add_office_opening_liner(area, center, normal, open_w, open_h)
+	_oc_openings.append({
+		"area": area,
+		"center": center,
+		"normal": normal,
+		"door": is_door,
+		"door_collision": door_collision,
+		"width": open_w,
+		"height": open_h,
+		"source_axis": axis,
+		"source_line": line,
+		"source_along": along,
+	})
 
 
 # Двери (R) и рамы (G) офисных проёмов шаблона — модели после запекания (как blueprint).
-func _place_office_corridor_doors() -> void:
-	if _oc_openings.is_empty() and _oc_end_door.is_empty():
+func _place_office_opening_models() -> void:
+	if _oc_openings.is_empty() and _office_wall_openings.is_empty():
 		return
 	var scene := load(OFFICE_DOOR_PANEL) as PackedScene
 	if scene == null:
 		return
-	if not _oc_end_door.is_empty():
-		_spawn_floor_model(scene, _oc_end_door["pos"], float(_oc_end_door["yaw"]), OFFICE_DOOR_SCALE,
-			"oc_end_door", "oc:end", 1.0, true, "decor_door")
+	var wi := 0
+	for d: Dictionary in _office_wall_openings:
+		var a: Dictionary = d["area"]
+		var center: Vector2 = d["center"]
+		var nrm: Vector2 = d["nrm"]
+		var opening_id := "%s:%d" % [String(d.get("opening_id", "office_wall")), wi]
+		_spawn_office_opening_frames(scene, a, center, nrm, "office_wall_opening_%d" % wi, opening_id)
+		if bool(d.get("door_panel", false)):
+			_spawn_office_door_panel(scene, a, center, nrm, "office_wall_door_panel_%d" % wi, opening_id, bool(d.get("collide", true)))
+		wi += 1
 	var i := 0
 	for op: Dictionary in _oc_openings:
 		var a: Dictionary = op["area"]
 		var center: Vector2 = op["center"]
 		var normal: Vector2 = op["normal"]
-		var base_yaw := PI * 0.5 if absf(normal.x) > 0.0 else 0.0
-		if op["door"]:
-			_spawn_floor_model(scene, _office_opening_world_pos(a, center, normal), base_yaw,
-				OFFICE_DOOR_SCALE, "oc_door_%d" % i, "oc:%d" % i, 1.0, true, "door")
-			_spawn_floor_model(scene, _office_opening_world_pos(a, center, -normal), base_yaw + PI,
-				OFFICE_DOOR_SCALE, "oc_door_b_%d" % i, "oc:%d" % i, -1.0, true, "door")
-		else:
-			for side: float in [-1.0, 1.0]:
-				var p := _office_opening_world_pos(a, center, normal * side)
-				var side_yaw := base_yaw + (PI if side < 0.0 else 0.0)
-				_spawn_door_frame_model(scene, p, side_yaw, OFFICE_DOOR_SCALE, "oc_frame_%d" % i, "oc:%d" % i, side)
+		var opening_id := "oc:%d" % i
+		_spawn_office_opening_frames(scene, a, center, normal, "oc_frame_%d" % i, opening_id)
+		if bool(op.get("door", false)):
+			_spawn_office_door_panel(scene, a, center, normal, "oc_door_panel_%d" % i, opening_id, bool(op.get("door_collision", true)))
 		i += 1
 
 
@@ -1256,11 +1355,13 @@ func _place_noclip_return_doors() -> void:
 		return
 	var i := 0
 	for d: Dictionary in _noclip_return_doors:
-		var inst := _spawn_floor_model(scene, d["pos"], float(d["yaw"]), OFFICE_DOOR_SCALE,
-			"noclip_return_door_%d" % i, String(d["opening_id"]), 1.0, true, "door")
-		if inst != null:
-			inst.add_to_group("noclip_return_door")
-		_add_noclip_return_trigger(d["pos"], d["normal"], i)
+		var area: Dictionary = d["area"]
+		var center: Vector2 = d["center"]
+		var normal: Vector2 = d["normal"]
+		var opening_id := String(d["opening_id"])
+		_spawn_office_opening_frames(scene, area, center, normal, "noclip_return_frame_%d" % i, opening_id)
+		_spawn_office_door_panel(scene, area, center, normal, "noclip_return_door_%d" % i, opening_id, true)
+		_add_noclip_return_trigger(_office_door_panel_world_pos(area, center), normal, i)
 		i += 1
 
 
@@ -1429,7 +1530,6 @@ func _fill_hum() -> void:
 func _update_pit_flicker(delta: float) -> void:
 	if _flicker.is_empty():
 		return
-	var fl: Dictionary = _flicker[0]
 	var seg: Array = FLICK_PATTERN[_flick_seg_i]
 	_flick_seg_t += delta
 	if _flick_seg_t >= float(seg[1]):
@@ -1444,10 +1544,28 @@ func _update_pit_flicker(delta: float) -> void:
 		_flick_stutter_t -= delta
 		if _flick_stutter_t <= 0.0:
 			_flick_stutter_t = randf_range(0.03, 0.12)
-			_flick_stutter_v = 1.0 if randf() < 0.35 else randf_range(0.04, 0.22)
+			var roll := randf()
+			if roll < FLICK_STUTTER_FULL_CHANCE:
+				_flick_stutter_v = 1.0
+			elif roll < FLICK_STUTTER_FULL_CHANCE + FLICK_STUTTER_LOW_CHANCE:
+				_flick_stutter_v = FLICK_STUTTER_LOW_LEVEL
+			else:
+				_flick_stutter_v = randf_range(FLICK_STUTTER_LOW_LEVEL, FLICK_STUTTER_DIM_MAX)
 		_flick_level = _flick_stutter_v
-	(fl["light"] as OmniLight3D).light_energy = float(fl["base_e"]) * _flick_level
-	(fl["mat"] as StandardMaterial3D).emission_energy_multiplier = float(fl["base_em"]) * _flick_level
+	for fl: Dictionary in _flicker:
+		(fl["light"] as Light3D).light_energy = float(fl["base_e"]) * _flick_level
+		var afl := fl.get("area_light", null) as Light3D
+		if afl != null:
+			afl.light_energy = float(fl["base_e"]) * _flick_level
+		var bfl := fl.get("bounce_light", null) as Light3D
+		if bfl != null:
+			bfl.light_energy = float(fl["base_bounce_e"]) * _flick_level
+		var mat := fl["mat"] as StandardMaterial3D
+		var base_albedo: Color = fl["base_albedo"]
+		var panel_level := maxf(_flick_level, FLICK_PANEL_MIN_LEVEL)
+		var panel_emission_level := maxf(_flick_level, FLICK_PANEL_EMISSION_MIN_LEVEL)
+		mat.albedo_color = Color(base_albedo.r * panel_level, base_albedo.g * panel_level, base_albedo.b * panel_level, base_albedo.a)
+		mat.emission_energy_multiplier = float(fl["base_em"]) * panel_emission_level
 	if _flick_spot != null:
 		_flick_spot.light_energy = WETSIGN_SPOT_ENERGY * _flick_level
 
@@ -1469,7 +1587,7 @@ func _fill_flick() -> void:
 
 # Кастомный выход зала-провала: на глубине 1 клетки от входа со стороны
 # провала — 0.5-перегородка поперёк прохода с офисным проёмом без двери
-# (геометрия + откосы; раму ставит _place_pit_exit_frame после запекания).
+# (геометрия + edge-liner; раму ставит _place_pit_exit_frame после запекания).
 # ОБОБЩЕНО для произвольного провала/стороны/лейна (было жёстко на
 # (2,-1)/север) — у КАЖДОГО провала на хребте ровно один такой выход
 # (декоративная рамка + знак EXIT), как в оригинале; список экземпляров —
@@ -1524,7 +1642,7 @@ func _build_pit_exit(cell: Vector2i, dir: Vector2i, lane: Vector2i) -> void:
 	var open := {"center": cx, "width": _opening_width(), "height": DOOR_HEIGHT + DOOR_TOP_CLEARANCE}
 	_place_partition_line(cell.x, cell.y, String(al["axis"]), float(al["line"]),
 		float(lane.x), float(lane.y), PARTITION_T, [open])
-	_add_office_reveal(area, _pit_exit_local_pos(al, cx), al["normal"])
+	_add_office_opening_liner(area, _pit_exit_local_pos(al, cx), al["normal"])
 
 
 func _place_pit_exit_frame(cell: Vector2i, dir: Vector2i, lane: Vector2i) -> void:
@@ -1540,13 +1658,9 @@ func _place_pit_exit_frame(cell: Vector2i, dir: Vector2i, lane: Vector2i) -> voi
 	var cx := _pit_exit_center(lane)
 	var center := _pit_exit_local_pos(al, cx)
 	var normal: Vector2 = al["normal"]
-	var base_yaw := atan2(normal.x, normal.y)
 	var node_id := "pit_exit_frame_%d_%d" % [cell.x, cell.y]
 	var opening_id := "pit_exit:%d_%d:pass" % [cell.x, cell.y]
-	for side: float in [-1.0, 1.0]:
-		var p := _office_opening_world_pos(area, center, normal * side)
-		var side_yaw := base_yaw if side > 0.0 else base_yaw + PI
-		_spawn_door_frame_model(scene, p, side_yaw, OFFICE_DOOR_SCALE, node_id, opening_id, side)
+	_spawn_office_opening_frames(scene, area, center, normal, node_id, opening_id)
 
 
 # Указатель EXIT над проходом-выходом зала-провала, со стороны провала (юг).
@@ -1619,8 +1733,11 @@ func _place_pit_exit_sign() -> void:
 	glow.shadow_enabled = false
 	glow.position = inst.position + Vector3(0.0, -0.25, 0.25)
 	glow.set_meta("skip_level_d_source_drop", true)
+	glow.set_meta("keep_in_area_light_mode", true)
 	_apply_runtime_light_rules(glow)
 	add_child(glow)
+	_legacy_aux_lights.append(glow)
+	_apply_area_light_mode()
 
 
 # ЭКСПЕРИМЕНТ: две светящиеся плиты с EXIT слева от двери зала-провала.
@@ -1664,6 +1781,7 @@ func _make_exit_plate(pos: Vector3, tex_path: String, faint: bool, content_h := 
 	body.mesh = _beveled_box_mesh(bw, bh, SIGN_DEPTH, SIGN_BEVEL)
 	var body_mat := StandardMaterial3D.new()
 	body_mat.albedo_color = SIGN_BODY_ALBEDO
+	body_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	body_mat.emission_enabled = true
 	body_mat.emission = SIGN_GLOW_COLOR
 	body_mat.emission_energy_multiplier = SIGN_GLOW_ENERGY
@@ -1688,6 +1806,11 @@ func _make_exit_plate(pos: Vector3, tex_path: String, faint: bool, content_h := 
 	face.position = pos + face_offset
 	face.rotation.y = yaw
 	add_child(face)
+	if AREA_LIGHT_SIGN_PLATES:
+		var plate_light := _spawn_area_plate_light(pos, Vector2(bw, bh), yaw, SIGN_GLOW_COLOR, SIGN_GLOW_ENERGY, SIGN_REFLEX_RANGE, SIGN_REFLEX_ATTEN, true)
+		if plate_light != null:
+			_area_aux_lights.append(plate_light)
+			_apply_area_light_mode()
 
 
 # РАБОЧИЙ знак над дверью зала-провала: светящаяся плита + текстура exit_sign,
@@ -1724,31 +1847,11 @@ func _place_pit_exit_texture_sign(cell: Vector2i, dir: Vector2i, lane: Vector2i)
 	refl.shadow_enabled = false
 	refl.position = pos
 	refl.set_meta("skip_level_d_source_drop", true)
+	refl.set_meta("keep_in_area_light_mode", true)
 	_apply_runtime_light_rules(refl)
 	add_child(refl)
-
-
-# Тест-лабиринт: декор-двери на входе и выходе (визуализация, никакого прохода
-# в общей стене не рубится — сплошная стена под моделью, как у прочих декор-
-# дверей офиса). Ставится после _commit() вместе с остальными дверями.
-func _place_maze_wilson_doors() -> void:
-	if _maze_start_doors.is_empty() and _maze_finish_doors.is_empty():
-		return
-	var scene := load(OFFICE_DOOR_PANEL) as PackedScene
-	if scene == null:
-		return
-	for i in range(_maze_start_doors.size()):
-		var d: Dictionary = _maze_start_doors[i]
-		var pos := _decor_door_pos(d["area"], d["wp"], d["nrm"])
-		var yaw := atan2(float(d["nrm"].x), float(d["nrm"].y)) + PI
-		_spawn_floor_model(scene, pos, yaw, OFFICE_DOOR_SCALE, "maze_start_door_%d" % i, "maze:start:%d" % i, 1.0, true, "decor_door")
-	for i in range(_maze_finish_doors.size()):
-		var d2: Dictionary = _maze_finish_doors[i]
-		if bool(d2.get("real_exit", false)):
-			continue   # настоящий проход дальше по хребту — без декор-двери/EXIT
-		var pos2 := _decor_door_pos(d2["area"], d2["wp"], d2["nrm"])
-		var yaw2 := atan2(float(d2["nrm"].x), float(d2["nrm"].y)) + PI
-		_spawn_floor_model(scene, pos2, yaw2, OFFICE_DOOR_SCALE, "maze_finish_door_%d" % i, "maze:finish:%d" % i, 1.0, true, "decor_door")
+	_legacy_aux_lights.append(refl)
+	_apply_area_light_mode()
 
 
 # Знак EXIT над дверью выхода — только визуальная пометка «это не вход»,
@@ -1766,7 +1869,7 @@ func _place_maze_wilson_sign() -> void:
 		var pos := _local_world(area["cell"].x, area["cell"].y, inside.x, inside.y, y)
 		# Плита строится лицом на +Z по умолчанию (см. _make_exit_plate/пример
 		# рабочего знака провала: yaw=0 при nrm=(0,1)) — та же формула, что и для
-		# декор-дверей, но БЕЗ +PI (это фасад свежесобранного меша, а не глб-модель
+		# офисных дверных панелей, но БЕЗ +PI (это фасад свежесобранного меша, а не глб-модель
 		# с собственной развёрнутой геометрией).
 		var yaw := atan2(nrm.x, nrm.y)
 		_make_exit_plate(pos, SIGN_TEXTURE, true, SIGN_CONTENT_H, SIGN_MARGIN, yaw)
@@ -1825,10 +1928,10 @@ func _build_branch(area: Dictionary) -> void:
 #  запасом выше правила «мин. проход ≥ 2 клетки»). Остов Уилсона + braid
 #  (MAZE_BRAID_P) поверх — рёбра становятся проёмами во всю ширину/высоту
 #  ячейки (без рам/перемычек) в тонких перегородках MAZE_PARTITION_T (0.25),
-#  всё остальное — глухая стена. Вход — декор-дверь (автономный превью) либо
+#  всё остальное — глухая стена. Вход — офисный проём с дверью (автономный превью) либо
 #  настоящий проём общей стены (стыковка с графом, area несёт
 #  maze_entrance_side/lo/hi/real_entrance); выход — граничная клетка на другой
-#  стене с максимальным расстоянием по дереву от входа, над ней декор-дверь +
+#  стене с максимальным расстоянием по дереву от входа, над ним офисная дверь +
 #  знак EXIT. Свет — отдельная раскладка (_add_maze_wilson_lights), с гарантией
 #  не менее 1 пустой клетки до любой стены/перегородки.
 # ─────────────────────────────────────────────────────────────
@@ -2027,7 +2130,7 @@ func _build_maze_wilson_double(area_a: Dictionary) -> void:
 # смежные открытые подклетки в один _carve_passage за раз, чтобы не копить
 # ошибку округления на каждой границе 2.5 панели отдельно — целочисленная
 # панельная сетка не делит MAZE_CELL ровно, см. docs/templates.md).
-func _maze2_carve_seam(area_a: Dictionary, area_b: Dictionary, edges: Dictionary, gate: Dictionary) -> void:
+func _maze2_carve_seam(area_a: Dictionary, _area_b: Dictionary, edges: Dictionary, gate: Dictionary) -> void:
 	var i := 0
 	while i < MAZE_SUB:
 		var ca := Vector2i(i, MAZE_SUB - 1)
@@ -2231,12 +2334,12 @@ func _maze_solution_path_cells(edges: Dictionary, entrance_starts: Array[Vector2
 	if not parent.has(exit_cell):
 		return {}
 	var result := {}
-	var cur: Vector2i = exit_cell
+	var backtrack_cell: Vector2i = exit_cell
 	while true:
-		result[cur] = true
-		if cur == start:
+		result[backtrack_cell] = true
+		if backtrack_cell == start:
 			break
-		cur = parent[cur]
+		backtrack_cell = parent[backtrack_cell]
 	return result
 
 
@@ -2459,7 +2562,7 @@ func _maze_pick_gate(edges: Dictionary, entrance_starts: Array[Vector2i], exit_c
 	path.reverse()
 	if path.size() < 4:
 		return {}
-	var m := path.size() / 2
+	var m := floori(float(path.size()) / 2.0)
 	return {"a": path[m - 1], "b": path[m]}
 
 
@@ -2570,7 +2673,7 @@ func _maze_wall_spot(side: String, idx: int, nx: int = MAZE_SUB, nz: int = MAZE_
 	return {}
 
 
-# Вход — либо середина северной стены автономного превью-теста (декор-дверь +
+# Вход — либо середина северной стены автономного превью-теста (офисная дверь +
 # спавн игрока спиной к ней, одна подклетка), либо реальный стык с соседней
 # областью графа (area несёт maze_entrance_side/lo/hi/real_entrance, lo/hi —
 # координаты В ПАНЕЛЯХ, как SPINE_EXIT_LANE, а не индексы подклеток — так вход
@@ -2579,7 +2682,7 @@ func _maze_wall_spot(side: String, idx: int, nx: int = MAZE_SUB, nz: int = MAZE_
 # (напр. 2.5 на лейне 9..12), это может быть 1-2 подклетки, не строго 3.
 # Мульти-источник BFS считает расстояния от всех сразу. Выход — граничная
 # клетка на ДРУГОЙ стене с максимальным расстоянием по дереву от входа; над
-# ней декор-дверь + знак EXIT — всегда, для наглядности.
+# ней офисная дверь + знак EXIT — всегда, для наглядности.
 # Часть 1: вход. Вычисляется ДО заливки стен — нужен гейту (маршрут
 # вход→выход считается по остову раньше, чем строится геометрия).
 func _maze_entrance_info(area: Dictionary) -> Dictionary:
@@ -2595,7 +2698,7 @@ func _maze_entrance_info(area: Dictionary) -> Dictionary:
 			if a1 > entrance_lo and a0 < entrance_hi:
 				entrance_indices.append(k)
 	if entrance_indices.is_empty():
-		entrance_indices.append(MAZE_SUB / 2)
+		entrance_indices.append(floori(float(MAZE_SUB) / 2.0))
 	var entrance_spots: Array = []
 	var entrance_starts: Array[Vector2i] = []
 	for i in entrance_indices:
@@ -2622,7 +2725,7 @@ func _maze_pick_exit(entrance_info: Dictionary, edges: Dictionary, forced_side: 
 	var entrance_starts: Array[Vector2i] = entrance_info["starts"]
 	var dist := _maze_bfs_distances(entrance_starts, edges, nz)
 	var best_side := ("S" if entrance_side != "S" else "N")
-	var best_idx := MAZE_SUB / 2
+	var best_idx := floori(float(MAZE_SUB) / 2.0)
 	var best_dist := -1
 	var sides: Array = ["N", "S", "W", "E"]
 	if forced_side != "":
@@ -2650,14 +2753,14 @@ func _maze_pick_exit(entrance_info: Dictionary, edges: Dictionary, forced_side: 
 
 
 # Часть 3: после того как вся геометрия (включая гейт) построена — фиксируем
-# декор-двери/знак EXIT там, где решили ставить вход/выход. exit_area — для
+# офисную дверь/знак EXIT там, где решили ставить вход/выход. exit_area — для
 # двойного (по Z) лабиринта: вход у area (первая/северная половина), выход
 # физически у ДРУГОЙ area (вторая/южная половина); пусто — выход тоже у area
 # (одиночный лабиринт, как раньше).
 func _finish_maze_start_finish(area: Dictionary, entrance_info: Dictionary, exit_spot: Dictionary, exit_area: Dictionary = {}) -> void:
 	if not entrance_info["real_entrance"]:
-		# Автономный превью: диапазон — ровно одна подклетка, декор-дверь там.
 		var entrance: Dictionary = entrance_info["spots"][0]
+		_add_office_wall_opening(area, entrance["wp"], entrance["nrm"], "maze:start", true)
 		_maze_start_doors.append({"area": area, "wp": entrance["wp"], "nrm": entrance["nrm"]})
 	# real_exit=true -> дальше настоящий проход по хребту (лаз/дверь не декор,
 	# а живой стык, который вырубит _carve_south_chain по side/lo/hi ниже).
@@ -2682,6 +2785,8 @@ func _finish_maze_start_finish(area: Dictionary, entrance_info: Dictionary, exit
 		"hi": hi,
 		"real_exit": real_exit,
 	})
+	if not real_exit:
+		_add_office_wall_opening(fa, exit_spot["wp"], exit_spot["nrm"], "maze:finish", true)
 
 
 # Заливка прямоугольника внутренними стенами (клетки K_WALL) с учётом поворота
@@ -2719,11 +2824,9 @@ func _build_office(area: Dictionary) -> void:
 	]
 	_place_partition_line(c.x, c.y, "z", 7.5, 0.0, 15.0, PARTITION_T, openings.duplicate(true))
 	_place_partition_line(c.x, c.y, "x", 7.5, 0.0, 15.0, PARTITION_T, openings.duplicate(true))
-	# Откосы баребордного цвета на пустых проёмах (не на полной двери).
+	# Edge-liner у всех офисных проёмов; дверная панель ставится отдельным слоем.
 	for op: Dictionary in _office_openings():
-		if op["door"]:
-			continue
-		_add_office_reveal(area, op["center"], op["normal"])
+		_add_office_opening_liner(area, op["center"], op["normal"])
 
 
 # Описание 4 проёмов офиса: центр, нормаль перегородки, yaw модели, флаг полной двери.
@@ -2736,23 +2839,45 @@ func _office_openings() -> Array:
 	]
 
 
-func _add_office_reveal(area: Dictionary, center: Vector2, normal: Vector2) -> void:
+func _add_office_opening_liner(area: Dictionary, center: Vector2, normal: Vector2,
+		open_w_panels := -1.0, open_h := -1.0) -> void:
 	var c: Vector2i = area["cell"]
-	var wall_t := CELL * 0.5
-	var open_w := _opening_width() * CELL
-	var h := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
+	var liner_depth := PARTITION_T * CELL + OFFICE_FRAME_OUTSET * 2.0
+	var opening_width_panels := _opening_width() if open_w_panels <= 0.0 else open_w_panels
+	var opening_height := DOOR_HEIGHT + DOOR_TOP_CLEARANCE if open_h <= 0.0 else open_h
+	var open_w := opening_width_panels * CELL
 	var trim := OFFICE_REVEAL_TRIM_T
 	var cx := center.x * CELL
 	var cz := center.y * CELL
 	var o := _local_world(c.x, c.y, 0.0, 0.0, 0.0)
 	if absf(normal.y) > 0.0:
 		for sx in [-1.0, 1.0]:
-			_put("base", Vector3(trim, h, wall_t), o + Vector3(cx + sx * open_w * 0.5, h * 0.5, cz), false)
-		_put("base", Vector3(open_w + trim, trim, wall_t), o + Vector3(cx, h - trim * 0.5, cz), false)
+			var x: float = cx + sx * (open_w * 0.5 - trim * 0.5)
+			_put("base", Vector3(trim, opening_height, liner_depth), o + Vector3(x, opening_height * 0.5, cz), false)
+		_put("base", Vector3(open_w, trim, liner_depth), o + Vector3(cx, opening_height - trim * 0.5, cz), false)
 	else:
 		for sz in [-1.0, 1.0]:
-			_put("base", Vector3(wall_t, h, trim), o + Vector3(cx, h * 0.5, cz + sz * open_w * 0.5), false)
-		_put("base", Vector3(wall_t, trim, open_w + trim), o + Vector3(cx, h - trim * 0.5, cz), false)
+			var z: float = cz + sz * (open_w * 0.5 - trim * 0.5)
+			_put("base", Vector3(liner_depth, opening_height, trim), o + Vector3(cx, opening_height * 0.5, z), false)
+		_put("base", Vector3(liner_depth, trim, open_w), o + Vector3(cx, opening_height - trim * 0.5, cz), false)
+
+
+func _add_office_wall_opening(area: Dictionary, wp: Vector2, nrm: Vector2, opening_id: String, door_panel := false, collide := true) -> void:
+	_carve_office_wall_opening_niche(area, wp, nrm)
+	var center := _office_opening_center_from_face(wp, nrm)
+	_add_office_opening_liner(area, center, nrm)
+	_register_office_wall_opening(area, center, nrm, opening_id, door_panel, collide)
+
+
+func _register_office_wall_opening(area: Dictionary, center: Vector2, nrm: Vector2, opening_id: String, door_panel := false, collide := true) -> void:
+	_office_wall_openings.append({
+		"area": area,
+		"center": center,
+		"nrm": nrm,
+		"opening_id": opening_id,
+		"door_panel": door_panel,
+		"collide": collide,
+	})
 
 
 # Перемычки над офисными проёмами (заполняют стену выше двери до потолка).
@@ -2778,24 +2903,11 @@ func _build_office_door_openings() -> void:
 func _place_office_door_frames(scene: PackedScene) -> void:
 	for op: Dictionary in _office_door_openings:
 		var cell: Vector2i = op["cell"]
-		var dir: Vector2i = op["dir"]
-		var along: int = op["along"]
-		var base := _area_base(cell.x, cell.y)
+		if not _area_by_cell.has(cell):
+			continue
+		var area: Dictionary = _area_by_cell[cell]
 		var oid := "office_pass_%d_%d" % [cell.x, cell.y]
-		if dir == Vector2i(1, 0):
-			var x0 := base.x + WALL_CELLS + ROOM_CELLS
-			var zc := (float(base.y + WALL_CELLS + along) + 0.5) * CELL
-			_spawn_door_frame_model(scene, Vector3(float(x0) * CELL, 0.0, zc),
-				-PI * 0.5, OFFICE_DOOR_SCALE, "%s_a" % oid, "%s:pass" % oid, -1.0)
-			_spawn_door_frame_model(scene, Vector3(float(x0 + WALL_CELLS) * CELL, 0.0, zc),
-				PI * 0.5, OFFICE_DOOR_SCALE, "%s_b" % oid, "%s:pass" % oid, 1.0)
-		elif dir == Vector2i(0, 1):
-			var z0 := base.y + WALL_CELLS + ROOM_CELLS
-			var xc := (float(base.x + WALL_CELLS + along) + 0.5) * CELL
-			_spawn_door_frame_model(scene, Vector3(xc, 0.0, float(z0) * CELL),
-				PI, OFFICE_DOOR_SCALE, "%s_a" % oid, "%s:pass" % oid, -1.0)
-			_spawn_door_frame_model(scene, Vector3(xc, 0.0, float(z0 + WALL_CELLS) * CELL),
-				0.0, OFFICE_DOOR_SCALE, "%s_b" % oid, "%s:pass" % oid, 1.0)
+		_spawn_office_opening_frames(scene, area, op["center"], op["normal"], oid, "%s:pass" % oid)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2811,31 +2923,20 @@ func _place_all_office_doors() -> void:
 			continue
 		var oid := String(area["id"])
 		var cell: Vector2i = area["cell"]
-		_place_office_decor_doors(area, scene)
 		for op: Dictionary in _office_openings():
 			var center: Vector2 = op["center"]
 			var normal: Vector2 = op["normal"]
-			var yaw: float = op["yaw"]
 			var opening_id := "%s:%s" % [oid, String(op["id"])]
 			# Правило: проём в зоне основного прохода — дверь/раму не ставим.
 			if _door_hits_passage(_local_world(cell.x, cell.y, center.x, center.y, 0.0), normal, _opening_width() * CELL):
 				continue
+			_spawn_office_opening_frames(scene, area, center, normal, "%s_frame" % oid, opening_id)
 			if op["door"]:
-				# Полная закрытая дверь: две створки (перёд/зад) + коллизия.
-				_spawn_floor_model(scene, _office_opening_world_pos(area, center, normal),
-					yaw, OFFICE_DOOR_SCALE, "%s_door" % oid, opening_id, 1.0, true, "door")
-				_spawn_floor_model(scene, _office_opening_world_pos(area, center, -normal),
-					yaw + PI, OFFICE_DOOR_SCALE, "%s_door_back" % oid, opening_id, -1.0, true, "door")
-			else:
-				# Пустой проём: рама с обеих сторон, без коллизии.
-				for side: float in [-1.0, 1.0]:
-					var p := _office_opening_world_pos(area, center, normal * side)
-					var side_yaw := yaw + (PI if side < 0.0 else 0.0)
-					_spawn_door_frame_model(scene, p, side_yaw, OFFICE_DOOR_SCALE, "%s_frame" % oid, opening_id, side)
+				_spawn_office_door_panel(scene, area, center, normal, "%s_door_panel" % oid, opening_id, true)
 	_place_office_door_frames(scene)   # офисные проёмы к пристроенным залам
 
 
-# Точки 8 декор-дверей офиса: [точка на внешней стене (панели), нормаль внутрь].
+# Точки 8 офисных проёмов в глухих стенах: [точка на внешней стене (панели), нормаль внутрь].
 func _office_decor_spots() -> Array:
 	return [
 		[Vector2(0.0, 3.5), Vector2(1.0, 0.0)],     # NW: запад, напротив "upper"
@@ -2849,63 +2950,49 @@ func _office_decor_spots() -> Array:
 	]
 
 
-func _decor_door_pos(area: Dictionary, wp: Vector2, nrm: Vector2) -> Vector3:
-	var c: Vector2i = area["cell"]
-	var decor_off := OFFICE_DOOR_DEPTH * 0.5 - 0.1185
-	return _local_world(c.x, c.y, wp.x, wp.y, 0.0) + Vector3(nrm.x * decor_off, 0.0, nrm.y * decor_off)
+func _office_frame_pos_from_face(area: Dictionary, wp: Vector2, nrm: Vector2) -> Vector3:
+	return _office_frame_world_pos(area, _office_opening_center_from_face(wp, nrm), nrm)
 
 
-# Декоративные (фальш-) двери: на внешней стене каждой комнаты. Сидят в нише
-# глубиной 1 клетка (см. _carve_decor_door_niches), поэтому с коллизией — за
-# дверью открытый карман (резерв под ноклип), а плинтус чисто прерывается на
-# косяках ниши. Правило: в зоне основного прохода дверь не ставим.
-func _place_office_decor_doors(area: Dictionary, scene: PackedScene) -> void:
-	var oid := String(area["id"])
-	var open_w := _opening_width() * CELL
-	var i := -1
-	for s in _office_decor_spots():
-		i += 1
-		var wp: Vector2 = s[0]
-		var nrm: Vector2 = s[1]
-		var pos := _decor_door_pos(area, wp, nrm)
-		if _door_hits_passage(pos, nrm, open_w):
-			continue
-		var yaw := atan2(nrm.x, nrm.y) + PI
-		_spawn_floor_model(scene, pos, yaw, OFFICE_DOOR_SCALE,
-			"%s_decor_%d" % [oid, i], "%s:decor_%d" % [oid, i], 1.0, true, "decor_door")
+func _office_opening_center_from_face(wp: Vector2, nrm: Vector2) -> Vector2:
+	return wp - nrm * (PARTITION_T * 0.5)
 
 
-# Ниша 1 клетка под каждой реально ставящейся фальш-дверью (толстые внешние
+# Ниша 1 клетка под каждым офисным проёмом в глухой стене (толстые внешние
 # стены, 3 клетки → вырезаем внутреннюю). Greedy-слияние стен само прерывает
-# плинтус на косяках ниши — без хрупкой логики вырезов. За дверью остаётся
+# плинтус на косяках ниши — без хрупкой логики вырезов. За проёмом остаётся
 # карман (2 клетки стены сплошные) — резерв под ноклип-области.
-func _carve_decor_door_niches() -> void:
+func _carve_office_wall_opening_niches() -> void:
 	var open_w := _opening_width() * CELL
-	var door_h := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
 	for area: Dictionary in _areas:
 		if String(area["type"]) != "office":
 			continue
-		var c: Vector2i = area["cell"]
-		var base := _area_base(c.x, c.y)
 		for s in _office_decor_spots():
 			var wp: Vector2 = s[0]
 			var nrm: Vector2 = s[1]
-			var pos := _decor_door_pos(area, wp, nrm)
+			var pos := _office_frame_pos_from_face(area, wp, nrm)
 			if _door_hits_passage(pos, nrm, open_w):
 				continue
-			var cell: Vector2i
-			if absf(nrm.x) > 0.5:   # западная/восточная стена, вдоль Z
-				var zc := base.y + WALL_CELLS + int(wp.y)
-				var xc := base.x + (WALL_CELLS - 1 if nrm.x > 0.0 else WALL_CELLS + ROOM_CELLS)
-				cell = Vector2i(xc, zc)
-			else:                   # северная/южная стена, вдоль X
-				var xc2 := base.x + WALL_CELLS + int(wp.x)
-				var zc2 := base.y + (WALL_CELLS - 1 if nrm.y > 0.0 else WALL_CELLS + ROOM_CELLS)
-				cell = Vector2i(xc2, zc2)
-			_set_cell(cell, K_NICHE)   # не K_PASSAGE: иначе дверь сочтёт нишу проходом и пропустит себя
-			# Перемычка над устьем ниши (от высоты двери до потолка).
-			var lpos := Vector3((float(cell.x) + 0.5) * CELL, (door_h + CEIL_H) * 0.5, (float(cell.y) + 0.5) * CELL)
-			_put("wall", Vector3(CELL, CEIL_H - door_h, CELL), lpos)
+			_add_office_wall_opening(area, wp, nrm, "%s:wall_opening" % String(area["id"]), false)
+
+
+func _carve_office_wall_opening_niche(area: Dictionary, wp: Vector2, nrm: Vector2) -> void:
+	var c: Vector2i = area["cell"]
+	var base := _area_base(c.x, c.y)
+	var cell: Vector2i
+	if absf(nrm.x) > 0.5:   # западная/восточная стена, вдоль Z
+		var zc := base.y + WALL_CELLS + int(wp.y)
+		var xc := base.x + (WALL_CELLS - 1 if nrm.x > 0.0 else WALL_CELLS + ROOM_CELLS)
+		cell = Vector2i(xc, zc)
+	else:                   # северная/южная стена, вдоль X
+		var xc2 := base.x + WALL_CELLS + int(wp.x)
+		var zc2 := base.y + (WALL_CELLS - 1 if nrm.y > 0.0 else WALL_CELLS + ROOM_CELLS)
+		cell = Vector2i(xc2, zc2)
+	_set_cell(cell, K_NICHE)   # не K_PASSAGE: иначе дверь сочтёт нишу проходом и пропустит себя
+	# Перемычка над устьем ниши (от высоты двери до потолка).
+	var door_h := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
+	var lpos := Vector3((float(cell.x) + 0.5) * CELL, (door_h + CEIL_H) * 0.5, (float(cell.y) + 0.5) * CELL)
+	_put("wall", Vector3(CELL, CEIL_H - door_h, CELL), lpos)
 
 
 # Попадает ли след двери (по ширине вдоль стены) в клетку основного прохода.
@@ -2931,17 +3018,18 @@ func _office_opening_world_pos(area: Dictionary, center: Vector2, normal: Vector
 	return w + Vector3(normal.x * face_offset, 0.0, normal.y * face_offset)
 
 
-func _spawn_floor_model(scene: PackedScene, floor_pos: Vector3, yaw: float, scl: float,
-		node_name: String, opening_id: String, side: float, collide: bool, kind: String) -> Node3D:
-	var inst := scene.instantiate() as Node3D
-	if inst == null:
-		return null
-	_apply_door_frame_material(inst)
-	_place_floor_model_instance(inst, floor_pos, yaw, scl, node_name)
-	_mark_office_opening_node(inst, opening_id, kind, side)
-	if collide:
-		_add_model_collision(inst)
-	return inst
+func _office_opening_center_world_pos(area: Dictionary, center: Vector2) -> Vector3:
+	var cell: Vector2i = area["cell"]
+	return _local_world(cell.x, cell.y, center.x, center.y, 0.0)
+
+
+func _office_door_panel_world_pos(area: Dictionary, center: Vector2) -> Vector3:
+	return _office_opening_center_world_pos(area, center)
+
+
+func _office_frame_world_pos(area: Dictionary, center: Vector2, normal: Vector2) -> Vector3:
+	var p := _office_opening_world_pos(area, center, normal)
+	return p + Vector3(normal.x * OFFICE_FRAME_OUTSET, 0.0, normal.y * OFFICE_FRAME_OUTSET)
 
 
 func _spawn_door_frame_model(scene: PackedScene, floor_pos: Vector3, yaw: float, scl: float,
@@ -2952,6 +3040,34 @@ func _spawn_door_frame_model(scene: PackedScene, floor_pos: Vector3, yaw: float,
 	_keep_door_frame_only(inst)
 	_place_floor_model_instance(inst, floor_pos, yaw, scl, node_name)
 	_mark_office_opening_node(inst, opening_id, "frame", side)
+
+
+func _spawn_door_leaf_model(scene: PackedScene, floor_pos: Vector3, yaw: float, scl: float,
+		node_name: String, opening_id: String, side: float, collide: bool) -> void:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return
+	_keep_door_leaf_only(inst)
+	_place_floor_model_instance(inst, floor_pos, yaw, scl, node_name)
+	_mark_office_opening_node(inst, opening_id, "door", side)
+	if collide:
+		_add_model_collision(inst)
+
+
+func _spawn_office_opening_frames(scene: PackedScene, area: Dictionary, center: Vector2, normal: Vector2,
+		node_name: String, opening_id: String) -> void:
+	var yaw := atan2(normal.x, normal.y)
+	for side: float in [-1.0, 1.0]:
+		var p := _office_frame_world_pos(area, center, normal * side)
+		var side_yaw := yaw + (PI if side < 0.0 else 0.0)
+		_spawn_door_frame_model(scene, p, side_yaw, OFFICE_DOOR_SCALE, node_name, opening_id, side)
+
+
+func _spawn_office_door_panel(scene: PackedScene, area: Dictionary, center: Vector2, normal: Vector2,
+		node_name: String, opening_id: String, collide := true) -> void:
+	var yaw := atan2(normal.x, normal.y)
+	_spawn_door_leaf_model(scene, _office_door_panel_world_pos(area, center), yaw,
+		OFFICE_DOOR_SCALE, node_name, opening_id, 1.0, collide)
 
 
 func _keep_door_frame_only(root: Node3D) -> void:
@@ -2965,10 +3081,14 @@ func _keep_door_frame_only(root: Node3D) -> void:
 		node.free()
 
 
-func _apply_door_frame_material(root: Node3D) -> void:
+func _keep_door_leaf_only(root: Node3D) -> void:
 	for node in root.find_children("*", "MeshInstance3D", true, false):
-		if node.name == "Difference2" or node.name == "Difference22":
-			(node as MeshInstance3D).material_override = _mat_base
+		if node.name != "Difference2" and node.name != "Difference22":
+			continue
+		var parent := node.get_parent()
+		if parent != null:
+			parent.remove_child(node)
+		node.free()
 
 
 func _place_floor_model_instance(inst: Node3D, floor_pos: Vector3, yaw: float, scl: float, node_name: String) -> void:
@@ -3065,7 +3185,7 @@ func _opening_width() -> float:
 func _place_column(area: Dictionary, lx: int, lz: int, w: int, h: int) -> void:
 	var c: Vector2i = area["cell"]
 	var center := _local_world(c.x, c.y, float(lx) + float(w) * 0.5, float(lz) + float(h) * 0.5, CEIL_H * 0.5)
-	_put("wall", Vector3(float(w) * CELL, CEIL_H, float(h) * CELL), center)
+	_put("wall", Vector3(float(w) * CELL, CEIL_H, float(h) * CELL), center, true, true, true)
 	var base := _area_base_cell(area)
 	for dx in range(w):
 		for dz in range(h):
@@ -3253,10 +3373,12 @@ func _carve_noclip_return_door(cell: Vector2i, dir: Vector2i, along: int) -> voi
 		normal = Vector2(-1.0, 0.0)
 	else:
 		return
+	var opening_center := _office_opening_center_from_face(center, normal)
+	_add_office_opening_liner(area, opening_center, normal)
 	_noclip_return_doors.append({
-		"pos": _decor_door_pos(area, center, normal),
+		"area": area,
+		"center": opening_center,
 		"normal": normal,
-		"yaw": atan2(normal.x, normal.y) + PI,
 		"opening_id": "return_noclip:start",
 	})
 
@@ -3288,31 +3410,43 @@ func _add_thick_wall_lintel(cell: Vector2i, dir: Vector2i, along: int, door_h: f
 				(float(base.y + WALL_CELLS + along) + 0.5) * CELL))
 
 
-# Дверной проём без оформления: 1 клетка прохода + перемычка над дверью до
-# потолка. Рам/откосов/двери нет — просто аккуратная дыра дверного размера.
-func _carve_door(cell: Vector2i, dir: Vector2i, along: int, door_h: float) -> void:
-	if not _area_by_cell.has(cell):
-		return
-	_carve_passage(_area_by_cell[cell], dir, along, along + 1)
-	var base := _area_base(cell.x, cell.y)
-	if dir == Vector2i(1, 0):
-		var x0 := base.x + WALL_CELLS + ROOM_CELLS
-		var zc := base.y + WALL_CELLS + along
-		_put("wall", Vector3(WALL_CELLS * CELL, CEIL_H - door_h, CELL),
-			Vector3((float(x0) + WALL_CELLS * 0.5) * CELL, (door_h + CEIL_H) * 0.5, (float(zc) + 0.5) * CELL))
-	elif dir == Vector2i(0, 1):
-		var z0 := base.y + WALL_CELLS + ROOM_CELLS
-		var xc := base.x + WALL_CELLS + along
-		_put("wall", Vector3(CELL, CEIL_H - door_h, WALL_CELLS * CELL),
-			Vector3((float(xc) + 0.5) * CELL, (door_h + CEIL_H) * 0.5, (float(z0) + WALL_CELLS * 0.5) * CELL))
-
-
 # Узкий проём (1 клетка) с последующей перемычкой и рамами — «офисный проём».
 func _carve_office_opening(cell: Vector2i, dir: Vector2i, along: int) -> void:
 	if not _area_by_cell.has(cell):
 		return
-	_carve_passage(_area_by_cell[cell], dir, along, along + 1)
-	_office_door_openings.append({"cell": cell, "dir": dir, "along": along})
+	var area: Dictionary = _area_by_cell[cell]
+	_carve_passage(area, dir, along, along + 1)
+	var data := _thick_wall_office_opening(area, dir, along)
+	if data.is_empty():
+		return
+	_add_office_opening_liner(area, data["center"], data["normal"])
+	_office_door_openings.append({
+		"cell": cell,
+		"dir": dir,
+		"along": along,
+		"center": data["center"],
+		"normal": data["normal"],
+	})
+
+
+func _thick_wall_office_opening(_area: Dictionary, dir: Vector2i, along: int) -> Dictionary:
+	var wp := Vector2.ZERO
+	var nrm := Vector2.ZERO
+	if dir == Vector2i(1, 0):
+		wp = Vector2(float(ROOM_CELLS), float(along) + 0.5)
+		nrm = Vector2(-1.0, 0.0)
+	elif dir == Vector2i(0, 1):
+		wp = Vector2(float(along) + 0.5, float(ROOM_CELLS))
+		nrm = Vector2(0.0, -1.0)
+	elif dir == Vector2i(-1, 0):
+		wp = Vector2(0.0, float(along) + 0.5)
+		nrm = Vector2(1.0, 0.0)
+	elif dir == Vector2i(0, -1):
+		wp = Vector2(float(along) + 0.5, 0.0)
+		nrm = Vector2(0.0, 1.0)
+	else:
+		return {}
+	return {"center": _office_opening_center_from_face(wp, nrm), "normal": nrm}
 
 
 # along0/along1 — диапазон прохода в панелях вдоль общей стены (произвольный).
@@ -3362,7 +3496,7 @@ func _current_area_name() -> String:
 # Перегородка-линия с проёмами. axis "z": линия вдоль Z при X=line.
 # axis "x": линия вдоль X при Z=line. line/from/to/center/width — в панелях.
 func _place_partition_line(ax: int, az: int, axis: String, line: float,
-		from_l: float, to_l: float, thick: float, openings: Array) -> void:
+		from_l: float, to_l: float, thick: float, openings: Array, add_base := true) -> void:
 	var ops: Array = openings.duplicate()
 	ops.sort_custom(func(a, b): return float(a["center"]) < float(b["center"]))
 	var cursor := from_l
@@ -3370,15 +3504,15 @@ func _place_partition_line(ax: int, az: int, axis: String, line: float,
 		var c: float = op["center"]
 		var w: float = op["width"]
 		var h: float = op["height"]
-		_partition_segment(ax, az, axis, line, cursor, c - w * 0.5, thick, 0.0, CEIL_H)
-		_partition_segment(ax, az, axis, line, c - w * 0.5, c + w * 0.5, thick, h, CEIL_H - h)
+		_partition_segment(ax, az, axis, line, cursor, c - w * 0.5, thick, 0.0, CEIL_H, add_base)
+		_partition_segment(ax, az, axis, line, c - w * 0.5, c + w * 0.5, thick, h, CEIL_H - h, add_base)
 		cursor = c + w * 0.5
-	_partition_segment(ax, az, axis, line, cursor, to_l, thick, 0.0, CEIL_H)
+	_partition_segment(ax, az, axis, line, cursor, to_l, thick, 0.0, CEIL_H, add_base)
 	_stamp_partition_occupancy(ax, az, axis, line, from_l, to_l, ops)
 
 
 func _partition_segment(ax: int, az: int, axis: String, line: float,
-		a: float, b: float, thick: float, bottom: float, height: float) -> void:
+		a: float, b: float, thick: float, bottom: float, height: float, add_base := true) -> void:
 	var length := b - a
 	if length <= 0.01 or height <= 0.01:
 		return
@@ -3391,7 +3525,7 @@ func _partition_segment(ax: int, az: int, axis: String, line: float,
 	else:
 		size = Vector3(length * CELL, height, thick * CELL)
 		pos = _local_world(ax, az, mid, line, bottom + height * 0.5)
-	_put("wall", size, pos)
+	_put("wall", size, pos, true, add_base)
 
 
 func _stamp_partition_occupancy(ax: int, az: int, axis: String, line: float,
@@ -3705,8 +3839,7 @@ func _add_lights() -> void:
 # Свет нарисованного шаблона: панели по клеткам L (те же параметры).
 func _add_drawn_lights() -> void:
 	for pos: Vector3 in _drawn_lights:
-		_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-		_spawn_lamp_source(pos)
+		_try_add_single_ceiling_light(pos)
 
 
 # Зал-провал тёмный (K_PIT гасит сеточный свет) — вешаем 4 угловых светильника
@@ -3727,11 +3860,38 @@ func _add_grid_lights(area: Dictionary) -> void:
 	for lx in range(first, last + 1, LIGHT_STEP):
 		for lz in range(first, last + 1, LIGHT_STEP):
 			var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
-			if _light_blocked(cell):
+			if not _single_light_clear(cell):
 				continue
 			var pos := _local_world(c.x, c.y, float(lx) + 0.5, float(lz) + 0.5, CEIL_H + 0.02)
-			_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-			_spawn_lamp_source(pos)
+			_add_single_ceiling_light_unchecked(pos)
+
+
+func _single_light_clear(cell: Vector2i) -> bool:
+	if _light_blocked(cell):
+		return false
+	return _single_light_spacing_clear(cell)
+
+
+func _single_light_spacing_clear(cell: Vector2i) -> bool:
+	for dx in range(-SINGLE_LIGHT_CLEAR_CELLS, SINGLE_LIGHT_CLEAR_CELLS + 1):
+		for dz in range(-SINGLE_LIGHT_CLEAR_CELLS, SINGLE_LIGHT_CLEAR_CELLS + 1):
+			if _ceiling_light_cells.has(cell + Vector2i(dx, dz)):
+				return false
+	return true
+
+
+func _try_add_single_ceiling_light(pos: Vector3, tight := false, use_grid_clear := true) -> bool:
+	var cell := Vector2i(int(floor(pos.x / CELL)), int(floor(pos.z / CELL)))
+	var clear := _single_light_clear(cell) if use_grid_clear else _single_light_spacing_clear(cell)
+	if not clear:
+		return false
+	_add_single_ceiling_light_unchecked(pos, tight)
+	return true
+
+
+func _add_single_ceiling_light_unchecked(pos: Vector3, tight := false) -> void:
+	_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
+	_spawn_lamp_source(pos, tight)
 
 
 # `_light_blocked` метит блок на ВСЮ длину линии перегородки (весь стык
@@ -3740,8 +3900,8 @@ func _add_grid_lights(area: Dictionary) -> void:
 # стена, но в лабиринте линия чаще ОТКРЫТА, чем сплошная, и такой блок гасит
 # буквально все клетки без исключения (проверено: линии стоят через ~2-3
 # панели, требование 3×3-чистоты съедает весь диапазон). Поэтому здесь своя
-# проверка — `_maze_light_clear`: смотрит впрямую на occupancy (K_PARTITION),
-# т.е. реально ли тут стена, а не "эта клетка когда-то лежала на чьей-то линии".
+# проверка — `_maze_light_clear`: смотрит впрямую на occupancy (K_PARTITION)
+# и на уже поставленные панели, а не на "эта клетка когда-то лежала на линии".
 #
 # Один светильник на логическую ячейку (2.5 панели — по сути маленькая
 # комната/пролёт коридора, не мелкая плитка, так что «один на ячейку» уместен).
@@ -3752,10 +3912,11 @@ func _add_grid_lights(area: Dictionary) -> void:
 func _maze_light_clear(cell: Vector2i) -> bool:
 	for dx in [-1, 0, 1]:
 		for dz in [-1, 0, 1]:
-			var t: int = _grid.get(cell + Vector2i(dx, dz), K_SOLID)
+			var c := cell + Vector2i(dx, dz)
+			var t: int = _grid.get(c, K_SOLID)
 			if t == K_PARTITION or t == K_WALL or t == K_COLUMN:
 				return false
-	return true
+	return _single_light_spacing_clear(cell)
 
 
 func _add_maze_wilson_lights(area: Dictionary) -> void:
@@ -3771,9 +3932,7 @@ func _add_maze_wilson_lights(area: Dictionary) -> void:
 			var hi_x := mini(int(ceil(float(i + 1) * MAZE_CELL)) - 1, last)
 			var lo_z := maxi(int(floor(float(j) * MAZE_CELL)) + 1, margin)
 			var hi_z := mini(int(ceil(float(j + 1) * MAZE_CELL)) - 1, last)
-			var best_lx := -1
-			var best_lz := -1
-			var best_d := INF
+			var candidates: Array = []
 			for lx in range(lo_x, hi_x + 1):
 				for lz in range(lo_z, hi_z + 1):
 					var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
@@ -3781,16 +3940,8 @@ func _add_maze_wilson_lights(area: Dictionary) -> void:
 						continue
 					var dx := float(lx) + 0.5 - cx
 					var dz := float(lz) + 0.5 - cz
-					var d := dx * dx + dz * dz
-					if d < best_d:
-						best_d = d
-						best_lx = lx
-						best_lz = lz
-			if best_lx < 0:
-				continue
-			var pos := _local_world(c.x, c.y, float(best_lx) + 0.5, float(best_lz) + 0.5, CEIL_H + 0.02)
-			_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-			_spawn_lamp_source(pos)
+					candidates.append({"lx": lx, "lz": lz, "d": dx * dx + dz * dz})
+			_add_best_maze_single_light(c, candidates)
 
 
 # Как _add_maze_wilson_lights, но НЕ по лампе на каждую логическую клетку —
@@ -3816,9 +3967,7 @@ func _add_maze_wilson_chaos_lights(area: Dictionary) -> void:
 			var hi_x := mini(int(ceil(float(i + 1) * MAZE_CELL)) - 1, last)
 			var lo_z := maxi(int(floor(float(j) * MAZE_CELL)) + 1, margin)
 			var hi_z := mini(int(ceil(float(j + 1) * MAZE_CELL)) - 1, last)
-			var best_lx := -1
-			var best_lz := -1
-			var best_d := INF
+			var candidates: Array = []
 			for lx in range(lo_x, hi_x + 1):
 				for lz in range(lo_z, hi_z + 1):
 					var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
@@ -3826,16 +3975,18 @@ func _add_maze_wilson_chaos_lights(area: Dictionary) -> void:
 						continue
 					var dx := float(lx) + 0.5 - cx
 					var dz := float(lz) + 0.5 - cz
-					var d := dx * dx + dz * dz
-					if d < best_d:
-						best_d = d
-						best_lx = lx
-						best_lz = lz
-			if best_lx < 0:
-				continue
-			var pos := _local_world(c.x, c.y, float(best_lx) + 0.5, float(best_lz) + 0.5, CEIL_H + 0.02)
-			_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-			_spawn_lamp_source(pos)
+					candidates.append({"lx": lx, "lz": lz, "d": dx * dx + dz * dz})
+			_add_best_maze_single_light(c, candidates)
+
+
+func _add_best_maze_single_light(area_cell: Vector2i, candidates: Array) -> void:
+	if candidates.is_empty():
+		return
+	candidates.sort_custom(func(a, b): return float(a["d"]) < float(b["d"]))
+	for candidate: Dictionary in candidates:
+		var pos := _local_world(area_cell.x, area_cell.y, float(candidate["lx"]) + 0.5, float(candidate["lz"]) + 0.5, CEIL_H + 0.02)
+		if _try_add_single_ceiling_light(pos, false, false):
+			return
 
 
 # Свет «room3»: внешнее кольцо — только периметр (margin/step сетки), внутри
@@ -3858,14 +4009,12 @@ func _add_room3_lights(area: Dictionary) -> void:
 			if (lx == first or lx == last) and (lz == near_lo or lz == near_hi):
 				continue   # без предугловых ламп на зап/вост крае
 			var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
-			if _light_blocked(cell):
+			if not _single_light_clear(cell):
 				continue
 			var pos := _local_world(c.x, c.y, float(lx) + 0.5, float(lz) + 0.5, CEIL_H + 0.02)
-			_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-			_spawn_lamp_source(pos)
+			_add_single_ceiling_light_unchecked(pos)
 	var center := _local_world(c.x, c.y, 7.5, 7.5, CEIL_H + 0.02)
-	_emit_ceiling_light(center, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-	_spawn_lamp_source(center)
+	_try_add_single_ceiling_light(center)
 
 
 # Стыковые полосы 4 залов хаба (carved-швы, x≈37.5 и z≈37.5) — там сетки нет,
@@ -3889,6 +4038,7 @@ func _spawn_seam_lamp(gx: float, gz: float) -> void:
 	var pos := Vector3(gx * CELL, CEIL_H + 0.02, gz * CELL)
 	_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
 	_spawn_lamp_source(pos, true)
+	_set_last_lamp_bounce_shadow_allowed(false)
 
 
 # Большой зал: сплошная сетка ламп, но ТУГОЙ свет (узкий радиус, крутое
@@ -3937,8 +4087,7 @@ func _add_lit_hall_lights(area: Dictionary) -> void:
 	for p: Vector2 in [Vector2(3.5, 1.5), Vector2(11.5, 1.5), Vector2(3.5, 13.5), Vector2(11.5, 13.5),
 			Vector2(1.5, 3.5), Vector2(13.5, 3.5), Vector2(1.5, 11.5), Vector2(13.5, 11.5)]:
 		var pos := _local_world(c.x, c.y, p.x, p.y, CEIL_H + 0.02)
-		_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-		_spawn_lamp_source(pos, true)   # зал с подсветкой — тугой свет
+		_try_add_single_ceiling_light(pos, true)   # зал с подсветкой — тугой свет
 	var center := _local_world(c.x, c.y, 7.5, 7.5, CEIL_H)
 	_add_round_ceiling_lamp(center)
 	_spawn_lamp_source(_local_world(c.x, c.y, 7.5, 7.5, CEIL_H + 0.02), true)
@@ -3983,6 +4132,7 @@ func _round_lamp_material() -> StandardMaterial3D:
 
 
 func _spawn_lamp_source(pos: Vector3, tight := false) -> void:
+	var area_size := _take_next_area_light_size()
 	var l := OmniLight3D.new()
 	# tight (большие залы): узкий радиус + крутое затухание → чёткие лужи, объём.
 	# soft (редкие пространства): широкий + плоский + нормализация → мягкий градиент.
@@ -4002,13 +4152,247 @@ func _spawn_lamp_source(pos: Vector3, tight := false) -> void:
 	# никогда не гасил лампы в комнате, где сейчас стоит игрок.
 	var cell := Vector2i(int(floor(pos.x / CELL)), int(floor(pos.z / CELL)))
 	l.set_meta("area_id", _area_id.get(cell, ""))
+	_ceiling_light_cells[cell] = true
 	_apply_runtime_light_rules(l)
 	add_child(l)
 	_lamps.append(l)
+	l.visible = not _area_lights_active()
+	var al := _spawn_area_panel_light(pos, area_size, tight, String(l.get_meta("area_id", "")))
+	if al != null:
+		_area_lamps.append(al)
+	var bl := _spawn_area_bounce_light(pos, String(l.get_meta("area_id", "")))
+	if bl != null:
+		_area_bounce_lamps.append(bl)
+	_apply_area_light_mode()
 
 
-func _apply_runtime_light_rules(light: Light3D) -> void:
+func _apply_runtime_light_rules(_light: Light3D) -> void:
 	pass
+
+
+func _take_next_area_light_size() -> Vector2:
+	var s := _next_area_light_size
+	_next_area_light_size = Vector2(CELL - 0.05, CELL - 0.05)
+	return s
+
+
+func _area_lights_active() -> bool:
+	return _area_light_mode and _area_lights_supported and not (_area_lamps.is_empty() and _area_bounce_lamps.is_empty() and _area_aux_lights.is_empty())
+
+
+func _area_light_mode_label() -> String:
+	if not _area_lights_supported:
+		return "N/A"
+	return "ON" if _area_light_mode else "OLD"
+
+
+func _area_bounce_shadows_enabled() -> bool:
+	return AREA_LIGHT_BOUNCE_SHADOWS and not (OS.has_feature("android") and not AREA_LIGHT_BOUNCE_SHADOWS_ON_ANDROID)
+
+
+func _make_render_diagnostic() -> String:
+	var platform := OS.get_name()
+	var method := _rendering_server_string(&"get_current_rendering_method")
+	var adapter := _rendering_server_string(&"get_video_adapter_name")
+	var api := _rendering_server_string(&"get_video_adapter_api_version")
+	var project_method := str(ProjectSettings.get_setting("rendering/renderer/rendering_method", "default"))
+	var mobile_method := str(ProjectSettings.get_setting("rendering/renderer/rendering_method.mobile", "default"))
+	var area_reason := "OK"
+	if AREA_LIGHT_DISABLE_ON_ANDROID and OS.has_feature("android"):
+		area_reason = "off:android"
+	elif not ClassDB.class_exists("AreaLight3D"):
+		area_reason = "missing"
+	return "%s render:%s proj:%s mob:%s\nGPU:%s API:%s Area:%s" % [
+		platform, method, project_method, mobile_method, _short_diag(adapter, 32), api, area_reason
+	]
+
+
+func _rendering_server_string(method_name: StringName) -> String:
+	if not RenderingServer.has_method(method_name):
+		return "?"
+	var value = RenderingServer.call(method_name)
+	var text := str(value)
+	return "?" if text.is_empty() else text
+
+
+func _short_diag(text: String, max_len: int) -> String:
+	if text.length() <= max_len:
+		return text
+	return text.substr(0, max_len - 1) + "."
+
+
+func _new_area_light() -> Light3D:
+	if not _area_lights_supported:
+		return null
+	var obj: Object = ClassDB.instantiate("AreaLight3D")
+	return obj as Light3D
+
+
+func _set_light_property_if_exists(light: Light3D, property_name: StringName, value) -> void:
+	for prop: Dictionary in light.get_property_list():
+		if prop.get("name", &"") == property_name:
+			light.set(property_name, value)
+			return
+
+
+func _spawn_area_panel_light(pos: Vector3, area_size: Vector2, tight: bool, area_id: String) -> Light3D:
+	var l := _new_area_light()
+	if l == null:
+		return null
+	l.name = "area_ceiling_light"
+	l.position = pos + Vector3(0.0, AREA_LIGHT_PANEL_Y_OFFSET, 0.0)
+	l.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+	l.light_color = Color(0.92, 0.88, 0.62)
+	l.shadow_enabled = AREA_LIGHT_SHADOWS
+	l.set("area_size", area_size)
+	l.set("area_normalize_energy", true)
+	if LAMP_FADE_ENABLED:
+		l.distance_fade_enabled = true
+		l.distance_fade_begin = LAMP_FADE_BEGIN
+		l.distance_fade_length = LAMP_FADE_LENGTH
+	l.set_meta("tight", tight)
+	l.set_meta("area_id", area_id)
+	l.set_meta("skip_level_d_source_drop", true)
+	l.set_meta("area_panel_range_test", true)
+	_apply_area_lamp_runtime(l, LAMP_RANGE_OLD if tight else LAMP_RANGE, LAMP_ENERGY, LAMP_ATTEN_OLD if tight else LAMP_ATTEN)
+	_apply_runtime_light_rules(l)
+	l.visible = _area_lights_active()
+	add_child(l)
+	return l
+
+
+func _spawn_area_bounce_light(pos: Vector3, area_id: String) -> OmniLight3D:
+	if not _area_lights_supported:
+		return null
+	var l := OmniLight3D.new()
+	l.name = "area_ceiling_bounce"
+	l.omni_range = AREA_LIGHT_BOUNCE_RANGE
+	l.omni_attenuation = AREA_LIGHT_BOUNCE_ATTEN
+	l.light_energy = AREA_LIGHT_BOUNCE_ENERGY
+	l.light_color = Color(0.92, 0.88, 0.62)
+	l.shadow_enabled = false
+	_set_light_property_if_exists(l, &"shadow_opacity", 0.0)
+	_set_light_property_if_exists(l, &"shadow_blur", AREA_LIGHT_BOUNCE_SHADOW_BLUR)
+	_set_light_property_if_exists(l, &"shadow_bias", AREA_LIGHT_BOUNCE_SHADOW_BIAS)
+	_set_light_property_if_exists(l, &"shadow_normal_bias", AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS)
+	l.set("light_cull_mask", AREA_LIGHT_WORLD_LAYER | AREA_LIGHT_CEILING_FILL_LAYER)
+	l.position = pos + Vector3(0.0, AREA_LIGHT_BOUNCE_Y_OFFSET, 0.0)
+	l.set_meta("area_id", area_id)
+	l.set_meta("area_bounce", true)
+	l.set_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)
+	l.set_meta("far_bounce", false)
+	l.set_meta("skip_level_d_source_drop", true)
+	_apply_runtime_light_rules(l)
+	l.visible = false
+	add_child(l)
+	return l
+
+
+func _spawn_area_plate_light(pos: Vector3, area_size: Vector2, yaw: float, color: Color, energy: float, range_v: float, atten_v: float, skip_drop := false) -> Light3D:
+	var l := _new_area_light()
+	if l == null:
+		return null
+	l.name = "area_plate_light"
+	var forward := Vector3(0.0, 0.0, 1.0).rotated(Vector3.UP, yaw)
+	l.position = pos + forward * AREA_LIGHT_FACE_EPS
+	l.rotation.y = yaw + PI
+	l.light_color = color
+	l.shadow_enabled = AREA_LIGHT_SHADOWS
+	l.set("area_size", area_size)
+	l.set("area_normalize_energy", true)
+	l.set_meta("area_panel_range_test", false)
+	_apply_area_lamp_runtime(l, range_v, energy, atten_v)
+	if skip_drop:
+		l.set_meta("skip_level_d_source_drop", true)
+	_apply_runtime_light_rules(l)
+	l.visible = _area_lights_active()
+	add_child(l)
+	return l
+
+
+func _apply_area_lamp_runtime(l: Light3D, range_v: float, energy_v: float, atten_v: float) -> void:
+	l.set_meta("base_area_range", range_v * AREA_LIGHT_RANGE_MUL)
+	_apply_area_panel_range(l)
+	l.set("area_attenuation", atten_v)
+	l.light_energy = energy_v * AREA_LIGHT_ENERGY_MUL
+
+
+func _apply_area_panel_range(l: Light3D) -> void:
+	if l == null or not l.has_meta("base_area_range"):
+		return
+	var range_v := float(l.get_meta("base_area_range"))
+	var test_controlled := bool(l.get_meta("area_panel_range_test", false))
+	l.set("area_range", range_v if (_area_panel_range_mode or not test_controlled) else AREA_LIGHT_RANGE_TEST_OFF)
+
+
+func _apply_area_panel_range_mode() -> void:
+	for l: Light3D in _area_lamps:
+		_apply_area_panel_range(l)
+	for l: Light3D in _area_aux_lights:
+		_apply_area_panel_range(l)
+
+
+func _sync_area_lamp_meta(index: int) -> void:
+	if index < 0 or index >= _lamps.size() or index >= _area_lamps.size():
+		return
+	var src := _lamps[index]
+	var dst := _area_lamps[index]
+	dst.set_meta("tight", bool(src.get_meta("tight", false)))
+	dst.set_meta("area_id", String(src.get_meta("area_id", "")))
+	dst.set_meta("norm_e", float(src.get_meta("norm_e", LAMP_ENERGY)))
+	if index < _area_bounce_lamps.size():
+		var bounce := _area_bounce_lamps[index]
+		bounce.set_meta("area_id", String(src.get_meta("area_id", "")))
+		bounce.set_meta("bounce_shadow_allowed", bool(src.get_meta("bounce_shadow_allowed", true)))
+
+
+func _set_last_lamp_area_id(area_id: String) -> void:
+	if _lamps.is_empty():
+		return
+	var idx := _lamps.size() - 1
+	_lamps[idx].set_meta("area_id", area_id)
+	_sync_area_lamp_meta(idx)
+
+
+func _set_last_lamp_bounce_shadow_allowed(allowed: bool) -> void:
+	if _lamps.is_empty():
+		return
+	var idx := _lamps.size() - 1
+	_lamps[idx].set_meta("bounce_shadow_allowed", allowed)
+	if idx < _area_bounce_lamps.size():
+		_area_bounce_lamps[idx].set_meta("bounce_shadow_allowed", allowed)
+
+
+func _apply_area_bounce_runtime(l: Light3D) -> void:
+	if not bool(l.get_meta("area_bounce", false)):
+		return
+	var omni := l as OmniLight3D
+	if omni == null:
+		return
+	var far := bool(omni.get_meta("far_bounce", false))
+	var range_mul := AREA_LIGHT_FAR_BOUNCE_RANGE_MUL if far else 1.0
+	var energy_mul := AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL if far else 1.0
+	omni.omni_range = float(omni.get_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)) * range_mul if _area_bounce_mode else 0.0
+	omni.light_energy = AREA_LIGHT_BOUNCE_ENERGY * energy_mul
+	if not _area_bounce_mode:
+		omni.shadow_enabled = false
+		omni.set(&"shadow_opacity", 0.0)
+
+
+func _apply_area_light_mode() -> void:
+	var area_on := _area_lights_active()
+	if _lamp_glow_mi != null:
+		_lamp_glow_mi.visible = area_on
+	for l: Light3D in _legacy_aux_lights:
+		if l != null:
+			l.visible = (not area_on) or bool(l.get_meta("keep_in_area_light_mode", false))
+	for l: Light3D in _area_aux_lights:
+		if l != null:
+			var is_bounce := bool(l.get_meta("area_bounce", false))
+			l.visible = area_on
+			if is_bounce:
+				_apply_area_bounce_runtime(l)
+	_update_light_pool()
 
 
 # Яркость каждой лампы по числу соседей в радиусе: плотные залы тусклее, редкие
@@ -4021,6 +4405,7 @@ func _normalize_lamp_energy() -> void:
 	for i in range(_lamps.size()):
 		if bool(_lamps[i].get_meta("tight", false)):
 			_lamps[i].set_meta("norm_e", LAMP_ENERGY)   # тугие — без нормализации
+			_sync_area_lamp_meta(i)
 			continue
 		var n := 0
 		for j in range(pts.size()):
@@ -4029,39 +4414,12 @@ func _normalize_lamp_energy() -> void:
 		var e := LAMP_ENERGY / (1.0 + LAMP_DENSITY_K * float(n))
 		_lamps[i].set_meta("norm_e", e)
 		_lamps[i].light_energy = e
+		_sync_area_lamp_meta(i)
 
 
-# Живая подстройка ламп ([ ] радиус, - = энергия). Множим текущие значения всех
-# ламп — относительные различия (tight/soft, нормализация плотности) сохраняются.
-# Крутим на глаз до нужного покрытия пола, читаем R×/E× в HUD и переносим в базу.
-func _tune_lamps(range_factor: float, energy_factor: float, atten_factor := 1.0) -> void:
-	_range_mul *= range_factor
-	_energy_mul *= energy_factor
-	_atten_mul *= atten_factor
-	for l: OmniLight3D in _lamps:
-		l.omni_range *= range_factor
-		l.light_energy *= energy_factor
-		l.omni_attenuation *= atten_factor
-
-
-# Отдельный радиус только тугих ламп (зал/швы). Позволяет поднять пол зала, не
-# трогая глобальный R× (контраст в проходах). ВНИМАНИЕ: радиус = цена fps, и зал
-# — самое дорогое место, так что следи за кадром.
-func _tune_tight_range(f: float) -> void:
-	_tight_range_mul *= f
-	for l: OmniLight3D in _lamps:
-		if bool(l.get_meta("tight", false)):
-			l.omni_range *= f
-
-
-# Переключатель света (кнопка G): новый (шире радиус, ниже ambient, нормализация
 # Переключатель света (кнопка G): новый (шире радиус, ниже ambient, нормализация
 # по плотности) ↔ старый (узкий радиус, равная яркость).
 func _apply_light_mode() -> void:
-	_range_mul = 1.0
-	_energy_mul = 1.0
-	_atten_mul = 1.0
-	_tight_range_mul = 1.0
 	if _env != null:
 		_env.ambient_light_energy = AMBIENT_ENERGY if _light_new else AMBIENT_ENERGY_OLD
 	for l: OmniLight3D in _lamps:
@@ -4080,6 +4438,14 @@ func _apply_light_mode() -> void:
 			l.omni_range = LAMP_RANGE
 			l.omni_attenuation = LAMP_ATTEN
 			l.light_energy = float(l.get_meta("norm_e", LAMP_ENERGY))
+	for l: Light3D in _area_lamps:
+		if not _light_new:
+			_apply_area_lamp_runtime(l, LAMP_RANGE_OLD, LAMP_ENERGY, LAMP_ATTEN_OLD)
+		elif bool(l.get_meta("tight", false)):
+			_apply_area_lamp_runtime(l, LAMP_RANGE_OLD, LAMP_ENERGY, LAMP_ATTEN_OLD)
+		else:
+			_apply_area_lamp_runtime(l, LAMP_RANGE, float(l.get_meta("norm_e", LAMP_ENERGY)), LAMP_ATTEN)
+	_apply_area_light_mode()
 
 
 # Клавиша 2: опциональный fps-оптимизированный свет (малый радиус). ON — применяем
@@ -4098,10 +4464,12 @@ func _apply_tuned_mode() -> void:
 		l.omni_range = TUNED_RANGE_TIGHT if tight else TUNED_RANGE
 		l.omni_attenuation = TUNED_ATTEN_TIGHT if tight else TUNED_ATTEN
 		l.light_energy = float(l.get_meta("norm_e", LAMP_ENERGY)) * TUNED_ENERGY_MUL
-	_range_mul = 1.0
-	_energy_mul = 1.0
-	_atten_mul = 1.0
-	_tight_range_mul = 1.0
+	for l: Light3D in _area_lamps:
+		var tight := bool(l.get_meta("tight", false))
+		_apply_area_lamp_runtime(l, TUNED_RANGE_TIGHT if tight else TUNED_RANGE,
+			float(l.get_meta("norm_e", LAMP_ENERGY)) * TUNED_ENERGY_MUL,
+			TUNED_ATTEN_TIGHT if tight else TUNED_ATTEN)
+	_apply_area_light_mode()
 
 
 # Клавиша 0: зафиксированный пресет света (итог настройки). ON — применяем P0-значения
@@ -4120,10 +4488,12 @@ func _apply_preset0() -> void:
 		l.omni_range = P0_RANGE_TIGHT if tight else P0_RANGE
 		l.omni_attenuation = P0_ATTEN_TIGHT if tight else P0_ATTEN
 		l.light_energy = float(l.get_meta("norm_e", LAMP_ENERGY)) * P0_ENERGY_MUL
-	_range_mul = 1.0
-	_energy_mul = 1.0
-	_atten_mul = 1.0
-	_tight_range_mul = 1.0
+	for l: Light3D in _area_lamps:
+		var tight := bool(l.get_meta("tight", false))
+		_apply_area_lamp_runtime(l, P0_RANGE_TIGHT if tight else P0_RANGE,
+			float(l.get_meta("norm_e", LAMP_ENERGY)) * P0_ENERGY_MUL,
+			P0_ATTEN_TIGHT if tight else P0_ATTEN)
+	_apply_area_light_mode()
 
 
 # Подсказка финала: отдельная мерцающая панель перед дверью-ноклипом.
@@ -4135,11 +4505,13 @@ func _add_correct_path_flicker() -> void:
 
 
 func _spawn_flicker_panel(pos: Vector3) -> void:
+	var panel_size := Vector2(CELL - 0.05, CELL - 0.05)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(1.0, 1.0, 1.0)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.emission_enabled = true
 	mat.emission = Color(0.90, 0.87, 0.76)
-	mat.emission_energy_multiplier = 1.0
+	mat.emission_energy_multiplier = 2.2
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
 	bm.size = Vector3(CELL - 0.05, 0.06, CELL - 0.05)
@@ -4148,22 +4520,55 @@ func _spawn_flicker_panel(pos: Vector3) -> void:
 	mi.position = pos
 	add_child(mi)
 	var l := OmniLight3D.new()
-	l.omni_range = 7.0
+	l.omni_range = LAMP_RANGE
+	l.omni_attenuation = LAMP_ATTEN
 	l.light_color = Color(0.92, 0.88, 0.62)
 	l.shadow_enabled = false
-	l.light_energy = 0.42
+	l.light_energy = LAMP_ENERGY
 	l.position = pos + Vector3(0, -0.32, 0)
 	_apply_runtime_light_rules(l)
 	add_child(l)
-	_flicker.append({"mat": mat, "light": l, "base_e": 0.42, "base_em": 1.0, "phase": randf() * TAU})
+	_legacy_aux_lights.append(l)
+	var al := _spawn_area_panel_light(pos, panel_size, false, "")
+	if al != null:
+		_apply_area_lamp_runtime(al, LAMP_RANGE, LAMP_ENERGY, LAMP_ATTEN)
+		_area_aux_lights.append(al)
+	var bl := _spawn_area_bounce_light(pos, "")
+	if bl != null:
+		_area_aux_lights.append(bl)
+	_flicker.append({"mat": mat, "base_albedo": mat.albedo_color, "light": l, "area_light": al, "bounce_light": bl, "base_e": LAMP_ENERGY, "base_em": 2.2, "base_bounce_e": AREA_LIGHT_BOUNCE_ENERGY, "phase": randf() * TAU})
+	_apply_area_light_mode()
 
 
 # Видимая фикстура: модель из библиотеки или плоская эмиссив-панель.
 func _emit_ceiling_light(pos: Vector3, size: Vector3) -> void:
+	_next_area_light_size = Vector2(maxf(size.x, 0.05), maxf(size.z, 0.05))
+	if AREA_LIGHT_CEILING_GLOW_ENABLED:
+		_emit_ceiling_glow(pos, size)
 	if USE_LIGHT_MODEL:
 		_spawn_light_model(pos, size)
 	else:
 		_put("lamp", size, pos, false)
+
+
+func _emit_ceiling_glow(pos: Vector3, size: Vector3) -> void:
+	var r := maxf(size.x, size.z) * 0.5 + AREA_LIGHT_CEILING_GLOW_RADIUS_PAD
+	var hx := r
+	var hz := r
+	var y := AREA_LIGHT_CEILING_GLOW_Y
+	var st: SurfaceTool = _st["lamp_glow"]
+	st.set_uv(Vector2(0.0, 0.0))
+	st.add_vertex(Vector3(pos.x - hx, y, pos.z - hz))
+	st.set_uv(Vector2(1.0, 0.0))
+	st.add_vertex(Vector3(pos.x + hx, y, pos.z - hz))
+	st.set_uv(Vector2(1.0, 1.0))
+	st.add_vertex(Vector3(pos.x + hx, y, pos.z + hz))
+	st.set_uv(Vector2(0.0, 0.0))
+	st.add_vertex(Vector3(pos.x - hx, y, pos.z - hz))
+	st.set_uv(Vector2(1.0, 1.0))
+	st.add_vertex(Vector3(pos.x + hx, y, pos.z + hz))
+	st.set_uv(Vector2(0.0, 1.0))
+	st.add_vertex(Vector3(pos.x - hx, y, pos.z + hz))
 
 
 func _spawn_light_model(pos: Vector3, size: Vector3) -> void:
@@ -4222,7 +4627,7 @@ func _light_blocked(cell: Vector2i) -> bool:
 func _update_shadow_pool() -> void:
 	# Гистерезис: лампа-кастер остаётся включённой, пока другая не станет
 	# заметно ближе (margin). Убирает поппинг при ходьбе.
-	if SHADOW_CASTERS <= 0 or _player_ref == null or _lamps.is_empty():
+	if _area_lights_active() or SHADOW_CASTERS <= 0 or _player_ref == null or _lamps.is_empty():
 		return
 	var p := _player_ref.position
 	var ranked := _lamps.duplicate()
@@ -4244,12 +4649,19 @@ func _update_shadow_pool() -> void:
 			count += 1
 
 
-# Группа area-id, которая физически образует ОДНО открытое помещение с id
-# (сейчас это только 4 слитых зала хаба); для любой другой area — сама id.
+# Группа area-id, которая физически образует ОДНО открытое помещение с id.
 func _area_group(id: String) -> Array:
-	if HUB_GROUP_IDS.has(id):
-		return HUB_GROUP_IDS
-	return [id]
+	var area := _area_by_id(id)
+	if area.is_empty():
+		return [id]
+	if not area.has("area_group"):
+		return [id]
+	var group_id := String(area["area_group"])
+	var result := []
+	for candidate: Dictionary in _areas:
+		if candidate.has("area_group") and String(candidate["area_group"]) == group_id:
+			result.append(String(candidate["id"]))
+	return result if not result.is_empty() else [id]
 
 
 # area_id стоит только на клетках ИНТЕРЬЕРА области (_build_grid), не на
@@ -4315,31 +4727,131 @@ func _cells_connected(a: Vector2i, b: Vector2i) -> bool:
 # Всегда светят: область игрока (+ её группа слияния) и ЛЮБАЯ область,
 # реально соединённая с ней проходом (см. _cells_connected) — детерминированно,
 # без физических запросов за кадр, без риска отставания от быстрого игрока.
-# Всё остальное — темно.
+# В AreaLight-режиме второй графовый шаг получает только слабый короткий
+# bounce-fill без теней: дальняя глубина без возврата полной цены света.
 func _update_light_pool() -> void:
-	if _player_ref == null or _lamps.is_empty():
+	if _player_ref == null or (_lamps.is_empty() and _area_lamps.is_empty() and _area_bounce_lamps.is_empty()):
 		return
+	var area_on := _area_lights_active()
 	var p := _player_ref.position
 	var player_cell := Vector2i(int(floor(p.x / CELL)), int(floor(p.z / CELL)))
 	var player_ids := _player_area_ids(player_cell)
-	var safe_ids := {}
+	var max_hops := 1
+	if area_on and AREA_LIGHT_FAR_BOUNCE_ENABLED:
+		max_hops = maxi(1, AREA_LIGHT_FAR_BOUNCE_HOPS)
+	if OS.has_feature("android") and not ACTIVE_LIGHT_NEIGHBORS_ON_ANDROID:
+		max_hops = 0
+	var light_ids := _light_area_ids_by_depth(player_ids, max_hops)
+	var safe_ids: Dictionary = light_ids["full"]
+	var far_ids: Dictionary = light_ids["far"]
+	for l: OmniLight3D in _lamps:
+		l.visible = (not area_on) and safe_ids.has(String(l.get_meta("area_id", "")))
+	for l: Light3D in _area_lamps:
+		l.visible = area_on and safe_ids.has(String(l.get_meta("area_id", "")))
+	for l: OmniLight3D in _area_bounce_lamps:
+		var id := String(l.get_meta("area_id", ""))
+		var full_light := safe_ids.has(id)
+		var far_light := area_on and not full_light and far_ids.has(id)
+		l.visible = area_on and (full_light or far_light)
+		l.set_meta("far_bounce", far_light)
+		_apply_area_bounce_runtime(l)
+	_update_bounce_shadow_pool(p)
+
+
+func _light_area_ids_by_depth(player_ids: Array, max_hops: int) -> Dictionary:
+	var full_ids := {}
+	var far_ids := {}
+	var depth_by_cell := {}
+	var queue: Array[Vector2i] = []
 	for pid in player_ids:
-		for gid in _area_group(pid):
-			safe_ids[gid] = true
+		for gid in _area_group(String(pid)):
+			var area := _area_by_id(gid)
+			if area.is_empty():
+				continue
+			var cell: Vector2i = area["cell"]
+			if depth_by_cell.has(cell):
+				continue
+			depth_by_cell[cell] = 0
+			queue.append(cell)
 	var dirs: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
-	for pid in player_ids:
-		var area := _area_by_id(pid)
-		if area.is_empty():
+	var head := 0
+	while head < queue.size():
+		var cell := queue[head]
+		head += 1
+		var depth := int(depth_by_cell[cell])
+		if depth >= max_hops:
 			continue
-		var cell: Vector2i = area["cell"]
 		for d in dirs:
 			var nb := cell + d
 			if not _area_by_cell.has(nb) or not _cells_connected(cell, nb):
 				continue
-			for gid in _area_group(String(_area_by_cell[nb]["id"])):
-				safe_ids[gid] = true
-	for l: OmniLight3D in _lamps:
-		l.visible = safe_ids.has(String(l.get_meta("area_id", "")))
+			var next_depth := depth + 1
+			if depth_by_cell.has(nb) and int(depth_by_cell[nb]) <= next_depth:
+				continue
+			depth_by_cell[nb] = next_depth
+			queue.append(nb)
+	for cell_key in depth_by_cell.keys():
+		var cell: Vector2i = cell_key
+		var area: Dictionary = _area_by_cell[cell]
+		var depth := int(depth_by_cell[cell])
+		for gid in _area_group(String(area["id"])):
+			if depth <= 1:
+				full_ids[gid] = true
+			elif not full_ids.has(gid):
+				far_ids[gid] = true
+	for gid in full_ids.keys():
+		far_ids.erase(gid)
+	return {"full": full_ids, "far": far_ids}
+
+
+func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
+	var shadow_system_on := _area_bounce_shadows_enabled() and _area_bounce_mode and _area_lights_active() and AREA_LIGHT_BOUNCE_SHADOW_CASTERS > 0
+	if not shadow_system_on:
+		for l: OmniLight3D in _area_bounce_lamps:
+			_set_bounce_shadow(l, false, 0.0)
+		return
+	var candidates: Array = []
+	for l: OmniLight3D in _area_bounce_lamps:
+		if not l.visible or bool(l.get_meta("far_bounce", false)) or not bool(l.get_meta("bounce_shadow_allowed", true)):
+			_set_bounce_shadow(l, false, 0.0)
+			continue
+		var d := Vector2(l.position.x, l.position.z).distance_to(Vector2(player_pos.x, player_pos.z))
+		var weight := _bounce_shadow_weight(d)
+		if weight <= 0.001:
+			_set_bounce_shadow(l, false, 0.0)
+			continue
+		candidates.append({"lamp": l, "dist": d, "weight": weight})
+	candidates.sort_custom(func(a, b):
+		var aw := float(a["weight"])
+		var bw := float(b["weight"])
+		if not is_equal_approx(aw, bw):
+			return aw > bw
+		return float(a["dist"]) < float(b["dist"])
+	)
+	for i in range(candidates.size()):
+		var entry: Dictionary = candidates[i]
+		var l := entry["lamp"] as OmniLight3D
+		var active := i < AREA_LIGHT_BOUNCE_SHADOW_CASTERS
+		var opacity := AREA_LIGHT_BOUNCE_SHADOW_OPACITY * float(entry["weight"]) if active else 0.0
+		_set_bounce_shadow(l, active, opacity)
+
+
+func _bounce_shadow_weight(distance_m: float) -> float:
+	if distance_m <= AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST:
+		return 1.0
+	if distance_m >= AREA_LIGHT_BOUNCE_SHADOW_FADE_DIST:
+		return 0.0
+	var span := AREA_LIGHT_BOUNCE_SHADOW_FADE_DIST - AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST
+	if span <= 0.001:
+		return 0.0
+	var t := clampf((distance_m - AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST) / span, 0.0, 1.0)
+	var eased := t * t * (3.0 - 2.0 * t)
+	return 1.0 - eased
+
+
+func _set_bounce_shadow(l: OmniLight3D, enabled: bool, opacity: float) -> void:
+	l.shadow_enabled = enabled and opacity > 0.001
+	l.set(&"shadow_opacity", opacity if l.shadow_enabled else 0.0)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4351,14 +4863,14 @@ func _spawn_player() -> void:
 	var player := player_scene.instantiate() as CharacterBody3D
 	if preview_template != "":
 		# Превью: спавн в центре одиночного шаблона. Для office_corridor — у северного
-		# конца коридора, лицом на юг к торцевой декор-двери (точка входа).
+		# конца коридора, лицом на юг к торцевому пустому офисному проёму (точка входа).
 		var sx := 7.5
 		var sz := 7.5
 		var syaw := 0.0
 		if preview_template == "office_corridor":
-			sx = 13.0   # под торцевую дверь (сдвинута на 1/2 клетки)
+			sx = 13.0   # под торцевой проём (сдвинута на 1/2 клетки)
 			sz = 1.0    # северный конец (вход)
-			syaw = PI   # лицом на юг (+Z), к торцевой двери
+			syaw = PI   # лицом на юг (+Z), к торцевому проёму
 		elif preview_template in ["maze_wilson", "maze_wilson_x2_chaos"] and not _maze_start_doors.is_empty():
 			var wp: Vector2 = _maze_start_doors[0]["wp"]
 			var nrm: Vector2 = _maze_start_doors[0]["nrm"]
@@ -4437,10 +4949,27 @@ func _make_materials() -> void:
 	_mat_ceil.uv1_scale = Vector3(0.8, 0.8, 0.8)
 
 	_mat_lamp = StandardMaterial3D.new()
-	_mat_lamp.albedo_color = Color(1.0, 1.0, 1.0)
+	_mat_lamp.albedo_color = Color(1.0, 0.98, 0.86)
+	_mat_lamp.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_mat_lamp.emission_enabled = true
 	_mat_lamp.emission = Color(0.90, 0.87, 0.76)
-	_mat_lamp.emission_energy_multiplier = 1.0
+	_mat_lamp.emission_energy_multiplier = 2.2
+
+	_mat_lamp_glow = ShaderMaterial.new()
+	var glow_shader := Shader.new()
+	glow_shader.code = "shader_type spatial;\n" \
+		+ "render_mode unshaded, blend_add, depth_draw_never, cull_disabled;\n" \
+		+ "uniform vec3 glow_color : source_color = vec3(0.92, 0.88, 0.62);\n" \
+		+ "uniform float glow_strength = 0.32;\n" \
+		+ "void fragment() {\n" \
+		+ "\tfloat r = length((UV - vec2(0.5)) * 2.0);\n" \
+		+ "\tfloat a = smoothstep(1.0, 0.0, r);\n" \
+		+ "\ta = a * a * (3.0 - 2.0 * a);\n" \
+		+ "\tALBEDO = glow_color;\n" \
+		+ "\tEMISSION = glow_color * glow_strength;\n" \
+		+ "\tALPHA = a * glow_strength;\n" \
+		+ "}\n"
+	_mat_lamp_glow.shader = glow_shader
 
 	_mat_base = StandardMaterial3D.new()
 	_mat_base.albedo_color = Color(0.95, 0.92, 0.78)
@@ -4478,13 +5007,13 @@ func _setup_environment() -> void:
 	env.fog_light_color = FOG_COLOR
 	env.fog_density = FOG_DENSITY
 	env.fog_enabled = false
-	env.ssao_enabled = true
+	env.ssao_enabled = _post_on
 	env.ssao_radius = 0.6
 	env.ssao_intensity = 2.0
 	# Glow строго по HDR-порогу: bloom=0 (иначе подсвечивает и подпороговые
 	# панели). Лампы (эмиссия ~0.85) ниже порога 1.0 — не цветут; ореол получают
 	# только ярче-порога пиксели (сейчас знак не пробивает порог — glow для будущего).
-	env.glow_enabled = true
+	env.glow_enabled = _post_on
 	env.glow_intensity = 0.3
 	env.glow_bloom = 0.0
 	env.glow_hdr_threshold = 1.0
@@ -4496,7 +5025,7 @@ func _setup_environment() -> void:
 
 func _begin() -> void:
 	_st.clear()
-	for n in ["wall", "floor", "ceil", "lamp", "base", "pit"]:
+	for n in ["wall", "floor", "ceil", "lamp", "lamp_glow", "base", "pit"]:
 		var st := SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		_st[n] = st
@@ -4508,6 +5037,7 @@ func _commit() -> void:
 		"floor": _mat_floor,
 		"ceil": _mat_ceil,
 		"lamp": _mat_lamp,
+		"lamp_glow": _mat_lamp_glow,
 		"base": _mat_base,
 		"pit": _mat_pit,
 	}
@@ -4519,10 +5049,16 @@ func _commit() -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = mesh
 		mi.gi_mode = GeometryInstance3D.GI_MODE_STATIC
+		if n == "ceil":
+			mi.layers = mi.layers | AREA_LIGHT_CEILING_FILL_LAYER
+		if n == "lamp_glow":
+			_lamp_glow_mi = mi
+			mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+			mi.visible = false
 		add_child(mi)
 
 
-func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_base := true) -> void:
+func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_base := true, force_base := false) -> void:
 	_st[st_name].append_from(_get_box(size), 0, Transform3D(Basis(), pos))
 	if collide:
 		if not _shape_cache.has(size):
@@ -4533,9 +5069,13 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 		cs.shape = _shape_cache[size]
 		cs.position = pos
 		_body.add_child(cs)
-	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05:
+	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05 and (force_base or _wall_base_allowed(size)):
 		var bs := Vector3(size.x + 0.05, 0.12, size.z + 0.05)
 		_st["base"].append_from(_get_box(bs), 0, Transform3D(Basis(), Vector3(pos.x, 0.06, pos.z)))
+
+
+func _wall_base_allowed(size: Vector3) -> bool:
+	return minf(size.x, size.z) >= CELL * 0.5 - 0.001
 
 
 func _get_box(size: Vector3) -> BoxMesh:

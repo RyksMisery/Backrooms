@@ -6,7 +6,7 @@ extends "res://level_areas_c.gd"
 #
 #  Как строить покомнатно:
 #   • HUB   — фиксированная инфраструктура (4 ядра + 8 разветвителей). Не трогаем;
-#             id ядер (hall_nw/ne/sw/se) важны — по ним родитель группирует 2×2.
+#             4 ядра помечены общим area_group, потому читаются как одно помещение.
 #   • ROOMS — комнаты лабиринта. Добавить комнату = ОДНА СТРОКА [клетка, тип,
 #             поворот, имя]. Типы: empty, column_hall, lit_hall, office,
 #             maze_wilson, pit, room3, room_2, office_corridor, branch…
@@ -23,10 +23,10 @@ extends "res://level_areas_c.gd"
 
 # ── ХАБ (фикс.): [id, клетка, тип, поворот, имя]. id ядер трогать нельзя. ──
 const HUB := [
-	["hall_nw", Vector2i(1, 1), "column_hall", 0, "КОЛОННЫЙ ЗАЛ"],
-	["hall_ne", Vector2i(2, 1), "column_hall", 0, "КОЛОННЫЙ ЗАЛ"],
-	["hall_sw", Vector2i(1, 2), "column_hall", 0, "КОЛОННЫЙ ЗАЛ"],
-	["hall_se", Vector2i(2, 2), "column_hall", 0, "КОЛОННЫЙ ЗАЛ"],
+	["hall_nw", Vector2i(1, 1), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
+	["hall_ne", Vector2i(2, 1), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
+	["hall_sw", Vector2i(1, 2), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
+	["hall_se", Vector2i(2, 2), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
 	["cor_n_w", Vector2i(1, 0), "branch", 3, "РАЗВЕТВИТЕЛЬ СЗ"],
 	["cor_n_e", Vector2i(2, 0), "branch", 3, "РАЗВЕТВИТЕЛЬ СВ"],
 	["cor_s_w", Vector2i(1, 3), "branch", 1, "РАЗВЕТВИТЕЛЬ ЮЗ"],
@@ -60,6 +60,7 @@ const ROOMS := [
 	[Vector2i(3, -1), "empty",      0, "ОБЛАСТЬ"],
 	[MAZE_AFTER_PIT_CELL, "maze_wilson_x2", 0, "ЛАБИРИНТ ПОСЛЕ ПРОВАЛА",
 		{
+			"area_group": "maze_after_pit",
 			"maze_pair_cell": MAZE_AFTER_PIT_TAIL_CELL,
 			"maze_entrance_side": "W",
 			"maze_entrance_lo": PIT_EXIT_LANE_D.x,
@@ -70,7 +71,7 @@ const ROOMS := [
 			"maze_exit_hi": LEVEL_D_MAZE_OFFICE_LANE.y,
 			"maze_exit_real": true,
 		}],
-	[MAZE_AFTER_PIT_TAIL_CELL, "maze_wilson_x2_tail", 0, "ЛАБИРИНТ ПОСЛЕ ПРОВАЛА (ЮГ)"],
+	[MAZE_AFTER_PIT_TAIL_CELL, "maze_wilson_x2_tail", 0, "ЛАБИРИНТ ПОСЛЕ ПРОВАЛА (ЮГ)", {"area_group": "maze_after_pit"}],
 	[OFFICE_AFTER_MAZE_CELL, "office_corridor", 0, "ОФИС-КОРИДОР"],
 	[Vector2i(4, 3), "empty",       0, "ОБЛАСТЬ"],
 	[Vector2i(3, 4), "empty",       0, "ОБЛАСТЬ"],
@@ -118,10 +119,22 @@ const WINDOW_BRANCHES := [
 ]
 const WIN_LANE := 11         # лейн щели — в РУКАВЕ (9..14), вне центральной перегородки 6..8
 const SLIT_W := 0.25         # ширина сквозной щели, панели (капсула ⌀0.8 не влезает)
-const BASE_H := 0.12         # высота плинтуса-моста (плинтус не прерывается)
+const SLIT_BASE_H := 0.12    # добор плинтуса под боковыми простенками щели
+const SLIT_BASE_PAD := 0.05  # тот же выступ/запас, что у обычного плинтуса
 const LAMP_SOURCE_DROP_D := 0.625  # все runtime-источники света опускаем ниже базовой позиции
 const MAC_RENDER_SCALE := 0.65  # 3D render scale ТОЛЬКО на macOS (тяжёлый Retina-fill)
-const HALL_LIGHT_CHECKER := true  # в больших залах половина ламп — только свечение (без источника)
+const HALL_LIGHT_CHECKER := true  # в больших залах часть позиций полностью без светильника
+const CARDBOARD_BOX_PATH := "res://objects/cardboard_box_01_1k/cardboard_box_01_1k.gltf"
+const HALL_ARROW_TEXTURE_PATH := "res://decals/backrooms_arrow_black.png"
+const HALL_ARROW_SIZE := Vector2(2.0, 2.0)
+const HALL_ARROW_WALL_EPS := 0.01
+const ARROW_CARD_BOX_POS_D := Vector2(8.3, 0.55)
+const ARROW_CARD_BOX_SCALE := 1.75
+const ARROW_CARD_BOX_YAW := -0.12
+const ARROW_CARD_BOX_TURN_DEG := 90.0
+const ARROW_CARD_BOX_GAP_D := 0.125
+const ARROW_CARD_BOX_SECOND_YAW_DEG := 15.0
+const ARROW_CARD_BOX_TOP_YAW_DEG := 5.0
 
 
 func _ready() -> void:
@@ -142,7 +155,11 @@ func _ready() -> void:
 func _init_areas() -> void:
 	_areas = []
 	for r in HUB:
-		_areas.append({"id": String(r[0]), "cell": r[1], "type": String(r[2]), "rot": int(r[3]), "name": String(r[4])})
+		var area := {"id": String(r[0]), "cell": r[1], "type": String(r[2]), "rot": int(r[3]), "name": String(r[4])}
+		if r.size() > 5 and r[5] is Dictionary:
+			for key in (r[5] as Dictionary).keys():
+				area[key] = (r[5] as Dictionary)[key]
+		_areas.append(area)
 	for r in ROOMS:
 		var cell: Vector2i = r[0]
 		var area := {"id": "r_%d_%d" % [cell.x, cell.y], "cell": cell, "type": String(r[1]), "rot": int(r[2]), "name": String(r[3])}
@@ -208,7 +225,7 @@ func _carve_pit_gates() -> void:
 
 func _carve_after_pit_chain() -> void:
 	# Maze tail 4.1 → office_corridor 4.2: не центрированный линк, а заданный лейн.
-	# Он пробивает северный глухой конец офисного коридора, напротив торцевой двери.
+	# Он пробивает северный глухой конец офисного коридора, напротив торцевого офисного проёма.
 	if _area_by_cell.has(MAZE_AFTER_PIT_TAIL_CELL):
 		_carve_passage(_area_by_cell[MAZE_AFTER_PIT_TAIL_CELL], Vector2i(0, 1), LEVEL_D_MAZE_OFFICE_LANE.x, LEVEL_D_MAZE_OFFICE_LANE.y)
 
@@ -230,32 +247,77 @@ func _build_area_content() -> void:
 		_branch_window_geo(wb[0], String(wb[1]))
 	# Большая чёрная стрелка-указатель на верный проход.
 	_place_hall_arrow()
+	_place_arrow_cardboard_box()
 
 
 # Плоская чёрная стрелка на северной стене зала (на ядре 2.1), указывает вправо
 # на верный проём (лейн 9..12 → разветвитель 2.0 = единственный вход в кольцо).
 func _place_hall_arrow() -> void:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	# Силуэт стрелки в плоскости XY, остриём в +X (восток).
-	var verts: Array[Vector3] = [
-		Vector3(-1.7, -0.30, 0.0), Vector3(0.5, -0.30, 0.0), Vector3(0.5, 0.30, 0.0),
-		Vector3(-1.7, -0.30, 0.0), Vector3(0.5, 0.30, 0.0), Vector3(-1.7, 0.30, 0.0),
-		Vector3(0.5, -0.75, 0.0), Vector3(1.5, 0.0, 0.0), Vector3(0.5, 0.75, 0.0),
-	]
-	for v: Vector3 in verts:
-		st.add_vertex(v)
-	var mesh := st.commit()
+	var tex := load(HALL_ARROW_TEXTURE_PATH) as Texture2D
+	if tex == null:
+		return
+	var mesh := QuadMesh.new()
+	mesh.size = HALL_ARROW_SIZE
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.02, 0.02, 0.02)
+	mat.albedo_texture = tex
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mesh.surface_set_material(0, mat)
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	mesh.material = mat
 	var mi := MeshInstance3D.new()
+	mi.name = "hall_arrow_decal"
 	mi.mesh = mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# Северная стена ядра 2.1, столб между проёмами (x6..9), остриё к лейну 9..12.
-	mi.position = _local_world(2, 1, 7.3, 0.06, 1.95)
+	mi.position = _local_world(2, 1, 7.3, HALL_ARROW_WALL_EPS, 1.95)
 	add_child(mi)
+
+
+func _place_arrow_cardboard_box() -> void:
+	var scene := load(CARDBOARD_BOX_PATH) as PackedScene
+	if scene == null:
+		return
+	var base_yaw := ARROW_CARD_BOX_YAW + deg_to_rad(ARROW_CARD_BOX_TURN_DEG)
+	var floor_pos := _local_world(2, 1, ARROW_CARD_BOX_POS_D.x, ARROW_CARD_BOX_POS_D.y, 0.0)
+	var first := _spawn_arrow_cardboard_box(scene, "arrow_cardboard_box_01", floor_pos, base_yaw)
+	if first == null:
+		return
+	var first_box := _node_world_aabb(first)
+	var second := _spawn_arrow_cardboard_box(scene, "arrow_cardboard_box_02", floor_pos, base_yaw + deg_to_rad(ARROW_CARD_BOX_SECOND_YAW_DEG))
+	if second != null:
+		var second_box := _node_world_aabb(second)
+		var second_center := second_box.position + second_box.size * 0.5
+		var target_x := first_box.position.x + first_box.size.x + ARROW_CARD_BOX_GAP_D * CELL + second_box.size.x * 0.5
+		second.position.x += target_x - second_center.x
+	var first_center := first_box.position + first_box.size * 0.5
+	var top_pos := Vector3(first_center.x + ARROW_CARD_BOX_GAP_D * CELL, first_box.end.y, first_center.z)
+	var top := _spawn_arrow_cardboard_box(scene, "arrow_cardboard_box_03", top_pos, base_yaw + deg_to_rad(ARROW_CARD_BOX_TOP_YAW_DEG))
+	for inst: Node3D in [first, second, top]:
+		if inst == null:
+			continue
+		_add_model_collision(inst)
+	for inst: Node3D in [first, second]:
+		if inst == null:
+			continue
+		var foot := _node_world_aabb(inst)
+		if foot.size.x > 0.0 and foot.size.z > 0.0:
+			_add_contact_shadow(Vector3(foot.position.x + foot.size.x * 0.5, 0.0, foot.position.z + foot.size.z * 0.5), maxf(foot.size.x, foot.size.z) * 0.58)
+
+
+func _spawn_arrow_cardboard_box(scene: PackedScene, box_name: String, floor_pos: Vector3, yaw: float) -> Node3D:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return null
+	inst.name = box_name
+	add_child(inst)
+	inst.scale = Vector3(ARROW_CARD_BOX_SCALE, ARROW_CARD_BOX_SCALE, ARROW_CARD_BOX_SCALE)
+	inst.rotation.y = yaw
+	var box := _node_world_aabb(inst)
+	if box.size.y > 0.0:
+		var center := box.position + box.size * 0.5
+		inst.position += floor_pos - Vector3(center.x, box.position.y, center.z)
+	return inst
 
 
 # Прорубить 1-панельный лейн в наружной стене разветвителя к соседней клетке
@@ -278,9 +340,9 @@ func _branch_window_carve(bc: Vector2i, side: String) -> void:
 				_carve_passage(_area_by_cell[bc], Vector2i(1, 0), WIN_LANE, WIN_LANE + 1)
 
 
-# Сквозная щель во всю высоту, толщиной SLIT_W: 1-панельный просвет закрываем
-# двумя простенками во всю высоту, оставляя по центру щель SLIT_W. Плинтус НЕ
-# рвётся — под всем лейном кладём плинтус-мост (проём фактически «выше пола»).
+# Сеточный проём 1 панель закрываем двумя простенками, оставляя сквозную
+# щель SLIT_W до пола. Центрального плинтус-моста нет: добираем только
+# недостающие куски плинтуса под боковыми простенками.
 func _branch_window_geo(bc: Vector2i, side: String) -> void:
 	var wall := 0.0           # координата поперёк стены (lz для N/S, lx для W/E)
 	var along_x := true       # щель тянется вдоль X (N/S) или вдоль Z (W/E)
@@ -299,22 +361,23 @@ func _branch_window_geo(bc: Vector2i, side: String) -> void:
 	var fw := 0.5 - SLIT_W * 0.5              # ширина одного простенка (0.375 панели)
 	var c1 := WIN_LANE + fw * 0.5             # центр левого простенка
 	var c2 := WIN_LANE + 1.0 - fw * 0.5       # центр правого простенка
-	var mid := WIN_LANE + 0.5                 # центр лейна (плинтус-мост)
 	if along_x:
 		_put("wall", Vector3(fw * CELL, CEIL_H, depth), _local_world(bc.x, bc.y, c1, wall, CEIL_H * 0.5), true, false)
 		_put("wall", Vector3(fw * CELL, CEIL_H, depth), _local_world(bc.x, bc.y, c2, wall, CEIL_H * 0.5), true, false)
-		_put("base", Vector3(CELL, BASE_H, depth), _local_world(bc.x, bc.y, mid, wall, BASE_H * 0.5), false, false)
+		_put("base", Vector3(fw * CELL + SLIT_BASE_PAD, SLIT_BASE_H, depth + SLIT_BASE_PAD), _local_world(bc.x, bc.y, c1, wall, SLIT_BASE_H * 0.5), false, false)
+		_put("base", Vector3(fw * CELL + SLIT_BASE_PAD, SLIT_BASE_H, depth + SLIT_BASE_PAD), _local_world(bc.x, bc.y, c2, wall, SLIT_BASE_H * 0.5), false, false)
 	else:
 		_put("wall", Vector3(depth, CEIL_H, fw * CELL), _local_world(bc.x, bc.y, wall, c1, CEIL_H * 0.5), true, false)
 		_put("wall", Vector3(depth, CEIL_H, fw * CELL), _local_world(bc.x, bc.y, wall, c2, CEIL_H * 0.5), true, false)
-		_put("base", Vector3(depth, BASE_H, CELL), _local_world(bc.x, bc.y, wall, mid, BASE_H * 0.5), false, false)
+		_put("base", Vector3(depth + SLIT_BASE_PAD, SLIT_BASE_H, fw * CELL + SLIT_BASE_PAD), _local_world(bc.x, bc.y, wall, c1, SLIT_BASE_H * 0.5), false, false)
+		_put("base", Vector3(depth + SLIT_BASE_PAD, SLIT_BASE_H, fw * CELL + SLIT_BASE_PAD), _local_world(bc.x, bc.y, wall, c2, SLIT_BASE_H * 0.5), false, false)
 
 
 # Провал level_d: как в родителе, но каёмка у стен PIT_BORDER_D (0.05, только
 # текстура) вместо 1 панели, катвоки PIT_GAP_D (0.6). Плюс площадка-карман у
 # входа, вырезанная в окружающей стене (провал не трогаем).
 func _build_pit(area: Dictionary) -> void:
-	var c: Vector2i = area["cell"]
+	var pit_cell: Vector2i = area["cell"]
 	var n := PIT_COUNT
 	var b := PIT_BORDER_D
 	var g := PIT_GAP_D
@@ -329,23 +392,23 @@ func _build_pit(area: Dictionary) -> void:
 			_set_cell(cell, K_PIT)
 			_light_block[cell] = true
 	# Тонкая каёмка у стен + катвоки между дырами.
-	_pit_walk(c, 0.0, 0.0, float(ROOM_CELLS), b)
-	_pit_walk(c, 0.0, float(ROOM_CELLS) - b, float(ROOM_CELLS), b)
-	_pit_walk(c, 0.0, b, b, inner)
-	_pit_walk(c, float(ROOM_CELLS) - b, b, b, inner)
+	_pit_walk(pit_cell, 0.0, 0.0, float(ROOM_CELLS), b)
+	_pit_walk(pit_cell, 0.0, float(ROOM_CELLS) - b, float(ROOM_CELLS), b)
+	_pit_walk(pit_cell, 0.0, b, b, inner)
+	_pit_walk(pit_cell, float(ROOM_CELLS) - b, b, b, inner)
 	for k in range(1, n):
 		var off := b + float(k - 1) * (hole + g) + hole
-		_pit_walk(c, off, b, g, inner)
-		_pit_walk(c, b, off, inner, g)
+		_pit_walk(pit_cell, off, b, g, inner)
+		_pit_walk(pit_cell, b, off, inner, g)
 	# Дно шахты.
-	var icen := _local_world(c.x, c.y, float(ROOM_CELLS) * 0.5, float(ROOM_CELLS) * 0.5, -PIT_DEPTH)
+	var icen := _local_world(pit_cell.x, pit_cell.y, float(ROOM_CELLS) * 0.5, float(ROOM_CELLS) * 0.5, -PIT_DEPTH)
 	_void_box(Vector3(icen.x, -PIT_DEPTH, icen.z), Vector3(inner * CELL, 0.2, inner * CELL))
 	# Дыры — AABB падения + rect для миникарты.
 	for ix in range(n):
 		var hx := b + float(ix) * (hole + g)
 		for iz in range(n):
 			var hz := b + float(iz) * (hole + g)
-			var corner := _local_world(c.x, c.y, hx, hz, 0.0)
+			var corner := _local_world(pit_cell.x, pit_cell.y, hx, hz, 0.0)
 			_pit_fall_rects.append(Rect2(corner.x, corner.z, hole * CELL, hole * CELL))
 			_pit_rects.append(Rect2(float(base.x + WALL_CELLS) + hx, float(base.y + WALL_CELLS) + hz, hole, hole))
 	# Площадка-landing у входа: ВЫРЕЗАНА в окружающей стене (3 клетки толщиной)
@@ -379,7 +442,7 @@ func _spawn_lamp_source(pos: Vector3, tight := false) -> void:
 		var cell := Vector2i(int(floor(pos.x / CELL)), int(floor(pos.z / CELL)))
 		var ids := _player_area_ids(cell)
 		if not ids.is_empty():
-			l.set_meta("area_id", String(ids[0]))
+			_set_last_lamp_area_id(String(ids[0]))
 
 
 # Главный зал (ядро + крест) — на РОДИТЕЛЬСКОМ ТУГОМ свете: оба «мягких»
@@ -387,9 +450,8 @@ func _spawn_lamp_source(pos: Vector3, tight := false) -> void:
 # _spawn_seam_lamp работают из level_areas_c (тугой, крест по центру шва).
 # Глобальные правила (смещение источников вниз, наследование area_id) остаются в
 # _spawn_lamp_source и применяются к ним автоматически.
-# Оптимизация fps: в больших залах (column_hall) панель светится ВЕЗДЕ, а живой
-# источник — только на половине клеток (шахматка). Комната остаётся освещённой
-# оставшимися лампами, все панели горят, но реальных огней вдвое меньше.
+# Оптимизация fps: в больших залах (column_hall) шахматкой убираем часть
+# светильников целиком. Нет панели, AreaLight, bounce-fill и shadow-map.
 func _add_column_hall_lights(area: Dictionary) -> void:
 	var c: Vector2i = area["cell"]
 	var base := _area_base_cell(area)
@@ -398,12 +460,12 @@ func _add_column_hall_lights(area: Dictionary) -> void:
 	for lx in range(first, last + 1, LIGHT_STEP):
 		for lz in range(first, last + 1, LIGHT_STEP):
 			var cell := Vector2i(base.x + WALL_CELLS + lx, base.y + WALL_CELLS + lz)
+			if HALL_LIGHT_CHECKER and (floori(float(cell.x) / float(LIGHT_STEP)) + floori(float(cell.y) / float(LIGHT_STEP))) % 2 != 0:
+				continue
 			if _light_blocked(cell):
 				continue
 			var pos := _local_world(c.x, c.y, float(lx) + 0.5, float(lz) + 0.5, CEIL_H + 0.02)
 			_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-			if HALL_LIGHT_CHECKER and (int(cell.x / LIGHT_STEP) + int(cell.y / LIGHT_STEP)) % 2 != 0:
-				continue   # только свечение панели, без живого источника
 			_spawn_lamp_source(pos, true)
 
 
@@ -481,13 +543,13 @@ func _build_hud() -> void:
 
 
 func _spawn_player() -> void:
-	# ВРЕМЕННО: спавн у входа в провал (для осмотра). Вернуть к центру хаба:
+	# ВРЕМЕННО: спавн в офис-коридоре (для настройки света). Вернуть к центру хаба:
 	#   var a := _local_world(1,1,7.5,7.5,1.2); var b := _local_world(2,2,7.5,7.5,1.2)
 	#   _spawn_pos = (a + b) * 0.5; _spawn_yaw = 0.0
 	var scene := preload("res://player.tscn")
 	var player := scene.instantiate() as CharacterBody3D
-	_spawn_pos = _local_world(FIRST_RING_CELL.x, FIRST_RING_CELL.y, -2.0, 1.5, 1.2)
-	_spawn_yaw = -PI * 0.5   # лицом на восток, в провал
+	_spawn_pos = _local_world(OFFICE_AFTER_MAZE_CELL.x, OFFICE_AFTER_MAZE_CELL.y, 13.0, 1.0, 1.2)
+	_spawn_yaw = PI   # лицом на юг вдоль офисного коридора
 	player.position = _spawn_pos
 	player.rotation.y = _spawn_yaw
 	add_child(player)
