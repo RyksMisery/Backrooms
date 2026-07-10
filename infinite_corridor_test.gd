@@ -88,6 +88,8 @@ var _mat_floor: StandardMaterial3D
 var _mat_ceil: StandardMaterial3D
 var _mat_lamp: StandardMaterial3D
 var _mat_base: StandardMaterial3D
+var _mat_brick: StandardMaterial3D
+var _mat_door: StandardMaterial3D
 var _env: Environment
 var _mesh_cache: Dictionary = {}
 var _shape_cache: Dictionary = {}
@@ -100,15 +102,17 @@ var _corridor_lights: Array[Dictionary] = []
 var _cycle_count := 0
 var _start_z := 0.0
 
-# Открытая дверь (шаг 1)
+# Открытая дверь / карман. Стейт-машина: "closed" → "open" → "inside" → "sealed".
+# "sealed" — створка закрыта вне поля зрения игрока (изменение не на глазах).
 var _open_active := false
+var _open_state := "closed"
 var _open_chunk: Node3D
 var _open_side := -1.0
 var _open_room: Node3D
 var _open_group: Node3D
 var _open_leaf: Node3D
 var _open_area: Area3D
-var _open_entered := false
+var _open_brick: Node3D
 var _open_count := 0
 var _next_open_cycle := 0
 var _open_door_world_z := 0.0
@@ -117,11 +121,14 @@ var _open_door_world_z := 0.0
 var _entrance: Node3D
 var _rear_end: Node3D
 var _revealed := false
+var _player_cam: Camera3D  # для проверки «проём вне кадра» (створка вне поля зрения)
+var _door_close_stream: AudioStream  # звук закрытия двери (грузим в _ready)
 
 
 func _ready() -> void:
 	_make_materials()
 	_setup_environment()
+	_door_close_stream = load("res://sounds/door_close.wav")  # null, если ещё не импортирован
 	_build_chunks()
 	_build_far_end()
 	_build_entrance()
@@ -144,7 +151,8 @@ func _process(delta: float) -> void:
 		var walked := maxf(0.0, _start_z - _player_ref.position.z)
 		var door_state := "закрыты"
 		if _open_active:
-			door_state = ("вошёл" if _open_entered else "открыта") + (" (лев)" if _open_side < 0.0 else " (прав)")
+			var st: String = {"open": "открыта", "inside": "внутри", "sealed": "закрыто"}.get(_open_state, _open_state)
+			door_state = "%s (%s)" % [st, "лев" if _open_side < 0.0 else "прав"]
 		var rear_state := "бесконечность" if _revealed else "вход"
 		_hud_label.text = "БЕСКОНЕЧНЫЙ КОРИДОР\n%.1f м\nциклы: %d\nдверь: %s\nтыл: %s" % [
 			walked, _cycle_count, door_state, rear_state
@@ -181,6 +189,19 @@ func _make_materials() -> void:
 
 	_mat_base = StandardMaterial3D.new()
 	_mat_base.albedo_color = Color(0.95, 0.92, 0.78)
+
+	# Замуровка: та же кладка, но холодный серый тон — явно отличается от
+	# жёлтых стен, читается как «свежая заделка проёма».
+	_mat_brick = StandardMaterial3D.new()
+	_mat_brick.albedo_texture = load("res://textures/wall1.png")
+	_mat_brick.albedo_color = Color(0.42, 0.40, 0.38)
+	_mat_brick.uv1_triplanar = true
+	_mat_brick.uv1_scale = Vector3(4, 4, 4)
+
+	# Дверь-створка (закрывается вне поля зрения) — нейтральный тон, читается
+	# как закрытая дверь, отличается и от стен, и от замуровки.
+	_mat_door = StandardMaterial3D.new()
+	_mat_door.albedo_color = Color(0.55, 0.50, 0.42)
 
 
 func _setup_environment() -> void:
@@ -353,6 +374,9 @@ func _spawn_player() -> void:
 	_player_ref.rotation.y = 0.0
 	add_child(_player_ref)
 	_start_z = _player_ref.position.z
+	var cams := _player_ref.find_children("*", "Camera3D", true, false)
+	if cams.size() > 0:
+		_player_cam = cams[0] as Camera3D
 
 
 # Стартовая область: комната у торца коридора (+z), из неё игрок входит в
@@ -641,17 +665,96 @@ func _update_open_door() -> void:
 	if _player_ref == null:
 		return
 	if _open_active:
-		if _open_area != null and not _open_entered:
-			for body in _open_area.get_overlapping_bodies():
-				if body == _player_ref:
-					_open_entered = true
-					break
-		# прошёл мимо, не зайдя → закрыть и переоткрыть через N циклов
-		if not _open_entered and _player_ref.position.z < _open_door_world_z - OPEN_PASS_MARGIN:
-			_deactivate_open_door(true)
+		match _open_state:
+			"open":
+				# зашёл за перегородку (по x) → внутри кармана
+				if _in_open_room():
+					_open_state = "inside"
+				# прошёл мимо, не зайдя → закрыть и переоткрыть в другом месте
+				elif _player_ref.position.z < _open_door_world_z - OPEN_PASS_MARGIN:
+					_deactivate_open_door(true)
+			"inside":
+				# створка защёлкивается, ТОЛЬКО когда проём вне кадра (не на глазах);
+				# смотришь на дверь (зашёл спиной) → не закрывается, пока не отвернёшься.
+				if _door_unobserved():
+					_seal_open_door()
+				# ушёл далеко мимо, не заперся (мунвок спиной) → чистим вне кадра.
+				elif _player_ref.position.z < _open_door_world_z - OPEN_PASS_MARGIN:
+					_deactivate_open_door(true)
+			"sealed":
+				pass  # заперт; ждём рециклинга чанка (там всё почистится)
 		return
 	if _cycle_count >= _next_open_cycle:
 		_activate_open_door()
+
+
+# Игрок зашёл за перегородку в карман (x за гранью коридора со стороны двери,
+# и по z в пределах проёма/комнаты).
+func _in_open_room() -> bool:
+	var p := _player_ref.position
+	var into := _open_side * p.x - CORRIDOR_W * 0.5
+	# Порог явно за перегородкой (part_t) + запас: считаем «зашёл в карман».
+	return into > PARTITION_T * CELL + 0.2 and absf(p.z - _open_door_world_z) < float(OPEN_ROOM_CELLS) * CELL * 0.5 + 1.0
+
+
+# Проём вне поля зрения игрока (створку меняем только «за кадром»).
+# Проверяем ВЕСЬ прямоугольник проёма (4 угла + центр): пока хоть одна точка
+# в кадре — считаем, что дверь видно, и не закрываем.
+func _door_unobserved() -> bool:
+	if _player_cam == null:
+		return true  # нет камеры — деградируем: закрываем сразу
+	var x := _open_side * CORRIDOR_W * 0.5
+	var open_w := _opening_width_m()
+	var open_h := _opening_height_m()
+	var z0 := _open_door_world_z - open_w * 0.5
+	var z1 := _open_door_world_z + open_w * 0.5
+	var pts := [
+		Vector3(x, 0.2, z0), Vector3(x, 0.2, z1),
+		Vector3(x, open_h, z0), Vector3(x, open_h, z1),
+		Vector3(x, open_h * 0.5, _open_door_world_z),
+	]
+	for p: Vector3 in pts:
+		if _player_cam.is_position_in_frustum(p):
+			return false
+	return true
+
+
+# Закрытие створки в проёме (вне кадра). Латч: назад не открывается.
+# Держится, пока чанк не переработается (тогда _deactivate_open_door чистит).
+func _seal_open_door() -> void:
+	if _open_room == null or not is_instance_valid(_open_room):
+		return
+	var door_z := _door_z_for_side(_open_side)
+	# Визуальная створка — реальная модель двери (wite_door.glb), как в коридоре.
+	var normal := _office_opening_normal(_open_side)
+	var yaw := atan2(normal.x, normal.z)
+	_spawn_corridor_door_leaf(_open_room, _office_door_panel_local_pos(_open_side, door_z), yaw, "seal_door")
+	# Невидимая коллизия в проёме — модель сама не блокирует, а проход перекрыть надо.
+	var part_t := PARTITION_T * CELL
+	var wall_center_x := _open_side * (CORRIDOR_W * 0.5 + part_t * 0.5)
+	var col := _add_box(_open_room, "door", Vector3(part_t * 0.5, _opening_height_m(), _opening_width_m()),
+		Vector3(wall_center_x, _opening_height_m() * 0.5, door_z), true)
+	col.visible = false
+	_open_brick = col
+	_play_door_close(Vector3(_open_side * CORRIDOR_W * 0.5, 1.2, _open_door_world_z))
+	if _open_area != null and is_instance_valid(_open_area):
+		_open_area.queue_free()
+		_open_area = null
+	_open_state = "sealed"
+	_next_open_cycle = _cycle_count + OPEN_DOOR_PERIOD_CYCLES
+
+
+# Разовый 3D-звук закрытия двери в точке проёма (сам удаляется после проигрыша).
+func _play_door_close(world_pos: Vector3) -> void:
+	if _door_close_stream == null:
+		return
+	var p := AudioStreamPlayer3D.new()
+	p.stream = _door_close_stream
+	p.unit_size = 4.0
+	add_child(p)
+	p.global_position = world_pos
+	p.finished.connect(p.queue_free)
+	p.play()
 
 
 func _activate_open_door() -> void:
@@ -662,7 +765,8 @@ func _activate_open_door() -> void:
 	var door_z := _door_z_for_side(side)
 	_open_chunk = host
 	_open_side = side
-	_open_entered = false
+	_open_state = "open"
+	_open_brick = null
 	# скрыть толстую боковую стену чанка на этой стороне (её заменит тонкая
 	# стенка комнаты в 1 ячейку) + убрать створку/рамы двери
 	_open_group = _ensure_sidewall_group(host, side)
@@ -688,9 +792,10 @@ func _deactivate_open_door(reschedule: bool) -> void:
 	_open_area = null
 	_open_group = null
 	_open_leaf = null
+	_open_brick = null
 	_open_chunk = null
 	_open_active = false
-	_open_entered = false
+	_open_state = "closed"
 	if reschedule:
 		_next_open_cycle = _cycle_count + OPEN_DOOR_PERIOD_CYCLES
 
@@ -943,6 +1048,10 @@ func _material_for(name: String) -> Material:
 			return _mat_lamp
 		"base":
 			return _mat_base
+		"brick":
+			return _mat_brick
+		"door":
+			return _mat_door
 	return _mat_wall
 
 
