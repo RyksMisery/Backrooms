@@ -389,6 +389,33 @@ Reference implementation: `level_d.gd` — `_spawn_lamp_source` (fallback area_i
 - в кармане у входа есть отдельный тугой светильник;
 - мигающая входная лампа всегда светит на WetFloorSign направленным светом.
 
+## Пробой bounce-fill сквозь перегородки (диагноз, level_e)
+
+Симптом: свет протекает сквозь тонкие перегородки (0.25 м) в соседние комнаты.
+Источник — bounce-fill омни, а не панели: `AREA_LIGHT_SHADOWS = false` (панели
+теней не бросают, но их `area_range` по умолчанию на крошечном тест-значении, так
+что вбок почти не стреляют). Разносит свет по комнате именно bounce-омни
+(`AREA_LIGHT_BOUNCE_RANGE = 8 м`, energy `0.36`).
+
+Тени bounce раздаёт ПУЛ `_update_bounce_shadow_pool`: только
+`AREA_LIGHT_BOUNCE_SHADOW_CASTERS = 10` ближайших ламп, с фейдом по дистанции
+`FULL_DIST = 5 м` / `FADE_DIST = 11 м`. Всё, что дальше или вне 10 ближайших,
+светит БЕЗ теней и течёт сквозь перегородки (которые стоят в 2–3 панелях друг от
+друга). Это соответствует правилу выше: «fill … must cast shadows; otherwise it
+would reintroduce the old omni leak through partitions and walls» — на практике
+тени есть не у всех bounce-ламп.
+
+Рычаги против пробоя (по возрастанию цены):
+1. **Радиус bounce** (`AREA_LIGHT_BOUNCE_RANGE`) — сокращает дальность утечки.
+   Живая крутилка `[`/`]` в level_e (через мету `base_bounce_range`).
+2. **Больше/дальше теневых кастеров** (`CASTERS`, `FULL/FADE_DIST`) — меньше
+   протечки, но дороже по fps.
+3. **`AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS = 1.25`** — велик для стены 0.25 м;
+   если тени есть, но течёт у основания перегородки, снижать его.
+
+Статус: диагноз зафиксирован, подбор значений отложен (крутилки в level_e готовы
+для экспериментов на прогоне).
+
 ## Notes
 
 Light rules are editable. When a new architectural pattern is added, update

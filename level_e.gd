@@ -21,12 +21,16 @@ const LEVEL_NAME := "LEVEL E"
 const SPLIT_TYPES := ["wall", "floor", "ceil", "base", "pit", "lamp"]
 const STREAM_BUILD_RADIUS := 2   # держать/строить блоки в этом радиусе от игрока
 const STREAM_FREE_RADIUS := 3    # освобождать за этим (гистерезис, чтобы не дёргалось)
+const AMBIENT_KEY_STEP := 0.005  # шаг регулировки амбиента на +/-
+const BOUNCE_ENERGY_KEY_STEP := 0.05  # шаг множителя энергии bounce-ламп на ,/.
 
 var _block_st: Dictionary = {}      # Vector2i -> { st_name: SurfaceTool }  (первичная сборка)
 var _block_holder: Dictionary = {}  # Vector2i -> Node3D (живой узел: меши + тело коллизии)
 var _block_rec: Dictionary = {}     # Vector2i -> { "geo": [[st,size,pos]], "col": [[size,pos]] }
 var _stream_on := true
 var _last_pb := Vector2i(2147483647, 2147483647)
+var _bounce_range := AREA_LIGHT_BOUNCE_RANGE   # живой радиус bounce-omni ([ / ])
+var _bounce_energy_mul := 1.0   # живой множитель энергии bounce-ламп (, / .)
 
 
 func _begin() -> void:
@@ -40,9 +44,9 @@ func _process(delta: float) -> void:
 	super._process(delta)
 	_update_streaming()
 	if _hud_label != null:
-		_hud_label.text = "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d" % [
+		_hud_label.text = "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d\nambient:%.3f (+/-)  bounce:%.1f ([ ])  bE:x%.2f (,.)" % [
 			LEVEL_NAME, _current_area_name(), Engine.get_frames_per_second(),
-			("ON" if _stream_on else "OFF"), _block_holder.size()
+			("ON" if _stream_on else "OFF"), _block_holder.size(), _amb_read(), _bounce_range, _bounce_energy_mul
 		]
 
 
@@ -52,7 +56,21 @@ func _input(event: InputEvent) -> void:
 	var ke := event as InputEventKey
 	if not ke.pressed or ke.echo:
 		return
-	if ke.keycode == KEY_M and _minimap != null:
+	if ke.keycode == KEY_EQUAL or ke.keycode == KEY_KP_ADD:
+		_amb_apply(_amb_read() + AMBIENT_KEY_STEP)
+	elif ke.keycode == KEY_MINUS or ke.keycode == KEY_KP_SUBTRACT:
+		_amb_apply(_amb_read() - AMBIENT_KEY_STEP)
+	elif ke.keycode == KEY_BRACKETLEFT:
+		_bounce_range = maxf(0.0, _bounce_range - 0.5)
+		_apply_bounce_range()
+	elif ke.keycode == KEY_BRACKETRIGHT:
+		_bounce_range += 0.5
+		_apply_bounce_range()
+	elif ke.keycode == KEY_COMMA:
+		_bounce_energy_mul = maxf(0.0, _bounce_energy_mul - BOUNCE_ENERGY_KEY_STEP)
+	elif ke.keycode == KEY_PERIOD:
+		_bounce_energy_mul += BOUNCE_ENERGY_KEY_STEP
+	elif ke.keycode == KEY_M and _minimap != null:
 		_minimap.visible = not _minimap.visible
 	elif ke.keycode == KEY_K:
 		_stream_on = not _stream_on
@@ -61,6 +79,40 @@ func _input(event: InputEvent) -> void:
 		else:
 			_last_pb = Vector2i(2147483647, 2147483647)   # заставить пересчитать окно
 		print("[level_e] стриминг: ", "ON" if _stream_on else "OFF", " блоков=", _block_holder.size())
+
+
+func _amb_read() -> float:
+	return _env.ambient_light_energy if _env != null else 0.0
+
+
+func _amb_apply(v: float) -> void:
+	if _env != null:
+		_env.ambient_light_energy = maxf(0.0, v)
+
+
+func _apply_bounce_range() -> void:
+	# Крутить мету base_bounce_range, а не omni_range напрямую: пул света
+	# (_update_light_pool → _apply_area_bounce_runtime) каждый кадр пересчитывает
+	# omni_range из этой меты (× range_mul для far-ламп), затирая прямую запись.
+	# Через мету значение переживает пересчёт и применяется с учётом far/near.
+	for l in _area_bounce_lamps:
+		if l != null and is_instance_valid(l):
+			l.set_meta("base_bounce_range", _bounce_range)
+
+
+# Пул света каждый кадр вызывает _apply_area_bounce_runtime и переписывает
+# энергию/радиус bounce из констант+меты. Перехватываем ПОСЛЕ super и накидываем
+# живой множитель энергии — так значение переживает пер-кадровый пересчёт, а базу
+# level_areas_c не трогаем (GDScript направит вызов пула сюда).
+func _apply_area_bounce_runtime(l: Light3D) -> void:
+	super._apply_area_bounce_runtime(l)
+	if _bounce_energy_mul == 1.0:
+		return
+	if not bool(l.get_meta("area_bounce", false)):
+		return
+	var omni := l as OmniLight3D
+	if omni != null:
+		omni.light_energy *= _bounce_energy_mul
 
 
 # ── Классификация / записи ──
