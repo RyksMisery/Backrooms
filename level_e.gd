@@ -188,6 +188,92 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 		_rec(bb)["geo"].append(["base", bs, bpos])
 
 
+# ── По-блочный эмит геометрии (re-entrant, под-шаг 1) ──
+#
+# База гоняет _derive_geometry() → _merge_cells() по ВСЕЙ сетке: длинная стена/
+# потолок склеиваются в один бокс через границы блоков, а _put приписывает его
+# блоку по центру. Здесь переопределяем эмит: гоним склейку ПО БЛОКАМ, беря в
+# кандидаты только клетки внутри рамки блока — тогда склейка сама обрывается на
+# границе, боксы соседних блоков стыкуются встык (без нахлёста/дыр). Каждый бокс
+# целиком лежит в своём блоке → _put роутит однозначно.
+#
+# Под-шаг 1: меняем только загрузочный путь ceil/floor/wall. Records/коллизия/
+# rebuild/провалы — прежним путём (без регрессий). Постройка из occupancy на
+# rebuild и «строить только близкое на загрузке» — следующий заход.
+func _derive_geometry() -> void:
+	var blocks: Dictionary = {}
+	for c: Vector2i in _grid.keys():
+		blocks[Vector2i(floori(float(c.x) / PITCH), floori(float(c.y) / PITCH))] = true
+	for block: Vector2i in blocks.keys():
+		_emit_block(block)
+
+
+func _emit_block(block: Vector2i) -> void:
+	var bounds := Rect2i(block.x * PITCH, block.y * PITCH, PITCH, PITCH)
+	# Потолок — по всем клеткам рамки (включая провалы: над дырой потолок есть).
+	for r: Rect2i in _merge_cells_bounds(-1, -999, bounds):
+		var cs := Vector3(float(r.size.x) * CELL, SLAB_T, float(r.size.y) * CELL)
+		var ccx := (float(r.position.x) + float(r.size.x) * 0.5) * CELL
+		var ccz := (float(r.position.y) + float(r.size.y) * 0.5) * CELL
+		_put("ceil", cs, Vector3(ccx, CEIL_H + SLAB_T * 0.5, ccz), false)
+	# Пол — по всем клеткам, КРОМЕ провалов (там настоящая дыра).
+	for r: Rect2i in _merge_cells_bounds(-1, K_PIT, bounds):
+		var fs := Vector3(float(r.size.x) * CELL, SLAB_T, float(r.size.y) * CELL)
+		var fcx := (float(r.position.x) + float(r.size.x) * 0.5) * CELL
+		var fcz := (float(r.position.y) + float(r.size.y) * 0.5) * CELL
+		_put("floor", fs, Vector3(fcx, -SLAB_T * 0.5, fcz), true)
+	# Стены — greedy-слияние K_WALL внутри рамки; плинтус эмитит сам _put.
+	for r: Rect2i in _merge_cells_bounds(K_WALL, -999, bounds):
+		var size := Vector3(float(r.size.x) * CELL, CEIL_H, float(r.size.y) * CELL)
+		var pos := Vector3(
+			(float(r.position.x) + float(r.size.x) * 0.5) * CELL,
+			CEIL_H * 0.5,
+			(float(r.position.y) + float(r.size.y) * 0.5) * CELL
+		)
+		_put("wall", size, pos)
+
+
+# Копия базового _merge_cells, но кандидаты — только клетки внутри рамки блока.
+# За счёт этого greedy-рост w/h естественно обрывается на границе блока (клетки
+# за рамкой не в наборе), без явной обрезки.
+func _merge_cells_bounds(kind: int, exclude: int, bounds: Rect2i) -> Array[Rect2i]:
+	var x1 := bounds.position.x + bounds.size.x
+	var y1 := bounds.position.y + bounds.size.y
+	var cells: Dictionary = {}
+	for c: Vector2i in _grid.keys():
+		if c.x < bounds.position.x or c.x >= x1 or c.y < bounds.position.y or c.y >= y1:
+			continue
+		if _grid[c] == exclude:
+			continue
+		if kind == -1 or _grid[c] == kind:
+			cells[c] = true
+	var keys: Array = cells.keys()
+	keys.sort_custom(func(a, b):
+		return (a.y < b.y) or (a.y == b.y and a.x < b.x))
+	var used: Dictionary = {}
+	var rects: Array[Rect2i] = []
+	for k: Vector2i in keys:
+		if used.has(k):
+			continue
+		var w := 1
+		while cells.has(Vector2i(k.x + w, k.y)) and not used.has(Vector2i(k.x + w, k.y)):
+			w += 1
+		var h := 1
+		var grow := true
+		while grow:
+			for xx in range(k.x, k.x + w):
+				if not cells.has(Vector2i(xx, k.y + h)) or used.has(Vector2i(xx, k.y + h)):
+					grow = false
+					break
+			if grow:
+				h += 1
+		for xx in range(k.x, k.x + w):
+			for zz in range(k.y, k.y + h):
+				used[Vector2i(xx, zz)] = true
+		rects.append(Rect2i(k.x, k.y, w, h))
+	return rects
+
+
 func _commit() -> void:
 	# 1) Слитый lamp_glow (панели ламп "lamp" теперь per-block, в SPLIT_TYPES).
 	var mesh: ArrayMesh = _st["lamp_glow"].commit()
@@ -301,3 +387,20 @@ func _rebuild_block(block: Vector2i) -> void:
 		cs.shape = _shape_cache[size]
 		cs.position = pos
 		body.add_child(cs)
+
+
+# ── Спавн ──
+
+# level_e спавнит в центре большого зала (слитый 2×2 хаб, area_group hub_core),
+# а не у входа в провал (временный отладочный спавн базы). Базу не трогаем.
+func _spawn_player() -> void:
+	if preview_template != "":
+		super._spawn_player()
+		return
+	var player := preload("res://player.tscn").instantiate() as CharacterBody3D
+	_spawn_pos = _local_world(1, 1, 16.5, 16.5, 1.2)   # центр слитого интерьера 33×33
+	_spawn_yaw = 0.0
+	player.position = _spawn_pos
+	player.rotation.y = _spawn_yaw
+	add_child(player)
+	_player_ref = player
