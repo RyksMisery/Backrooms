@@ -28,6 +28,7 @@ const LEVEL_NAME := "LEVEL E"
 const SPLIT_TYPES := ["wall", "floor", "ceil", "base", "pit", "lamp"]
 const STREAM_BUILD_RADIUS := 2   # держать/строить блоки в этом радиусе от игрока
 const STREAM_FREE_RADIUS := 3    # освобождать за этим (гистерезис, чтобы не дёргалось)
+const LAZY_LOAD := true          # на загрузке строить только близкие блоки (иначе весь уровень)
 const AMBIENT_KEY_STEP := 0.005  # шаг регулировки амбиента на +/-
 const BOUNCE_ENERGY_KEY_STEP := 0.05  # шаг множителя энергии bounce-ламп на ,/.
 
@@ -37,6 +38,7 @@ var _block_rec: Dictionary = {}     # Vector2i -> { "geo": [[st,size,pos]], "col
 var _known_blocks: Dictionary = {}  # Vector2i -> true; все блоки с клетками сетки (логический набор для стриминга)
 var _emit_ctx := Vector2i.ZERO      # активный блок во время _emit_block
 var _emit_ctx_active := false       # true → _put роутит ПРОИЗВОДНУЮ геометрию прямо в блок _emit_ctx, без записи
+var _load_center := Vector2i.ZERO   # блок-центр ленивой загрузки (блок спавна)
 var _stream_on := true
 var _last_pb := Vector2i(2147483647, 2147483647)
 var _bounce_range := AREA_LIGHT_BOUNCE_RANGE   # живой радиус bounce-omni ([ / ])
@@ -225,11 +227,23 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 # Под-шаг 2: и загрузка, и rebuild производной идут этим путём (см. _emit_block /
 # _rebuild_block). Записей для производной не ведём. «Строить только близкое на
 # загрузке» и вариация по seed_detail — следующий заход.
+# Центр ленивой загрузки — блок спавна (игрок ещё не создан, позиция детерминирована).
+func _hub_center_pos() -> Vector3:
+	return _local_world(1, 1, 16.5, 16.5, 1.2)
+
+
+func _near_load(block: Vector2i) -> bool:
+	return not LAZY_LOAD or _cheby(block, _load_center) <= STREAM_BUILD_RADIUS
+
+
 func _derive_geometry() -> void:
+	_load_center = _block_of(_hub_center_pos())
 	for c: Vector2i in _grid.keys():
 		_known_blocks[Vector2i(floori(float(c.x) / PITCH), floori(float(c.y) / PITCH))] = true
+	# Производную эмитим только у близких блоков; дальние — по подходу (_rebuild_block).
 	for block: Vector2i in _known_blocks.keys():
-		_emit_block(block)
+		if _near_load(block):
+			_emit_block(block)
 
 
 func _emit_block(block: Vector2i) -> void:
@@ -312,10 +326,14 @@ func _commit() -> void:
 		mi.visible = false
 		_lamp_glow_mi = mi
 		add_child(mi)
-	# 2) Раздельная геометрия по блокам.
-	for block: Vector2i in _block_st:
-		_build_block_meshes(_block_holder_get(block), _block_st[block])
-	# 3) Коллизия — перераспределяем шейпы из _body по блочным телам + пишем.
+	# 2) Раздельная геометрия по блокам — при ленивой загрузке только близкие;
+	#    дальние сбрасываем (их геометрия — производная из occupancy + записи экстры).
+	for block: Vector2i in _block_st.keys():
+		if _near_load(block):
+			_build_block_meshes(_block_holder_get(block), _block_st[block])
+		else:
+			_block_st.erase(block)
+	# 3) Коллизия — пишем ВСЕ шейпы в записи; близкие — в тела блоков, дальние — прочь.
 	_redistribute_collision()
 	# 4) Лампы-источники резидентны (пул гасит по области); панели уже per-block.
 
@@ -349,9 +367,14 @@ func _redistribute_collision() -> void:
 		if child is CollisionShape3D:
 			var cs := child as CollisionShape3D
 			var block := _block_of(cs.position)
-			cs.reparent(_block_body_get(block), true)
+			# Запись — ВСЕГДА (нужна для rebuild любого блока).
 			if cs.shape is BoxShape3D:
 				_rec(block)["col"].append([(cs.shape as BoxShape3D).size, cs.position])
+			# Близкие — в тело блока; дальние (ленивая загрузка) — не держим.
+			if _near_load(block):
+				cs.reparent(_block_body_get(block), true)
+			else:
+				cs.queue_free()
 
 
 # ── Авто-стриминг ──
@@ -435,7 +458,7 @@ func _spawn_player() -> void:
 		super._spawn_player()
 		return
 	var player := preload("res://player.tscn").instantiate() as CharacterBody3D
-	_spawn_pos = _local_world(1, 1, 16.5, 16.5, 1.2)   # центр слитого интерьера 33×33
+	_spawn_pos = _hub_center_pos()   # центр слитого интерьера 33×33 (= центр ленивой загрузки)
 	_spawn_yaw = 0.0
 	player.position = _spawn_pos
 	player.rotation.y = _spawn_yaw
