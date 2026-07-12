@@ -5,15 +5,22 @@ extends "res://level_d.gd"
 # level_e режет геометрию+коллизию по блокам PITCH×PITCH в узлы area_geo_x_y,
 # которые менеджер строит/освобождает вокруг игрока. Свет/контент наследуются.
 #
-# Записи (record-replay): на первичной сборке пишем per-block геометрию и
-# коллизию; освобождение = queue_free узла, пересборка = реплей записей.
+# Re-entrant emit (под-шаг 2): ПРОИЗВОДНАЯ геометрия (внешние/общие стены,
+# полы, потолки) строится по блокам из occupancy — _derive_geometry → _emit_block
+# → _merge_cells_bounds (склейка в рамке блока). Пересборка блока = повторный
+# _emit_block из occupancy (записи для производной НЕ ведём). ЭКСТРА (перегородки,
+# провалы, панели ламп, офис) эмитится императивно вне рамки → пишем в _block_rec
+# и реплеим на rebuild. Освобождение = queue_free узла. Логический набор блоков —
+# _known_blocks (все блоки с клетками сетки), по нему и идёт стриминг.
 #
 # Свет: OmniLight-источники резидентны и гасятся ПУЛОМ по области; окно стриминга
 # шире зоны света пула → у освобождённых блоков лампы и так погашены. Панели ламп
 # ("lamp") вынесены в per-block, поэтому исчезают вместе с блоком.
 #
-# Оговорка: первичная сборка всё ещё строит весь уровень (набор записей). «Не
-# держать всё на загрузке» = re-entrant emit — отдельный будущий шаг.
+# Оговорка: первичная сборка всё ещё проходит весь уровень (эмит производной +
+# запись экстры). «Не держать всё на загрузке» (эмит только близких блоков) и
+# вариация блока по seed_detail — следующий шаг, теперь возможны: билдер строит
+# ОДИН блок из occupancy.
 #
 # Клавиши: M карта, K вкл/выкл стриминг (выкл → пересобрать всё, показать уровень).
 
@@ -26,7 +33,10 @@ const BOUNCE_ENERGY_KEY_STEP := 0.05  # шаг множителя энергии
 
 var _block_st: Dictionary = {}      # Vector2i -> { st_name: SurfaceTool }  (первичная сборка)
 var _block_holder: Dictionary = {}  # Vector2i -> Node3D (живой узел: меши + тело коллизии)
-var _block_rec: Dictionary = {}     # Vector2i -> { "geo": [[st,size,pos]], "col": [[size,pos]] }
+var _block_rec: Dictionary = {}     # Vector2i -> { "geo": [[st,size,pos]], "col": [[size,pos]] }  (только ЭКСТРА)
+var _known_blocks: Dictionary = {}  # Vector2i -> true; все блоки с клетками сетки (логический набор для стриминга)
+var _emit_ctx := Vector2i.ZERO      # активный блок во время _emit_block
+var _emit_ctx_active := false       # true → _put роутит ПРОИЗВОДНУЮ геометрию прямо в блок _emit_ctx, без записи
 var _stream_on := true
 var _last_pb := Vector2i(2147483647, 2147483647)
 var _bounce_range := AREA_LIGHT_BOUNCE_RANGE   # живой радиус bounce-omni ([ / ])
@@ -38,6 +48,8 @@ func _begin() -> void:
 	_block_st.clear()
 	_block_holder.clear()
 	_block_rec.clear()
+	_known_blocks.clear()
+	_emit_ctx_active = false
 
 
 func _process(delta: float) -> void:
@@ -164,11 +176,20 @@ func _block_surface(block: Vector2i, st_name: String) -> SurfaceTool:
 	return surfs[st_name]
 
 
+# Два режима:
+#  • ПРОИЗВОДНАЯ (внутри _emit_block, _emit_ctx_active): geo → блок _emit_ctx,
+#    коллизия → тело блока _emit_ctx напрямую; НЕ пишем в _block_rec (блок
+#    восстанавливается повторным _emit_block из occupancy).
+#  • ЭКСТРА (перегородки/провалы/лампы/офис, вне _emit_block): geo → блок по
+#    центру, коллизия → общий _body (потом _redistribute_collision), и пишем в
+#    _block_rec для реплея на rebuild.
 func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_base := true, force_base := false) -> void:
+	var derived := _emit_ctx_active
 	if SPLIT_TYPES.has(st_name):
-		var block := _block_of(pos)
+		var block := _emit_ctx if derived else _block_of(pos)
 		_block_surface(block, st_name).append_from(_get_box(size), 0, Transform3D(Basis(), pos))
-		_rec(block)["geo"].append([st_name, size, pos])
+		if not derived:
+			_rec(block)["geo"].append([st_name, size, pos])
 	else:
 		_st[st_name].append_from(_get_box(size), 0, Transform3D(Basis(), pos))
 	if collide:
@@ -179,13 +200,17 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 		var cs := CollisionShape3D.new()
 		cs.shape = _shape_cache[size]
 		cs.position = pos
-		_body.add_child(cs)
+		if derived:
+			_block_body_get(_emit_ctx).add_child(cs)
+		else:
+			_body.add_child(cs)
 	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05 and (force_base or _wall_base_allowed(size)):
 		var bs := Vector3(size.x + 0.05, 0.12, size.z + 0.05)
 		var bpos := Vector3(pos.x, 0.06, pos.z)
-		var bb := _block_of(bpos)
+		var bb := _emit_ctx if derived else _block_of(bpos)
 		_block_surface(bb, "base").append_from(_get_box(bs), 0, Transform3D(Basis(), bpos))
-		_rec(bb)["geo"].append(["base", bs, bpos])
+		if not derived:
+			_rec(bb)["geo"].append(["base", bs, bpos])
 
 
 # ── По-блочный эмит геометрии (re-entrant, под-шаг 1) ──
@@ -197,18 +222,19 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 # границе, боксы соседних блоков стыкуются встык (без нахлёста/дыр). Каждый бокс
 # целиком лежит в своём блоке → _put роутит однозначно.
 #
-# Под-шаг 1: меняем только загрузочный путь ceil/floor/wall. Records/коллизия/
-# rebuild/провалы — прежним путём (без регрессий). Постройка из occupancy на
-# rebuild и «строить только близкое на загрузке» — следующий заход.
+# Под-шаг 2: и загрузка, и rebuild производной идут этим путём (см. _emit_block /
+# _rebuild_block). Записей для производной не ведём. «Строить только близкое на
+# загрузке» и вариация по seed_detail — следующий заход.
 func _derive_geometry() -> void:
-	var blocks: Dictionary = {}
 	for c: Vector2i in _grid.keys():
-		blocks[Vector2i(floori(float(c.x) / PITCH), floori(float(c.y) / PITCH))] = true
-	for block: Vector2i in blocks.keys():
+		_known_blocks[Vector2i(floori(float(c.x) / PITCH), floori(float(c.y) / PITCH))] = true
+	for block: Vector2i in _known_blocks.keys():
 		_emit_block(block)
 
 
 func _emit_block(block: Vector2i) -> void:
+	_emit_ctx = block
+	_emit_ctx_active = true
 	var bounds := Rect2i(block.x * PITCH, block.y * PITCH, PITCH, PITCH)
 	# Потолок — по всем клеткам рамки (включая провалы: над дырой потолок есть).
 	for r: Rect2i in _merge_cells_bounds(-1, -999, bounds):
@@ -231,6 +257,7 @@ func _emit_block(block: Vector2i) -> void:
 			(float(r.position.y) + float(r.size.y) * 0.5) * CELL
 		)
 		_put("wall", size, pos)
+	_emit_ctx_active = false
 
 
 # Копия базового _merge_cells, но кандидаты — только клетки внутри рамки блока.
@@ -341,7 +368,7 @@ func _update_streaming() -> void:
 		if _cheby(block, pb) > STREAM_FREE_RADIUS:
 			_free_block(block)
 	# построить близкие, которых нет
-	for block: Vector2i in _block_rec.keys():
+	for block: Vector2i in _known_blocks.keys():
 		if _cheby(block, pb) <= STREAM_BUILD_RADIUS and not _block_holder.has(block):
 			_rebuild_block(block)
 
@@ -354,15 +381,25 @@ func _free_block(block: Vector2i) -> void:
 
 
 func _rebuild_all_freed() -> void:
-	for block: Vector2i in _block_rec.keys():
+	for block: Vector2i in _known_blocks.keys():
 		if not _block_holder.has(block):
 			_rebuild_block(block)
 
 
+# Пересборка блока БЕЗ записей для производной геометрии: заново эмитим её из
+# occupancy (_emit_block → geo в _block_st[block] + коллизия в тело блока), затем
+# доклеиваем ЭКСТРУ из _block_rec (перегородки/провалы/лампы/офис).
 func _rebuild_block(block: Vector2i) -> void:
-	if _block_holder.has(block) or not _block_rec.has(block):
+	if _block_holder.has(block) or not _known_blocks.has(block):
 		return
 	var holder := _block_holder_get(block)
+	# 1) Производная — из occupancy.
+	_block_st[block] = {}
+	_emit_block(block)
+	_build_block_meshes(holder, _block_st.get(block, {}))
+	# 2) Экстра — реплей записей (если у блока они есть).
+	if not _block_rec.has(block):
+		return
 	var rec: Dictionary = _block_rec[block]
 	var surfs: Dictionary = {}
 	for g: Array in rec["geo"]:
