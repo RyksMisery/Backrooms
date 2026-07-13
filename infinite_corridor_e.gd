@@ -21,10 +21,10 @@ const FLOOR_COMPARISON_ALBEDO := preload("res://textures/floor1.png")
 const FLOOR_CLASSIC_TINT := Color(1.0, 0.94, 0.46)
 const FLOOR_CLASSIC_UV_SCALE := 0.2
 const FLOOR_COMPARISON_UV_SCALE := 0.222
-# Провал: стенка шахты берёт ТОТ ЖЕ материал, что и пол (см. _make_story_void_material).
-# Раньше был кастомный ShaderMaterial-градиент, но он ронял MoltenVK.
+# Провал: стенка колодца использует ТОТ ЖЕ материал, что и пол (см. _make_story_void_material).
+# Никаких новых shader-features — иначе MoltenVK падает при первой отрисовке провала.
 
-var _live_ambient := LIGHT_COMMON.TUNED_AMBIENT_ENERGY
+var _live_ambient := 0.010   # коридор: приглушённый ambient (было TUNED_AMBIENT_ENERGY=0.035)
 var _live_range := LIGHT_COMMON.LAMP_RANGE
 var _live_energy_mul := 1.0
 var _story_room: Node3D
@@ -192,6 +192,11 @@ func _build_hud() -> void:
 
 func _process(delta: float) -> void:
 	super._process(delta)
+	# Родитель (_update_ambient_darkness) каждый кадр тянет ambient к своему target
+	# (AMBIENT_START/AMBIENT_DARK). Перебиваем его нашим значением, чтобы _live_ambient
+	# и крутилки +/- были главными в коридоре.
+	if _env != null:
+		_env.ambient_light_energy = _live_ambient
 	_update_story_pit(delta)
 	_update_story_flash(delta)
 	# Формат HUD как у level_e: имя, зона, fps, состояние, крутилки.
@@ -546,11 +551,12 @@ func _build_story_pit(room: Node3D, p: Vector3) -> void:
 
 
 func _make_story_void_material() -> void:
-	# Стенка шахты = ТОТ ЖЕ материал, что и пол (освещаемый). Без градиента и unshaded —
-	# именно так свет/тень легли правильно. Глубина темнеет естественным спадом света;
-	# бывшее свечение снизу было туманом (выключен в _apply_common_light_profile).
+	# Стенка колодца = ТОТ ЖЕ материал, что и пол (единый) — те же shader-features,
+	# новый пайплайн не компилируется (иначе MoltenVK падает). Глубина темнеет спадом
+	# света лампы; свечение снизу убрано выключением тумана.
 	_story_void_mat = _mat_floor
-	# Дно шахты — отдельный чёрный unshaded-материал (ambient его не подсвечивает).
+	# Дно шахты — отдельный чёрный unshaded-материал (эта вариация уже используется в
+	# сцене, так что новый пайплайн не создаётся).
 	var b := StandardMaterial3D.new()
 	b.albedo_color = Color(0, 0, 0)
 	b.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED

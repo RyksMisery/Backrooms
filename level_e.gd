@@ -488,4 +488,4 @@ func _apply_floor_variant() -> void:
 		return
 	_mat_floor.albedo_texture = FLOOR_COMPARISON_ALBEDO if _comparison_floor_enabled else FLOOR_CLASSIC_ALBEDO
 	_mat_floor.uv1_scale = Vector3.ONE * (FLOOR_COMPARISON_UV_SCALE if _comparison_floor_enabled else FLOOR_CLASSIC_UV_SCALE)
-	_sync_void_to_floor()   # стенки шахты следуют за текстурой пола
+	# _mat_void == _mat_floor — стенки колодца следуют за полом автоматически.

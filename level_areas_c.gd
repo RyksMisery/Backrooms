@@ -87,7 +87,7 @@ const WETSIGN_SPOT_ANGLE := 32.0
 const WETSIGN_SPOT_RANGE := 5.0
 const WETSIGN_SPOT_COLOR := Color(0.95, 0.92, 0.82)
 # ЭКСПЕРИМЕНТ атмосферы: ниже ambient = контрастнее свет/темнота (откат → 0.08).
-const AMBIENT_ENERGY := 0.025
+const AMBIENT_ENERGY := 0.010   # приглушённый ambient по умолчанию (как в коридоре; было 0.025)
 const AMBIENT_STEP := 0.005   # шаг рантайм-регулятора амбиента (клавиши -/+)
 const AMBIENT_MAX := 0.2      # верхний предел регулятора
 # Источники-лампы (одинаковые у всех светильников). Радиус больше + затухание
@@ -112,7 +112,7 @@ const AMBIENT_COLOR := Color(0.90, 0.88, 0.50)        # тёплый (дефол
 # Более ТЁПЛАЯ (желтее) тень в опт-режиме (клавиша 2): R/G высокие, синий снижен
 # сильнее дефолта → тени уходят в насыщенный жёлтый, а не в нейтраль/синь.
 const TUNED_AMBIENT_COLOR := Color(0.95, 0.86, 0.28)  # насыщенный тёплый жёлтый
-const TUNED_AMBIENT_ENERGY := 0.035                   # как дефолт — контраст/глубина теней не меняются
+const TUNED_AMBIENT_ENERGY := 0.010                   # приглушённый ambient (было 0.035); level_d по умолчанию включает tuned-режим
 # Пресет «0» (клавиша 0) — зафиксированный настроенный вид поверх опт-базы
 # + тёплая жёлтая тень.
 const P0_RANGE := 7.98           # TUNED_RANGE 7.25 × 1.10
@@ -125,17 +125,15 @@ const P0_AMBIENT_ENERGY := TUNED_AMBIENT_ENERGY
 # Тёплый distance-туман (клавиша 3): дымка вдаль — глубина + мягко гасит дальние
 # засветы сквозь стены. Плотность низкая, чтобы дальние коридоры оставались видны.
 const FOG_COLOR := Color(0.22, 0.18, 0.10)  # тёплый тёмно-янтарный (к фону палитры)
-# Провал (текстура пола, UNSHADED — иначе вертикаль тонет в темноте и ковёр не виден):
-# короткий градиент = тонкий ковёр-поясок у кромки, дальше чернота. VOID_TOP — яркость
-# пояска (подгон под пол), VOID_FADE — за сколько метров уходит в черноту.
-const VOID_TOP := 0.28
-const VOID_FADE := 2.0
 const FOG_DENSITY := 0.015                  # низкая — даль не тонет, лишь дымка
 # Нормализация по плотности (только новый режим): в плотных залах лампы тусклее
 # (не пересвечивают), в редких (провал) — ярче. Снимает накопление в больших залах.
 const LAMP_DENSITY_R := 4.5     # радиус подсчёта соседних ламп, м
 const LAMP_DENSITY_K := 0.35    # сила снижения яркости на каждого соседа
 const HUB_SEAM_STEP := 3        # шаг ламп в стыковых полосах хаба (гуще — пол не чернеет при малом радиусе)
+# Плавное загорание/гашение ламп пула по ВРЕМЕНИ (не по расстоянию): скорость
+# фейда энергии при входе/выходе области из пула света. ~4 → переход около 0.25–0.5 с.
+const LIGHT_FADE_SPEED := 4.0
 # Distance-fade: дальние лампы плавно гаснут и не рисуются (перф). Флаг для A/B FPS.
 const LAMP_FADE_ENABLED := false   # выкл: прироста FPS не дал, а дальние лужи гасли
 const LAMP_FADE_BEGIN := 28.0   # с какой дистанции лампа начинает гаснуть, м
@@ -157,8 +155,8 @@ const AREA_LIGHT_BOUNCE_ATTEN := 1.0
 const AREA_LIGHT_BOUNCE_Y_OFFSET := -0.75
 const AREA_LIGHT_FAR_BOUNCE_ENABLED := true
 const AREA_LIGHT_FAR_BOUNCE_HOPS := 2
-const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := 0.45
-const AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL := 0.30
+const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := 0.65   # было 0.45: заливка depth 2 дальше (те же лампы, лёгкая цена fill-rate)
+const AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL := 0.60  # было 0.30: depth 2 ярче (энергия для FPS бесплатна)
 const AREA_LIGHT_BOUNCE_SHADOWS := true
 const AREA_LIGHT_BOUNCE_SHADOW_CASTERS := 10
 const AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST := 5.0
@@ -434,7 +432,8 @@ var _mat_lamp_glow: ShaderMaterial
 var _mat_base: StandardMaterial3D
 var _mat_pit: StandardMaterial3D
 var _mat_round_lamp: StandardMaterial3D
-var _mat_void: StandardMaterial3D
+var _mat_void: StandardMaterial3D        # = _mat_floor (стенки колодца как пол)
+var _mat_void_bottom: StandardMaterial3D # чёрное дно колодца (unshaded)
 var _lamp_glow_mi: MeshInstance3D
 var _pit_fall_rects: Array[Rect2] = []   # мир-AABB дыр провала (для детекта падения)
 var _pit_fall_t := -1.0                  # таймер полёта (<0 — не падаем)
@@ -551,6 +550,7 @@ func _set_ambient(v: float) -> void:
 func _process(delta: float) -> void:
 	_update_shadow_pool()
 	_update_light_pool()
+	_update_light_fades(delta)
 	_check_pit_fall(delta)
 	_update_flash(delta)
 	if _hud_label != null:
@@ -3234,9 +3234,9 @@ func _build_pit(area: Dictionary) -> void:
 		var off := b + float(k - 1) * (hole + g) + hole
 		_pit_walk(c, off, b, g, inner)
 		_pit_walk(c, b, off, inner, g)
-	# Дно — единая плита под всем интерьером (низ шахт).
+	# Дно — единая плита под всем интерьером (низ шахт), чёрным материалом.
 	var icen := _local_world(c.x, c.y, float(ROOM_CELLS) * 0.5, float(ROOM_CELLS) * 0.5, -PIT_DEPTH)
-	_void_box(Vector3(icen.x, -PIT_DEPTH, icen.z), Vector3(inner * CELL, 0.2, inner * CELL))
+	_void_box(Vector3(icen.x, -PIT_DEPTH, icen.z), Vector3(inner * CELL, 0.2, inner * CELL), true, _mat_void_bottom)
 	# Дыры — мир-AABB для детекта падения и панель-rect для миникарты.
 	for ix in range(n):
 		var hx := b + float(ix) * (hole + g)
@@ -3770,10 +3770,11 @@ func _update_flash(delta: float) -> void:
 
 
 # Бокс «бездны» (текстура пола + градиент затемнения к низу) с коллизией.
-func _void_box(center: Vector3, size: Vector3, collide := true) -> void:
+func _void_box(center: Vector3, size: Vector3, collide := true, mat: Material = null) -> void:
 	var mi := MeshInstance3D.new()
-	var mesh := _void_gradient_mesh(size, center.y)
-	mesh.surface_set_material(0, _mat_void)
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	mesh.material = mat if mat != null else _mat_void   # стены=пол, дно=чёрный
 	mi.mesh = mesh
 	mi.position = center
 	add_child(mi)
@@ -3786,59 +3787,6 @@ func _void_box(center: Vector3, size: Vector3, collide := true) -> void:
 		cs.shape = _shape_cache[size]
 		cs.position = center
 		_body.add_child(cs)
-
-
-# Куб с запечённым в vertex-color градиентом «стенка→чернота» по мировой Y.
-# Повторяет прежний void-шейдер: t = clamp(-y / VOID_FADE, 0, 1); color = wall*(1-t).
-func _void_gradient_mesh(size: Vector3, center_y: float) -> ArrayMesh:
-	var hx := size.x * 0.5
-	var hy := size.y * 0.5
-	var hz := size.z * 0.5
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	# c0->c1 — нижнее ребро грани, c3->c2 — верхнее; интерполируем снизу вверх.
-	var faces := [
-		[Vector3(0, 0, 1), [Vector3(-hx, -hy, hz), Vector3(hx, -hy, hz), Vector3(hx, hy, hz), Vector3(-hx, hy, hz)]],
-		[Vector3(0, 0, -1), [Vector3(hx, -hy, -hz), Vector3(-hx, -hy, -hz), Vector3(-hx, hy, -hz), Vector3(hx, hy, -hz)]],
-		[Vector3(1, 0, 0), [Vector3(hx, -hy, hz), Vector3(hx, -hy, -hz), Vector3(hx, hy, -hz), Vector3(hx, hy, hz)]],
-		[Vector3(-1, 0, 0), [Vector3(-hx, -hy, -hz), Vector3(-hx, -hy, hz), Vector3(-hx, hy, hz), Vector3(-hx, hy, -hz)]],
-		[Vector3(0, 1, 0), [Vector3(-hx, hy, hz), Vector3(hx, hy, hz), Vector3(hx, hy, -hz), Vector3(-hx, hy, -hz)]],
-		[Vector3(0, -1, 0), [Vector3(-hx, -hy, -hz), Vector3(hx, -hy, -hz), Vector3(hx, -hy, hz), Vector3(-hx, -hy, hz)]],
-	]
-	# Вертикальное дробление граней: иначе на 12-м боксе цвет только по углам и
-	# затухание линейно на всю высоту (VOID_FADE не работает, стенка светится до дна).
-	var segs := int(ceilf(size.y)) + 1   # ~1 сегмент на метр высоты
-	for f in faces:
-		var n: Vector3 = f[0]
-		var v: Array = f[1]
-		var c0: Vector3 = v[0]
-		var c1: Vector3 = v[1]
-		var c2: Vector3 = v[2]
-		var c3: Vector3 = v[3]
-		st.set_normal(n)
-		for s in range(segs):
-			var u0 := float(s) / float(segs)
-			var u1 := float(s + 1) / float(segs)
-			var a0 := c0.lerp(c3, u0)
-			var a1 := c1.lerp(c2, u0)
-			var b0 := c0.lerp(c3, u1)
-			var b1 := c1.lerp(c2, u1)
-			for vert in [a0, a1, b1, a0, b1, b0]:
-				var t := clampf(-(center_y + vert.y) / VOID_FADE, 0.0, 1.0)
-				var k := VOID_TOP * (1.0 - t)   # VOID_TOP у пола, 0 в глубине
-				st.set_color(Color(k, k, k, 1.0))
-				st.add_vertex(vert)
-	return st.commit()
-
-
-# Держит текстуру/тинт/масштаб стенок шахты в точности как у пола (в т.ч. при
-# переключении варианта пола).
-func _sync_void_to_floor() -> void:
-	if _mat_void == null or _mat_floor == null:
-		return
-	_mat_void.albedo_texture = _mat_floor.albedo_texture
-	_mat_void.albedo_color = _mat_floor.albedo_color
-	_mat_void.uv1_scale = _mat_floor.uv1_scale
 
 
 func _merge_cells(kind: int, exclude := -999) -> Array[Rect2i]:
@@ -4950,18 +4898,52 @@ func _update_light_pool() -> void:
 	var light_ids := _light_area_ids_by_depth(player_ids, max_hops)
 	var safe_ids: Dictionary = light_ids["full"]
 	var far_ids: Dictionary = light_ids["far"]
+	# Вместо мгновенного visible пишем «хочет гореть» (pool_want); плавный переход
+	# энергии делает _update_light_fades (по времени, не по расстоянию).
 	for l: OmniLight3D in _lamps:
-		l.visible = (not area_on) and safe_ids.has(String(l.get_meta("area_id", "")))
+		l.set_meta("pool_want", (not area_on) and safe_ids.has(String(l.get_meta("area_id", ""))))
 	for l: Light3D in _area_lamps:
-		l.visible = area_on and safe_ids.has(String(l.get_meta("area_id", "")))
+		l.set_meta("pool_want", area_on and safe_ids.has(String(l.get_meta("area_id", ""))))
 	for l: OmniLight3D in _area_bounce_lamps:
 		var id := String(l.get_meta("area_id", ""))
 		var full_light := safe_ids.has(id)
 		var far_light := area_on and not full_light and far_ids.has(id)
-		l.visible = area_on and (full_light or far_light)
+		l.set_meta("pool_want", area_on and (full_light or far_light))
 		l.set_meta("far_bounce", far_light)
 		_apply_area_bounce_runtime(l)
 	_update_bounce_shadow_pool(p)
+
+
+# Плавное загорание/гашение ламп пула по ВРЕМЕНИ (не по расстоянию): вместо
+# мгновенного visible энергия едет к цели за ~LIGHT_FADE_SPEED. Базовую («полную»)
+# энергию перехватываем, пока лампа на полной яркости, чтобы не спорить с режимами
+# света (tuned/p0/old) и far/near-bounce, которые тоже её пишут.
+func _update_light_fades(delta: float) -> void:
+	var k := 1.0 - exp(-LIGHT_FADE_SPEED * delta)
+	for l: Light3D in _lamps:
+		_fade_pool_light(l, k)
+	for l: Light3D in _area_lamps:
+		_fade_pool_light(l, k)
+	for l: Light3D in _area_bounce_lamps:
+		_fade_pool_light(l, k)
+
+
+func _fade_pool_light(l: Light3D, k: float) -> void:
+	var target := 1.0 if bool(l.get_meta("pool_want", l.visible)) else 0.0
+	if not l.has_meta("pool_fade"):
+		# Первый кадр: без вспышки — снимаем текущую энергию как базу и встаём на цель.
+		l.set_meta("base_e", l.light_energy)
+		l.set_meta("pool_fade", target)
+	var fade := float(l.get_meta("pool_fade"))
+	if fade >= 0.99:
+		l.set_meta("base_e", l.light_energy)   # лампа на полной — обновляем базу (режим мог сменить)
+	var base_e := float(l.get_meta("base_e", l.light_energy))
+	fade = lerpf(fade, target, k)
+	if target == 0.0 and fade < 0.003:
+		fade = 0.0
+	l.set_meta("pool_fade", fade)
+	l.visible = fade > 0.002
+	l.light_energy = base_e * fade
 
 
 func _light_area_ids_by_depth(player_ids: Array, max_hops: int) -> Dictionary:
@@ -5188,19 +5170,14 @@ func _make_materials() -> void:
 	_mat_pit.emission_enabled = true
 	_mat_pit.emission = Color(1.0, 0.0, 0.0)
 	_mat_pit.emission_energy_multiplier = 0.8
-	# «Бездна» — градиент стен шахты из тёплого в чёрный по глубине (как в
-	# level0). Именно градиент даёт ощущение глубины, а не плоский чёрный.
-	# Провал без кастомного шейдера (тот падал в MoltenVK). Текстура шахты = текстура
-	# пола (синхронно через _sync_void_to_floor), материал UNSHADED (вертикаль иначе
-	# тонет в темноте, ковёр не виден). Яркость даёт серый vertex-color множитель:
-	# VOID_TOP у кромки (подгон под пол) → 0 к глубине.
-	_mat_void = StandardMaterial3D.new()
-	_mat_void.uv1_triplanar = true
-	_mat_void.vertex_color_use_as_albedo = true
-	_mat_void.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_mat_void.roughness = 1.0
-	_mat_void.metallic = 0.0
-	_sync_void_to_floor()
+	# «Бездна»: стенки колодца = ТОТ ЖЕ материал, что и пол (единый) — те же
+	# shader-features, новый пайплайн не компилируется (иначе MoltenVK падает).
+	# Глубина темнеет спадом света ламп; дно — отдельный чёрный unshaded-материал.
+	# (Единая с infinite_corridor_e схема провала.)
+	_mat_void = _mat_floor
+	_mat_void_bottom = StandardMaterial3D.new()
+	_mat_void_bottom.albedo_color = Color(0, 0, 0)
+	_mat_void_bottom.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 
 
 func _setup_environment() -> void:
