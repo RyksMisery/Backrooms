@@ -147,7 +147,7 @@ func _input(event):
 			_toggle_crouch()
 		elif event.keycode == KEY_L:
 			_toggle_flashlight()
-		elif event.keycode == KEY_T:
+		elif event.keycode == KEY_T and not bool(get_meta("block_debug_t_action", false)):
 			_start_teleport()
 
 func _process(delta: float) -> void:

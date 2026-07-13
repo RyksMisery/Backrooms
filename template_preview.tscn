@@ -4,5 +4,5 @@
 
 [node name="TemplatePreview" type="Node3D"]
 script = ExtResource("1_prev")
-preview_template = "maze_wilson_x2_chaos"
+preview_template = "hall_2x2"
 preview_rot = 0

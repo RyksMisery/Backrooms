@@ -87,7 +87,9 @@ const WETSIGN_SPOT_ANGLE := 32.0
 const WETSIGN_SPOT_RANGE := 5.0
 const WETSIGN_SPOT_COLOR := Color(0.95, 0.92, 0.82)
 # ЭКСПЕРИМЕНТ атмосферы: ниже ambient = контрастнее свет/темнота (откат → 0.08).
-const AMBIENT_ENERGY := 0.035
+const AMBIENT_ENERGY := 0.025
+const AMBIENT_STEP := 0.005   # шаг рантайм-регулятора амбиента (клавиши -/+)
+const AMBIENT_MAX := 0.2      # верхний предел регулятора
 # Источники-лампы (одинаковые у всех светильников). Радиус больше + затухание
 # площе → лужи света шире и мягче перекрываются, без резких тёмных пятен в залах.
 const LAMP_RANGE := 10.0
@@ -123,6 +125,11 @@ const P0_AMBIENT_ENERGY := TUNED_AMBIENT_ENERGY
 # Тёплый distance-туман (клавиша 3): дымка вдаль — глубина + мягко гасит дальние
 # засветы сквозь стены. Плотность низкая, чтобы дальние коридоры оставались видны.
 const FOG_COLOR := Color(0.22, 0.18, 0.10)  # тёплый тёмно-янтарный (к фону палитры)
+# Провал (текстура пола, UNSHADED — иначе вертикаль тонет в темноте и ковёр не виден):
+# короткий градиент = тонкий ковёр-поясок у кромки, дальше чернота. VOID_TOP — яркость
+# пояска (подгон под пол), VOID_FADE — за сколько метров уходит в черноту.
+const VOID_TOP := 0.28
+const VOID_FADE := 2.0
 const FOG_DENSITY := 0.015                  # низкая — даль не тонет, лишь дымка
 # Нормализация по плотности (только новый режим): в плотных залах лампы тусклее
 # (не пересвечивают), в редких (провал) — ярче. Снимает накопление в больших залах.
@@ -382,6 +389,7 @@ var _light_model_scene: PackedScene
 var _hud_label: Label
 var _minimap: Control
 var _env: Environment                   # для переключения ambient в рантайме
+var _ambient_energy := AMBIENT_ENERGY   # рантайм-регулятор амбиента (клавиши -/+)
 var _light_new := true                  # режим света: ON=новый, OFF=старый (G)
 var _area_light_mode := AREA_LIGHT_DEFAULT_ON
 var _area_lights_supported := false
@@ -426,7 +434,7 @@ var _mat_lamp_glow: ShaderMaterial
 var _mat_base: StandardMaterial3D
 var _mat_pit: StandardMaterial3D
 var _mat_round_lamp: StandardMaterial3D
-var _mat_void: ShaderMaterial
+var _mat_void: StandardMaterial3D
 var _lamp_glow_mi: MeshInstance3D
 var _pit_fall_rects: Array[Rect2] = []   # мир-AABB дыр провала (для детекта падения)
 var _pit_fall_t := -1.0                  # таймер полёта (<0 — не падаем)
@@ -525,6 +533,19 @@ func _input(event: InputEvent) -> void:
 		_post_on = not _post_on           # диагностика: пост-обработка
 		_env.ssao_enabled = _post_on
 		_env.glow_enabled = _post_on
+	elif ke.keycode == KEY_MINUS or ke.keycode == KEY_KP_SUBTRACT:
+		_set_ambient(_ambient_energy - AMBIENT_STEP)   # темнее
+	elif ke.keycode == KEY_EQUAL or ke.keycode == KEY_KP_ADD:
+		_set_ambient(_ambient_energy + AMBIENT_STEP)   # светлее
+
+
+# Рантайм-регулятор амбиента (клавиши -/+). Значение — источник правды для
+# базового режима света (см. _apply_light_mode), поэтому не сбрасывается при G.
+func _set_ambient(v: float) -> void:
+	_ambient_energy = clampf(v, 0.0, AMBIENT_MAX)
+	if _env != null:
+		_env.ambient_light_energy = _ambient_energy
+	print("ambient = %.3f" % _ambient_energy)
 
 
 func _process(delta: float) -> void:
@@ -533,10 +554,10 @@ func _process(delta: float) -> void:
 	_check_pit_fall(delta)
 	_update_flash(delta)
 	if _hud_label != null:
-		_hud_label.text = "%s\n%s\n%d fps\nсвет:%s (G)\nArea:%s (9)\nAreaR:%s (8)\nпост:%s (H)\nопт:%s (2)\nпресет0:%s (0)\nкарта (M)" % [
+		_hud_label.text = "%s\n%s\n%d fps\nсвет:%s (G)\nArea:%s (9)\nAreaR:%s (8)\nпост:%s (H)\nопт:%s (2)\nпресет0:%s (0)\namb:%.3f (-/+)\nкарта (M)" % [
 			_current_area_name(), _render_diag, Engine.get_frames_per_second(),
 			("ON" if _light_new else "OFF"), _area_light_mode_label(), ("ON" if _area_panel_range_mode else "OFF"), ("ON" if _post_on else "OFF"),
-			("ON" if _tuned_on else "OFF"), ("ON" if _p0_on else "OFF")]
+			("ON" if _tuned_on else "OFF"), ("ON" if _p0_on else "OFF"), _ambient_energy]
 	if _minimap != null and _minimap.visible:
 		_minimap.queue_redraw()
 	_update_pit_flicker(delta)
@@ -589,6 +610,16 @@ func _init_areas() -> void:
 				"cell": Vector2i(0, 1), "type": "maze_wilson_x2_tail", "rot": 0, "axis": "z",
 				"area_group": "preview_maze",
 			})
+		if preview_template == "hall_2x2":
+			# Зал 2×2: первичная область (0,0) владеет всей геометрией/светом слитого
+			# интерьера 33×33; 3 хвоста — заглушки (свой build/lights не выполняют).
+			_areas[0]["area_group"] = "hall_preview"
+			for cc: Vector2i in [Vector2i(1, 0), Vector2i(0, 1), Vector2i(1, 1)]:
+				_areas.append({
+					"id": "hall_tail_%d_%d" % [cc.x, cc.y], "name": "ЗАЛ 2×2 (хвост)",
+					"cell": cc, "type": "hall_2x2_tail", "rot": 0, "axis": "z",
+					"area_group": "hall_preview",
+				})
 		_area_by_cell.clear()
 		for area: Dictionary in _areas:
 			_area_by_cell[area["cell"]] = area
@@ -967,6 +998,8 @@ func _build_area_content() -> void:
 				_build_pit(area)
 			"column_hall":
 				_build_column_hall(area)
+			"hall_2x2":
+				_build_hall_2x2(area)
 			"lit_hall":
 				_build_lit_hall(area)
 			"office_corridor":
@@ -990,6 +1023,65 @@ func _build_column_hall(area: Dictionary) -> void:
 	for lx in [3, 10]:
 		for lz in [3, 10]:
 			_place_column(area, lx, lz, 2, 2)
+
+
+# Большой зал 2×2: сетка 5×5 крестовых колонн на слитом интерьере 33×33.
+# Линии — в абсолютных world-клетках (первичная область всегда в (0,0), её
+# интерьер начинается с клетки WALL_CELLS=3; интерьер [3,36), центр 19.5).
+# Кольцо {4, 35} поджато к стенам — вылет уходит в стену ~1 клетку (центр в
+# зале), внутренние {11.75, 19.5, 27.25} — полные «+». Шаг 7.75.
+# Сетка 5×5, чётко по клеткам: центры в world-клетках 3/11/19/27/35 (центры
+# клеток, шаг 8). Интерьер [3,36), центр 19.5. Крайние линии 3.5/35.5 — кольцо:
+# поперечина Т/угол Г в первой клетке у стены, вылет уходит в стену на 1 клетку.
+const HALL2_LINES := [3.5, 11.5, 19.5, 27.5, 35.5]   # основная сетка 5×5
+const HALL2_MIDS := [7.5, 15.5, 23.5, 31.5]          # центры ячеек 4×4 (шахматка)
+const HALL2_ARM := 3.0          # длина бруса, клеток
+const HALL2_THICK := 1.0        # толщина бруса, клеток
+
+func _build_hall_2x2(_area: Dictionary) -> void:
+	for p: Vector2 in _hall2_points():
+		_place_cross(p.x, p.y)
+
+
+# Все центры колонн: основная сетка 5×5 + сетка 4×4 в центрах ячеек = шахматка.
+func _hall2_points() -> Array:
+	var pts: Array = []
+	for gx: float in HALL2_LINES:
+		for gz: float in HALL2_LINES:
+			pts.append(Vector2(gx, gz))
+	for gx: float in HALL2_MIDS:
+		for gz: float in HALL2_MIDS:
+			pts.append(Vector2(gx, gz))
+	return pts
+
+
+# Крест из двух брусьев (по X и по Z), центр в world-клетке (gx, gz). Вылеты,
+# попавшие в стену, прячутся в её объёме → пристеночные кресты читаются как Т/Г.
+func _place_cross(gx: float, gz: float) -> void:
+	var y := CEIL_H * 0.5
+	var pos := Vector3(gx * CELL, y, gz * CELL)
+	_put("wall", Vector3(HALL2_ARM * CELL, CEIL_H, HALL2_THICK * CELL), pos, true, true, true)
+	_put("wall", Vector3(HALL2_THICK * CELL, CEIL_H, HALL2_ARM * CELL), pos, true, true, true)
+	# occupancy (K_COLUMN) метится отдельным пасом ПОСЛЕ вырубки швов —
+	# см. _mark_hall_2x2_occupancy в _carve_hall_2x2_seams (иначе центральные
+	# кресты попадают на ещё-не-прорубленный шов K_WALL и не помечаются).
+
+
+func _mark_cross_cells(gx: float, gz: float) -> void:
+	var ha := HALL2_ARM * 0.5
+	var ht := HALL2_THICK * 0.5
+	var rects := [
+		[gx - ha, gx + ha, gz - ht, gz + ht],   # горизонтальный брус
+		[gx - ht, gx + ht, gz - ha, gz + ha],   # вертикальный брус
+	]
+	for r: Array in rects:
+		for cx in range(int(floor(r[0])), int(ceil(r[1]))):
+			for cz in range(int(floor(r[2])), int(ceil(r[3]))):
+				var cc := Vector2i(cx, cz)
+				var t: int = _grid.get(cc, K_SOLID)
+				if t == K_FLOOR or t == K_PASSAGE:
+					_set_cell(cc, K_COLUMN)
+					_light_block[cc] = true
 
 
 # Зал с подсветкой: полупанельные пилястры по углам и серединам стен (перенос
@@ -3195,6 +3287,9 @@ func _place_column(area: Dictionary, lx: int, lz: int, w: int, h: int) -> void:
 
 
 func _carve_passages() -> void:
+	if preview_template == "hall_2x2":
+		_carve_hall_2x2_seams(Vector2i(0, 0))   # слить 4 области в единый интерьер
+		return
 	if preview_template != "":
 		return   # одиночный шаблон — внешних стыков нет
 	var E := Vector2i(1, 0)
@@ -3450,6 +3545,32 @@ func _thick_wall_office_opening(_area: Dictionary, dir: Vector2i, along: int) ->
 
 
 # along0/along1 — диапазон прохода в панелях вдоль общей стены (произвольный).
+# Слияние блока 2×2 (origin = СЗ-клетка) в единый интерьер: вырубаем 4 общие
+# стены целиком + центральный стык 3×3. Та же машинерия, что у хаба.
+func _carve_hall_2x2_seams(o: Vector2i) -> void:
+	var E := Vector2i(1, 0)
+	var S := Vector2i(0, 1)
+	var merge := [
+		[o, E], [o + S, E],   # верх/низ: З↔В
+		[o, S], [o + E, S],   # лево/право: С↔Ю
+	]
+	for cc in merge:
+		if _area_by_cell.has(cc[0]):
+			_carve_passage(_area_by_cell[cc[0]], cc[1], 0, ROOM_CELLS)
+	var jb := _area_base(o.x, o.y)
+	for gx in range(jb.x + WALL_CELLS + ROOM_CELLS, jb.x + WALL_CELLS + ROOM_CELLS + WALL_CELLS):
+		for gz in range(jb.y + WALL_CELLS + ROOM_CELLS, jb.y + WALL_CELLS + ROOM_CELLS + WALL_CELLS):
+			_set_cell(Vector2i(gx, gz), K_PASSAGE)
+	_mark_hall_2x2_occupancy()   # колонны -> K_COLUMN уже поверх прорубленного пола
+
+
+# Пометить клетки под крестами как K_COLUMN (после вырубки швов, чтобы центральные
+# кресты на бывшем шве тоже попали в occupancy, а не остались проходом).
+func _mark_hall_2x2_occupancy() -> void:
+	for p: Vector2 in _hall2_points():
+		_mark_cross_cells(p.x, p.y)
+
+
 func _carve_passage(area: Dictionary, dir: Vector2i, along0: int, along1: int) -> void:
 	var base := _area_base_cell(area)
 	if dir == Vector2i(-1, 0):
@@ -3648,13 +3769,12 @@ func _update_flash(delta: float) -> void:
 		_flash_overlay.visible = false
 
 
-# Бокс «бездны» (unshaded-чёрный) с коллизией.
+# Бокс «бездны» (текстура пола + градиент затемнения к низу) с коллизией.
 func _void_box(center: Vector3, size: Vector3, collide := true) -> void:
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	bm.material = _mat_void
-	mi.mesh = bm
+	var mesh := _void_gradient_mesh(size, center.y)
+	mesh.surface_set_material(0, _mat_void)
+	mi.mesh = mesh
 	mi.position = center
 	add_child(mi)
 	if collide:
@@ -3666,6 +3786,59 @@ func _void_box(center: Vector3, size: Vector3, collide := true) -> void:
 		cs.shape = _shape_cache[size]
 		cs.position = center
 		_body.add_child(cs)
+
+
+# Куб с запечённым в vertex-color градиентом «стенка→чернота» по мировой Y.
+# Повторяет прежний void-шейдер: t = clamp(-y / VOID_FADE, 0, 1); color = wall*(1-t).
+func _void_gradient_mesh(size: Vector3, center_y: float) -> ArrayMesh:
+	var hx := size.x * 0.5
+	var hy := size.y * 0.5
+	var hz := size.z * 0.5
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# c0->c1 — нижнее ребро грани, c3->c2 — верхнее; интерполируем снизу вверх.
+	var faces := [
+		[Vector3(0, 0, 1), [Vector3(-hx, -hy, hz), Vector3(hx, -hy, hz), Vector3(hx, hy, hz), Vector3(-hx, hy, hz)]],
+		[Vector3(0, 0, -1), [Vector3(hx, -hy, -hz), Vector3(-hx, -hy, -hz), Vector3(-hx, hy, -hz), Vector3(hx, hy, -hz)]],
+		[Vector3(1, 0, 0), [Vector3(hx, -hy, hz), Vector3(hx, -hy, -hz), Vector3(hx, hy, -hz), Vector3(hx, hy, hz)]],
+		[Vector3(-1, 0, 0), [Vector3(-hx, -hy, -hz), Vector3(-hx, -hy, hz), Vector3(-hx, hy, hz), Vector3(-hx, hy, -hz)]],
+		[Vector3(0, 1, 0), [Vector3(-hx, hy, hz), Vector3(hx, hy, hz), Vector3(hx, hy, -hz), Vector3(-hx, hy, -hz)]],
+		[Vector3(0, -1, 0), [Vector3(-hx, -hy, -hz), Vector3(hx, -hy, -hz), Vector3(hx, -hy, hz), Vector3(-hx, -hy, hz)]],
+	]
+	# Вертикальное дробление граней: иначе на 12-м боксе цвет только по углам и
+	# затухание линейно на всю высоту (VOID_FADE не работает, стенка светится до дна).
+	var segs := int(ceilf(size.y)) + 1   # ~1 сегмент на метр высоты
+	for f in faces:
+		var n: Vector3 = f[0]
+		var v: Array = f[1]
+		var c0: Vector3 = v[0]
+		var c1: Vector3 = v[1]
+		var c2: Vector3 = v[2]
+		var c3: Vector3 = v[3]
+		st.set_normal(n)
+		for s in range(segs):
+			var u0 := float(s) / float(segs)
+			var u1 := float(s + 1) / float(segs)
+			var a0 := c0.lerp(c3, u0)
+			var a1 := c1.lerp(c2, u0)
+			var b0 := c0.lerp(c3, u1)
+			var b1 := c1.lerp(c2, u1)
+			for vert in [a0, a1, b1, a0, b1, b0]:
+				var t := clampf(-(center_y + vert.y) / VOID_FADE, 0.0, 1.0)
+				var k := VOID_TOP * (1.0 - t)   # VOID_TOP у пола, 0 в глубине
+				st.set_color(Color(k, k, k, 1.0))
+				st.add_vertex(vert)
+	return st.commit()
+
+
+# Держит текстуру/тинт/масштаб стенок шахты в точности как у пола (в т.ч. при
+# переключении варианта пола).
+func _sync_void_to_floor() -> void:
+	if _mat_void == null or _mat_floor == null:
+		return
+	_mat_void.albedo_texture = _mat_floor.albedo_texture
+	_mat_void.albedo_color = _mat_floor.albedo_color
+	_mat_void.uv1_scale = _mat_floor.uv1_scale
 
 
 func _merge_cells(kind: int, exclude := -999) -> Array[Rect2i]:
@@ -3815,6 +3988,10 @@ func _add_lights() -> void:
 				_add_pit_lights(area)
 			"column_hall":
 				_add_column_hall_lights(area)
+			"hall_2x2":
+				_add_hall_2x2_lights(area)
+			"hall_2x2_tail":
+				pass   # свет ставит первичная "hall_2x2"
 			"office_corridor":
 				_add_drawn_lights()
 			"room_2":
@@ -4020,6 +4197,8 @@ func _add_room3_lights(area: Dictionary) -> void:
 # Стыковые полосы 4 залов хаба (carved-швы, x≈37.5 и z≈37.5) — там сетки нет,
 # отсюда тёмный крест по центру. Ставим редкие одиночные тугие лампы.
 func _add_hub_seam_lights() -> void:
+	if preview_template != "":
+		return   # в превью хаба нет — швы освещает свой шаблон
 	if not _area_by_cell.has(Vector2i(1, 1)):
 		return
 	var xs := 37.5            # центр клетки шва (X.5 — совпадает с сеткой плитки)
@@ -4039,6 +4218,33 @@ func _spawn_seam_lamp(gx: float, gz: float) -> void:
 	_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
 	_spawn_lamp_source(pos, true)
 	_set_last_lamp_bounce_shadow_allowed(false)
+
+
+# Зал 2×2 — ВРЕМЕННЫЙ свет-заглушка (спека: свет TBD после колонн). Лампа в
+# центре каждого пролёта между линиями колонн (4×4), чтобы зал не был чёрным.
+func _add_hall_2x2_lights(_area: Dictionary) -> void:
+	# По одному ТЕНЕВОМУ светильнику в каждом центре между колоннами. Центры —
+	# узлы шахматки «линия × середина» (каждый окружён 4 колоннами; у стен — 2-3
+	# + стена), это пустые клетки между колонными узлами. Эмиссия как в зале
+	# level_d: панель + tight-источник; мягкие тени даёт bounce-shadow-пул
+	# (включён по умолчанию, area-режим). area_id всех ламп = primary ("preview"),
+	# чтобы пул света не гасил лампы на карвленых швах без своего area_id.
+	# Только внутренние центры: линия-координата не крайняя (без пристеночного
+	# ряда) — у стен свет не вешаем. inner = HALL2_LINES без первой/последней.
+	var inner: Array = HALL2_LINES.slice(1, HALL2_LINES.size() - 1)   # [11.5, 19.5, 27.5]
+	for hx: float in inner:
+		for hz: float in HALL2_MIDS:
+			_emit_hall_light(hx, hz)
+	for hx: float in HALL2_MIDS:
+		for hz: float in inner:
+			_emit_hall_light(hx, hz)
+
+
+func _emit_hall_light(hx: float, hz: float) -> void:
+	var pos := Vector3(hx * CELL, CEIL_H + 0.02, hz * CELL)   # hx/hz — центры клеток (x.5)
+	_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
+	_spawn_lamp_source(pos, true)          # tight — чёткие лужи/тени, как в зале level_d
+	_set_last_lamp_area_id("preview")      # весь зал — одна area-группа
 
 
 # Большой зал: сплошная сетка ламп, но ТУГОЙ свет (узкий радиус, крутое
@@ -4421,7 +4627,7 @@ func _normalize_lamp_energy() -> void:
 # по плотности) ↔ старый (узкий радиус, равная яркость).
 func _apply_light_mode() -> void:
 	if _env != null:
-		_env.ambient_light_energy = AMBIENT_ENERGY if _light_new else AMBIENT_ENERGY_OLD
+		_env.ambient_light_energy = _ambient_energy if _light_new else AMBIENT_ENERGY_OLD
 	for l: OmniLight3D in _lamps:
 		if not _light_new:
 			# Старый режим: всё равномерно-тугое.
@@ -4867,7 +5073,10 @@ func _spawn_player() -> void:
 		var sx := 7.5
 		var sz := 7.5
 		var syaw := 0.0
-		if preview_template == "office_corridor":
+		if preview_template == "hall_2x2":
+			sx = 16.5   # центр слитого интерьера 33×33 (в координатах первичной (0,0))
+			sz = 16.5
+		elif preview_template == "office_corridor":
 			sx = 13.0   # под торцевой проём (сдвинута на 1/2 клетки)
 			sz = 1.0    # северный конец (вход)
 			syaw = PI   # лицом на юг (+Z), к торцевому проёму
@@ -4981,19 +5190,17 @@ func _make_materials() -> void:
 	_mat_pit.emission_energy_multiplier = 0.8
 	# «Бездна» — градиент стен шахты из тёплого в чёрный по глубине (как в
 	# level0). Именно градиент даёт ощущение глубины, а не плоский чёрный.
-	_mat_void = ShaderMaterial.new()
-	var void_shader := Shader.new()
-	void_shader.code = "shader_type spatial;\n" \
-		+ "varying float wy;\n" \
-		+ "uniform vec3 wall_color : source_color = vec3(0.45, 0.42, 0.26);\n" \
-		+ "uniform float fade = 6.0;\n" \
-		+ "void vertex() { wy = (MODEL_MATRIX * vec4(VERTEX, 1.0)).y; }\n" \
-		+ "void fragment() {\n" \
-		+ "\tfloat t = clamp((-wy) / fade, 0.0, 1.0);\n" \
-		+ "\tALBEDO = mix(wall_color, vec3(0.0), t);\n" \
-		+ "\tROUGHNESS = 1.0;\n" \
-		+ "}\n"
-	_mat_void.shader = void_shader
+	# Провал без кастомного шейдера (тот падал в MoltenVK). Текстура шахты = текстура
+	# пола (синхронно через _sync_void_to_floor), материал UNSHADED (вертикаль иначе
+	# тонет в темноте, ковёр не виден). Яркость даёт серый vertex-color множитель:
+	# VOID_TOP у кромки (подгон под пол) → 0 к глубине.
+	_mat_void = StandardMaterial3D.new()
+	_mat_void.uv1_triplanar = true
+	_mat_void.vertex_color_use_as_albedo = true
+	_mat_void.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_mat_void.roughness = 1.0
+	_mat_void.metallic = 0.0
+	_sync_void_to_floor()
 
 
 func _setup_environment() -> void:

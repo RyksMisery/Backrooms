@@ -32,6 +32,13 @@ const LAZY_LOAD := true          # на загрузке строить толь
 const AMBIENT_KEY_STEP := 0.005  # шаг регулировки амбиента на +/-
 const BOUNCE_ENERGY_KEY_STEP := 0.05  # шаг множителя энергии bounce-ламп на ,/.
 
+# Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
+# видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
+const FLOOR_CLASSIC_ALBEDO := preload("res://textures/floor.png")
+const FLOOR_COMPARISON_ALBEDO := preload("res://textures/floor1.png")
+const FLOOR_CLASSIC_UV_SCALE := 0.2
+const FLOOR_COMPARISON_UV_SCALE := 0.222
+
 var _block_st: Dictionary = {}      # Vector2i -> { st_name: SurfaceTool }  (первичная сборка)
 var _block_holder: Dictionary = {}  # Vector2i -> Node3D (живой узел: меши + тело коллизии)
 var _block_rec: Dictionary = {}     # Vector2i -> { "geo": [[st,size,pos]], "col": [[size,pos]] }  (только ЭКСТРА)
@@ -43,6 +50,7 @@ var _stream_on := true
 var _last_pb := Vector2i(2147483647, 2147483647)
 var _bounce_range := AREA_LIGHT_BOUNCE_RANGE   # живой радиус bounce-omni ([ / ])
 var _bounce_energy_mul := 1.0   # живой множитель энергии bounce-ламп (, / .)
+var _comparison_floor_enabled := true   # T: true=floor1 (дефолт), false=classic floor.png
 
 
 func _begin() -> void:
@@ -58,9 +66,11 @@ func _process(delta: float) -> void:
 	super._process(delta)
 	_update_streaming()
 	if _hud_label != null:
-		_hud_label.text = "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d\nambient:%.3f (+/-)  bounce:%.1f ([ ])  bE:x%.2f (,.)" % [
+		_hud_label.text = "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d\nпол:%s (T)\nambient:%.3f (+/-)  bounce:%.1f ([ ])  bE:x%.2f (,.)" % [
 			LEVEL_NAME, _current_area_name(), Engine.get_frames_per_second(),
-			("ON" if _stream_on else "OFF"), _block_holder.size(), _amb_read(), _bounce_range, _bounce_energy_mul
+			("ON" if _stream_on else "OFF"), _block_holder.size(),
+			("FLOOR1" if _comparison_floor_enabled else "CLASSIC"),
+			_amb_read(), _bounce_range, _bounce_energy_mul
 		]
 
 
@@ -84,6 +94,9 @@ func _input(event: InputEvent) -> void:
 		_bounce_energy_mul = maxf(0.0, _bounce_energy_mul - BOUNCE_ENERGY_KEY_STEP)
 	elif ke.keycode == KEY_PERIOD:
 		_bounce_energy_mul += BOUNCE_ENERGY_KEY_STEP
+	elif ke.keycode == KEY_T:
+		_comparison_floor_enabled = not _comparison_floor_enabled
+		_apply_floor_variant()
 	elif ke.keycode == KEY_M and _minimap != null:
 		_minimap.visible = not _minimap.visible
 	elif ke.keycode == KEY_K:
@@ -464,3 +477,15 @@ func _spawn_player() -> void:
 	player.rotation.y = _spawn_yaw
 	add_child(player)
 	_player_ref = player
+	# T занят сравнением пола, а не debug-действием игрока.
+	_player_ref.set_meta("block_debug_t_action", true)
+	# Дефолт — новый пол (floor1); материалы уже созданы в _make_materials.
+	_apply_floor_variant()
+
+
+func _apply_floor_variant() -> void:
+	if _mat_floor == null:
+		return
+	_mat_floor.albedo_texture = FLOOR_COMPARISON_ALBEDO if _comparison_floor_enabled else FLOOR_CLASSIC_ALBEDO
+	_mat_floor.uv1_scale = Vector3.ONE * (FLOOR_COMPARISON_UV_SCALE if _comparison_floor_enabled else FLOOR_CLASSIC_UV_SCALE)
+	_sync_void_to_floor()   # стенки шахты следуют за текстурой пола
