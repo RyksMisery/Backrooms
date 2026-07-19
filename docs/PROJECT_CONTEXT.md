@@ -20,6 +20,13 @@ This file is the handoff note for future Codex chats working on this project.
 
 - Do not work directly on `main` for feature or cleanup work.
 - Create a separate branch for each task.
+- Пользователь заранее разрешил любые локальные правки кода, ассетов и
+  документации, а также все необходимые импорты, запуски и проверки в рамках
+  проекта. Не останавливать работу ради повторного подтверждения этих действий.
+- Запрашивать отдельное согласование только перед полным удалением существенных
+  данных/системы, массовой необратимой операцией или глобальным изменением
+  архитектуры/проекта. Обычная локальная переделка модели или механики к этому
+  исключению не относится.
 - Suggested branch names:
   - `chore/asset-cleanup`
   - `chore/project-structure`

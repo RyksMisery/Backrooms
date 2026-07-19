@@ -1,5 +1,134 @@
 # Lights
 
+## Финальный профиль level_e
+
+С `2026-07-19` продуктовый свет `level_e` — `LF3-11F`: occupancy-priority,
+дальние видимые receiver до `20 м`, бюджет `10 + временная 11-я` тень, blur
+`2.75`. Он включается при загрузке уровня и не имеет игрового переключателя на
+старый свет. `REFERENCE`, `LF3-10J` и `LF3-11P` сохраняются только как профили
+A/B-бота и регрессионных проверок. Их наличие в коде не означает поддержку
+нескольких продуктовых моделей света.
+
+Продуктовый фоновый звук `level_e` также перенесён из `infinite_e`: натуральный
+зацикленный `fluorescent_lamp_hum.wav` с плотностной дистанционной громкостью и
+`fluorescent_lamp_flick.wav` на фактических спадах яркости мерцающей лампы.
+Предыдущий синтезированный гул/треск сохраняется только как тестовый профиль
+`--level-e-reference-audio`; в обычной игре переключателя нет.
+
+Финальная проверка после смены defaults: `2026-07-19 02-35-33`, Vulkan
+завершился штатно; `REFERENCE/10J/11F = 14.179/14.049/14.053 ms`, у `11F`
+активны 11 теней все 900 stress-кадров. Валидатор подтвердил старт в `11F`,
+атомарный возврат Reference для теста и переключение `FINAL WAV ↔ reference`
+без потери обоих профилей.
+
+> В `level_e` отдельно испытывается профиль окклюзии LF3-8O: клавиша `8`
+> переключает неизменённый `REFERENCE` и стабильный пул до 10 теней
+> (`max opacity=1.0`, `blur=2.75`, исходные bias). Этот профиль реализуется только
+> в производном `level_e.gd`; правила и параметры базы ниже не переписываются,
+> пока maze-тест не пройден.
+> Актуальный LF3 использует максимум 10 теней без состояния передачи.
+> Distance-opacity: full до `6 м`, `1-smoothstep(6,14,d)` до `14 м`, затем off.
+> Для десятого слота добавлен симметричный вес
+> `smoothstep(0,2,d11-d10)`, чтобы смена 10/11 происходила при нулевой opacity.
+> При равной позиции подход и отход обязаны дать одинаковую тень.
+> Автотест от `2026-07-18 01-46-04` подтвердил 0 расхождений состояния на 21
+> паре одинаковых координат; визуальный максимум направленной разницы у коробок
+> снизился с `RGB MAE=0.00213` до `0.000682`.
+> Вариант с двумя дополнительными тенями отклонён после
+> `VK_ERROR_DEVICE_LOST` и не должен возвращаться. Fade отвечает только за
+> плавность: дальний пробой устраняется отдельно — заменой незащищённых Omni
+> на occupancy-ограниченный вклад, а не дальнейшей настройкой opacity.
+
+> Эксперимент после fixed-camera A/B: 10 теней остаются штатным набором, а
+> одиннадцатая разрешена только внутри пространственного crossfade границы
+> 10/11. Ближняя и дальняя лампы получают взаимодополняющие веса от разницы
+> расстояний; в точке равенства обе имеют вес `0.5`. Максимум 11 действует
+> лишь во время передачи. Вариант допускается только после A/B плавности,
+> leak-контроля и Vulkan-стресса; это не возврат отклонённого постоянного пула 12.
+> Автоконтроль `2026-07-18 22-35-41`: пик fixed-camera снизился
+> `0.00037957 → 0.00021379`, направления совпали; 900/900 стресс-кадров реально
+> использовали 11 теней (`mean=16.41 ms`, `max=23.69 ms`) без Vulkan-сбоя.
+> Профиль оставлен активным экспериментом до ручной оценки плавности и засвета.
+> Ручная оценка: тени практически достигли нужной плавности, но на длинной
+> дистанции вернулся световой пробой. Поэтому профиль `LF3-11X` зафиксирован
+> только как промежуточный checkpoint плавности, не как финальный свет.
+> Приоритет выше плавности: восстановить дальнюю окклюзию без потери текущего
+> поведения теней. До этого запрещено назначать `LF3-11X` универсальным
+> профилем лабиринта или продолжать косметическую доводку fade.
+
+> Следующий отдельный эксперимент — `LF3-11P`, occupancy-aware приоритет
+> shadow-слотов. Базовый `LF3-11X` сохраняется без изменений для отката.
+> В `level_e`: `8` переключает `REFERENCE ↔ LF3`, `7` внутри LF3 выбирает
+> `11X` (только расстояние) или `11P` (приоритет риска пробоя).
+> `11P` проверяет лучи от лампы к набору мировых проб вокруг игрока; пересечение
+> `K_WALL/K_PARTITION` повышает приоритет лампы весом, зависящим от расстояния
+> до проб. Лимит и crossfade остаются `10 + временная 11-я`.
+> На первом этапе импортные 3D-объекты получают обычный приоритет по расстоянию;
+> отдельный receiver-score по их AABB добавляется только после допуска стен.
+> Автопрогон `LF3-11P` `2026-07-19 00-13-59`: в четырёх maze-ракурсах
+> occupancy-риск определил 5/6/8/5 активных caster; motion 900 кадров прошёл
+> без Vulkan-сбоя (`mean=16.404 ms`, `max=20.67 ms`). Fixed-camera
+> `00-14-45`: направления совпали, но пик вырос относительно `11X`
+> `0.00021379 → 0.00026176`. `11P` оставлен активным только потому, что
+> дальняя окклюзия приоритетнее этой небольшой потери плавности; ручной leak-
+> контроль обязателен.
+
+> Для ручного поиска дальнего засвета клавиша `0` сравнивает текущий выбранный
+> профиль (`LF3-11P` либо `11X`) с историческим checkpoint `LF3-10J`.
+> `10J` — максимум 10 теней, distance-ranking без occupancy-priority и без
+> временной 11-й; десятый слот затухает к нулю у границы 10/11. Это тот вариант,
+> где направленная симметрия уже была исправлена, но визуальный shadow-pop ещё
+> оставался. Переключение `0` не меняет REFERENCE, геометрию и световые энергии.
+
+> Тройной A/B `2026-07-19 01-38-10/01-41-36`:
+> `11P` плавнее `10J` на 31%, средний FPS статистически одинаков, но worst-frame
+> `11P` выше (`26.97 ms`). Расчётный средний риск пробоя
+> `REFERENCE/10J/11P = 0.28324/0.02468/0.00635`, что подтверждает снижение, но
+> не устранение засвета. Локальные пробы дали ложный ноль на статических maze-
+> кадрах при сохраняющемся ручном дальнем засвете. Поэтому `11P` не допущен:
+> следующий receiver-score должен учитывать дальние видимые поверхности во
+> frustum, а не только точки вокруг игрока.
+
+> Зафиксированные checkpoints не изменять: `LF3-10J` (max-10, заметный pop)
+> и `LF3-11P` (10+1, локальные occupancy-пробы). Новый эксперимент —
+> `LF3-11F`: тот же профиль теней `11P`, но receiver-набор дополняется первыми
+> видимыми occupancy-стенами/перегородками вдоль веера лучей камеры до `20 м`.
+> Эти дальние frustum-receiver участвуют только в ranking shadow-слотов и не
+> меняют энергию/радиус ламп. После первого теста уточнено: одной смены ranking
+> недостаточно, потому что старый shadow-opacity обнулялся на `14 м`.
+> Только caster, реально связанный с дальним frustum-receiver, использует
+> плавный shadow fade `6…20 м`; локальные caster и checkpoints сохраняют
+> `6…14 м`. Ручное управление упрощено: `8` переключает
+> `REFERENCE ↔ выбранный LF3`, `0` — `LF3-10J ↔ LF3-11F`. Клавиша `7` больше
+> не участвует в основном ручном A/B; `11P` остаётся программным checkpoint.
+> Контроль `2026-07-19 01-57-59/01-59-56` подтвердил назначение `11F`.
+> В динамическом прогоне его средний unshadowed-risk равен `1.271` против
+> `2.042` у `10J` и `2.803` у REFERENCE; fixed-camera peak `0.0002233` против
+> `0.0003796` у `10J`. В четырёх статических maze-ракурсах `11F` убрал
+> незакрытые caster в двух проблемных видах (`1→0` и `2→1`), в одном оставил
+> тот же слабый остаток. Цена — средний кадр `14.90 ms` против `13.80 ms` у
+> `10J` в одинаковом shadow-стрессе (около 8%). Поэтому `11F` зафиксирован как
+> активный дальний эксперимент, а не как финальный универсальный профиль;
+> визуальный проход разных maze-вариаций остаётся решающим.
+> Ручной визуальный проход `2026-07-19` признал `11F` лучшим из текущих
+> вариантов. После одного пользовательского `VK_ERROR_DEVICE_LOST` выполнена
+> серия стабильности: 5 последовательных fixed-camera/stress запусков
+> (`02-14-04…02-20-53`) и 3 maze/motion запуска (`02-23-12…02-24-32`), все
+> завершились штатно. В stress это 4500 кадров с постоянно активными 11 тенями;
+> воспроизведённых Vulkan-сбоев `0/8` запусков. Причинная связь единичного
+> ручного сбоя с `11F` пока не подтверждена и не опровергнута.
+> Средние stress frame time по пяти запускам:
+> `REFERENCE/10J/11F = 14.292/14.196/14.236 ms`
+> (примерно `70.0/70.4/70.2 FPS`). Разница среднего менее 0.7% и находится в
+> шуме; редкие пики остаются: worst `21.86/33.37/31.35 ms`.
+
+> Параллельный эксперимент и его A/B-контракт описаны в
+> `docs/lighting_field.md`. Скалярный LF v1 с light layers и портальными
+> SpotLight признан неверным направлением и не переносится в игровые уровни.
+> LF v2 строится reference-first как направленное освещение из occupancy.
+> До его полного визуального и производительного допуска правила ниже
+> остаются действующей системой `LEGACY`.
+
 ## Scope
 
 Rules for ceiling light panels and runtime light sources.
@@ -11,13 +140,36 @@ Rules for ceiling light panels and runtime light sources.
 - Some area types may use double panels: 2 joined light panels in one local
   light placement cell.
 
-## Grid Alignment (default)
+## Grid Alignment (mandatory, no implicit exceptions)
 
-Ceiling lights ALWAYS sit on the ceiling grid — at cell centers (local
-`x + 0.5`, `z + 0.5`), following the area's light step. Off-grid placement is
-allowed only when a specific design explicitly calls for it. When placing a
-single lamp by hand (e.g. a flickering lamp in a passage), snap it to the
-nearest cell center, not to a cell boundary.
+Every ceiling fixture MUST sit on the canonical panel/occupancy grid of its
+owning area or chunk. The X/Z position of a 1x1 fixture is always a cell center
+(local `x + 0.5`, `z + 0.5`, transformed with the area); its runtime light
+source inherits the same X/Z and may differ only vertically. Do not place a
+fixture at a raw geometric coordinate, cell boundary, texture-space estimate,
+or arbitrary meter offset. This rule also applies to hand-authored, story,
+flickering, corridor, niche, and single-room lights. A template may choose a
+different GRID CELL, but it may not create an off-grid fixture unless the user
+explicitly requests an exception for that exact fixture.
+
+If an instruction says **"in the center of the room/space"**, use this
+selection algorithm:
+
+1. Calculate the geometric center only as a target point; do not place the
+   fixture there yet.
+2. Enumerate valid ceiling-grid cell centers inside that room/space.
+3. Discard cells forbidden by occupancy, clearance, or fixture-spacing rules.
+4. Choose the remaining cell center with the smallest squared X/Z distance to
+   the target point. Thus, if the geometric center falls between ceiling
+   tiles, the fixture goes to the nearest tile center.
+5. For an exact distance tie, prefer the smaller local Z cell index, then the
+   smaller local X cell index, unless that template explicitly names another
+   one of the tied GRID CELLS. This makes the result deterministic.
+
+If the nearest cell is blocked, continue in the same distance order until the
+nearest legal grid cell is found; never solve a blockage by nudging the fixture
+off-grid. Multi-panel fixtures must likewise be unions of whole adjacent grid
+cells and remain anchored to their cell centers.
 
 ## Placement Order
 

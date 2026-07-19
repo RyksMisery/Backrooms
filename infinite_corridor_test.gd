@@ -60,7 +60,7 @@ const PARTITION_T := 0.5
 const OFFICE_DOOR_SCALE := 1.5
 const OFFICE_DOOR_DEPTH := 0.1808
 const OFFICE_REVEAL_TRIM_T := 0.08
-const OFFICE_FRAME_OUTSET := 0.015
+const OFFICE_FRAME_OUTSET := 0.025
 const OFFICE_DOOR_STEP_CHUNKS := 1
 const MAP_W := 160.0
 const MAP_H := 240.0
@@ -617,7 +617,7 @@ func _far_guide_light_ids() -> Dictionary:
 	return ids
 
 
-func _apply_light_entry(entry: Dictionary, base_energy: float, keep_panel := false) -> void:
+func _apply_light_entry(entry: Dictionary, base_energy: float, _keep_panel := false) -> void:
 	var level := clampf(float(entry.get("level", 1.0)), 0.0, 1.0)
 	if is_instance_valid(entry["light"]):
 		var light := entry["light"] as OmniLight3D
@@ -1036,8 +1036,8 @@ func _add_box(parent: Node3D, mat_name: String, size: Vector3, local_pos: Vector
 	return mi
 
 
-func _material_for(name: String) -> Material:
-	match name:
+func _material_for(material_name: String) -> Material:
+	match material_name:
 		"wall":
 			return _mat_wall
 		"floor":
@@ -1086,7 +1086,7 @@ class InfiniteCorridorMinimap:
 		var far_end: Node3D = level.get("_far_end")
 		var w := float(level.get("MAP_W"))
 		var h := float(level.get("MAP_H"))
-		var scale := float(level.get("MAP_SCALE"))
+		var map_scale := float(level.get("MAP_SCALE"))
 		var center_x := w * 0.5
 		var player_y := h * 0.56
 		draw_rect(Rect2(Vector2.ZERO, Vector2(w, h)), Color(0.04, 0.035, 0.018, 0.78), true)
@@ -1094,24 +1094,24 @@ class InfiniteCorridorMinimap:
 		var corridor_w := float(level.get("CORRIDOR_W"))
 		var chunk_len := float(level.get("CHUNK_LEN"))
 		var player_z := player.position.z
-		var lane_w := corridor_w * scale
+		var lane_w := corridor_w * map_scale
 		for chunk_node in chunks:
 			var chunk := chunk_node as Node3D
 			if chunk == null:
 				continue
-			var dz: float = (chunk.position.z - player_z) * scale
-			var y: float = player_y + dz - chunk_len * scale * 0.5
-			var rect := Rect2(Vector2(center_x - lane_w * 0.5, y), Vector2(lane_w, chunk_len * scale))
+			var dz: float = (chunk.position.z - player_z) * map_scale
+			var y: float = player_y + dz - chunk_len * map_scale * 0.5
+			var rect := Rect2(Vector2(center_x - lane_w * 0.5, y), Vector2(lane_w, chunk_len * map_scale))
 			if rect.position.y > h or rect.position.y + rect.size.y < 0.0:
 				continue
 			draw_rect(rect, Color(0.44, 0.40, 0.17, 0.52), true)
 			draw_rect(rect, Color(0.95, 0.86, 0.28, 0.38), false, 1.0)
 		if far_end != null:
-			var end_y := player_y + (far_end.position.z - player_z) * scale
+			var end_y := player_y + (far_end.position.z - player_z) * map_scale
 			draw_line(Vector2(center_x - lane_w * 0.72, end_y), Vector2(center_x + lane_w * 0.72, end_y), Color(1.0, 0.72, 0.32, 0.9), 3.0)
 		if level.has_method("_light_wave_front_z"):
 			var wave_z := float(level.call("_light_wave_front_z"))
-			var wave_y := player_y + (wave_z - player_z) * scale
+			var wave_y := player_y + (wave_z - player_z) * map_scale
 			draw_line(Vector2(center_x - lane_w * 0.62, wave_y), Vector2(center_x + lane_w * 0.62, wave_y), Color(0.15, 0.15, 0.12, 0.95), 2.0)
 		draw_circle(Vector2(center_x, player_y), 4.5, Color(0.35, 0.95, 1.0, 0.95))
 		draw_line(Vector2(center_x, player_y), Vector2(center_x, player_y - 12.0), Color(0.35, 0.95, 1.0, 0.85), 2.0)

@@ -31,6 +31,23 @@ const STREAM_FREE_RADIUS := 3    # освобождать за этим (гис�
 const LAZY_LOAD := true          # на загрузке строить только близкие блоки (иначе весь уровень)
 const AMBIENT_KEY_STEP := 0.005  # шаг регулировки амбиента на +/-
 const BOUNCE_ENERGY_KEY_STEP := 0.05  # шаг множителя энергии bounce-ламп на ,/.
+const LF3_SHADOW_CASTERS := 10
+const LF3_SHADOW_TRANSIENT_CASTERS := 11
+const LF3_SHADOW_OPACITY := 1.0
+const LF3_SHADOW_BLUR := 2.75
+const LF3_SHADOW_BIAS := 0.06
+const LF3_SHADOW_NORMAL_BIAS := 1.25
+const LF3_SHADOW_FULL_DISTANCE := 6.0
+const LF3_SHADOW_OFF_DISTANCE := 14.0
+const LF3_SHADOW_BOUNDARY_GAP := 2.0
+const LF3_OCCLUSION_PRIORITY_BONUS := 8.0
+const LF3_FRUSTUM_RECEIVER_DISTANCE := 20.0
+const LF3_FRUSTUM_RECEIVER_RAYS := 13
+const FINAL_LAMP_HUM_STREAM := preload("res://sounds/fluorescent_lamp_hum.wav")
+const FINAL_LAMP_FLICK_STREAM := preload("res://sounds/fluorescent_lamp_flick.wav")
+const FINAL_HUM_BASE_DB := -22.0
+const FINAL_FLICK_BASE_DB := -38.0
+const FINAL_AUDIO_SILENT_DB := -80.0
 
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
 # видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
@@ -48,9 +65,45 @@ var _emit_ctx_active := false       # true → _put роутит ПРОИЗВО�
 var _load_center := Vector2i.ZERO   # блок-центр ленивой загрузки (блок спавна)
 var _stream_on := true
 var _last_pb := Vector2i(2147483647, 2147483647)
+var _stream_build_queue: Array[Vector2i] = []
 var _bounce_range := AREA_LIGHT_BOUNCE_RANGE   # живой радиус bounce-omni ([ / ])
 var _bounce_energy_mul := 1.0   # живой множитель энергии bounce-ламп (, / .)
 var _comparison_floor_enabled := true   # T: true=floor1 (дефолт), false=classic floor.png
+var _lf3_shadow_mode := true   # продуктовый default; REFERENCE доступен только ботам
+var _lf3_occlusion_priority_enabled := true   # preserved 11X/11P checkpoint state
+var _lf3_far_frustum_enabled := true   # current 11F; 11P remains checkpoint
+var _lf3_sharp_checkpoint_enabled := false   # 0: current LF3 ↔ historical 10J
+var _lf3_level_e_capture_requested := false
+var _lf3_level_e_capture_running := false
+var _lf3_box_capture_requested := false
+var _lf3_smooth_capture_requested := false
+var _final_lamp_audio_enabled := true
+var _level_e_reference_audio_requested := false
+var _final_hum_audio_player: AudioStreamPlayer
+var _final_flick_audio_player: AudioStreamPlayer
+
+
+func _ready() -> void:
+	_level_e_reference_audio_requested = \
+		"--level-e-reference-audio" in OS.get_cmdline_user_args()
+	_final_lamp_audio_enabled = not _level_e_reference_audio_requested
+	_lf3_level_e_capture_requested = "--lf3-level-e-capture" in OS.get_cmdline_user_args()
+	_lf3_box_capture_requested = "--lf3-level-e-box-shadow-capture" in OS.get_cmdline_user_args()
+	_lf3_smooth_capture_requested = \
+		"--lf3-level-e-box-shadow-smoothness-capture" in OS.get_cmdline_user_args()
+	if _lf3_level_e_capture_requested or _lf3_box_capture_requested \
+			or _lf3_smooth_capture_requested:
+		randomize_maze_seed = false
+		maze_seed = 173205
+	super._ready()
+	_lf3_capture_reference_shadow_profiles()
+	lf3_set_shadow_mode(true)
+	if _lf3_level_e_capture_requested:
+		call_deferred("_lf3_level_e_capture_suite")
+	elif _lf3_box_capture_requested:
+		call_deferred("_lf3_box_shadow_capture_suite")
+	elif _lf3_smooth_capture_requested:
+		call_deferred("_lf3_box_shadow_smoothness_capture_suite")
 
 
 func _begin() -> void:
@@ -59,6 +112,7 @@ func _begin() -> void:
 	_block_holder.clear()
 	_block_rec.clear()
 	_known_blocks.clear()
+	_stream_build_queue.clear()
 	_emit_ctx_active = false
 
 
@@ -66,10 +120,12 @@ func _process(delta: float) -> void:
 	super._process(delta)
 	_update_streaming()
 	if _hud_label != null:
-		_hud_label.text = "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d\nпол:%s (T)\nambient:%.3f (+/-)  bounce:%.1f ([ ])  bE:x%.2f (,.)" % [
+		_hud_label.text = "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d\nпол:%s (T)  свет:%s  звук:%s\nambient:%.3f (+/-)  bounce:%.1f ([ ])  bE:x%.2f (,.)" % [
 			LEVEL_NAME, _current_area_name(), Engine.get_frames_per_second(),
 			("ON" if _stream_on else "OFF"), _block_holder.size(),
 			("FLOOR1" if _comparison_floor_enabled else "CLASSIC"),
+			(_lf3_profile_label() if _lf3_shadow_mode else "REFERENCE TEST"),
+			("FINAL WAV" if _final_lamp_audio_enabled else "REFERENCE TEST"),
 			_amb_read(), _bounce_range, _bounce_energy_mul
 		]
 
@@ -102,10 +158,1248 @@ func _input(event: InputEvent) -> void:
 	elif ke.keycode == KEY_K:
 		_stream_on = not _stream_on
 		if not _stream_on:
+			_stream_build_queue.clear()
 			_rebuild_all_freed()          # выкл → показать весь уровень
 		else:
 			_last_pb = Vector2i(2147483647, 2147483647)   # заставить пересчитать окно
 		print("[level_e] стриминг: ", "ON" if _stream_on else "OFF", " блоков=", _block_holder.size())
+
+
+# ── Финальный звук ламп; старый генератор остаётся тестовым профилем ──
+
+func _setup_audio() -> void:
+	_mix_rate = AudioServer.get_mix_rate()
+	_lamp_pts = PackedVector2Array()
+	for l: OmniLight3D in _lamps:
+		_lamp_pts.append(Vector2(l.position.x, l.position.z))
+	var hum_stream := FINAL_LAMP_HUM_STREAM.duplicate() as AudioStreamWAV
+	if hum_stream != null:
+		hum_stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		hum_stream.loop_begin = 0
+		hum_stream.loop_end = int(round(hum_stream.get_length() * hum_stream.mix_rate))
+	_final_hum_audio_player = AudioStreamPlayer.new()
+	_final_hum_audio_player.stream = hum_stream if hum_stream != null else FINAL_LAMP_HUM_STREAM
+	_final_hum_audio_player.volume_db = FINAL_AUDIO_SILENT_DB
+	add_child(_final_hum_audio_player)
+	_final_flick_audio_player = AudioStreamPlayer.new()
+	_final_flick_audio_player.stream = FINAL_LAMP_FLICK_STREAM
+	_final_flick_audio_player.volume_db = FINAL_AUDIO_SILENT_DB
+	add_child(_final_flick_audio_player)
+	_hum_player = _make_gen_player(FINAL_HUM_BASE_DB)
+	_flick_player = _make_gen_player(FINAL_FLICK_BASE_DB)
+	_start_level_e_audio.call_deferred()
+
+
+func _start_level_e_audio() -> void:
+	_apply_level_e_audio_profile()
+
+
+func level_e_set_final_audio(enabled: bool) -> void:
+	_final_lamp_audio_enabled = enabled
+	_apply_level_e_audio_profile()
+
+
+func _apply_level_e_audio_profile() -> void:
+	if _final_lamp_audio_enabled:
+		if _hum_player != null:
+			_hum_player.stop()
+		if _flick_player != null:
+			_flick_player.stop()
+		_hum_playback = null
+		_flick_playback = null
+		if _final_hum_audio_player != null and not _final_hum_audio_player.playing:
+			_final_hum_audio_player.play()
+	else:
+		if _final_hum_audio_player != null:
+			_final_hum_audio_player.stop()
+		if _final_flick_audio_player != null:
+			_final_flick_audio_player.stop()
+		if _hum_player != null:
+			_hum_player.play()
+			_hum_playback = _hum_player.get_stream_playback() as AudioStreamGeneratorPlayback
+		if _flick_player != null:
+			_flick_player.play()
+			_flick_playback = _flick_player.get_stream_playback() as AudioStreamGeneratorPlayback
+
+
+func _update_audio(delta: float) -> void:
+	if _player_ref == null:
+		return
+	var player_pos := Vector2(_player_ref.position.x, _player_ref.position.z)
+	var sigma_squared := HUM_SIGMA * HUM_SIGMA
+	var density := 0.0
+	for point: Vector2 in _lamp_pts:
+		density += exp(-player_pos.distance_squared_to(point) / sigma_squared)
+	_hum_volume = _approach(_hum_volume, clampf(density / HUM_FULL, 0.0, 1.0), delta)
+	if _has_flicker:
+		var distance := player_pos.distance_to(Vector2(_flicker_pos.x, _flicker_pos.z))
+		_flick_volume = _approach(_flick_volume, _falloff(distance, 7.0, 3.0), delta)
+	if _final_lamp_audio_enabled:
+		_set_final_audio_volume(_final_hum_audio_player, FINAL_HUM_BASE_DB, _hum_volume)
+		_set_final_audio_volume(_final_flick_audio_player, FINAL_FLICK_BASE_DB, _flick_volume)
+	else:
+		_fill_hum()
+		if _has_flicker:
+			_fill_flick()
+
+
+func _update_pit_flicker(delta: float) -> void:
+	var previous_level := _flick_level
+	super._update_pit_flicker(delta)
+	if _final_lamp_audio_enabled and _flick_level < previous_level - 0.001 \
+			and _final_flick_audio_player != null:
+		_final_flick_audio_player.pitch_scale = randf_range(0.985, 1.015)
+		_final_flick_audio_player.play(0.0)
+
+
+func _set_final_audio_volume(player: AudioStreamPlayer, base_db: float, level: float) -> void:
+	if player == null:
+		return
+	player.volume_db = FINAL_AUDIO_SILENT_DB if level <= 0.0001 \
+		else maxf(FINAL_AUDIO_SILENT_DB, base_db + linear_to_db(level))
+
+
+# ── LF3-11X/11P: distance/occupancy-priority при том же бюджете 10+1 ──
+
+func lf3_set_shadow_mode(enabled: bool) -> void:
+	_lf3_shadow_mode = enabled
+	if not enabled:
+		_lf3_restore_reference_shadow_profiles()
+	if _player_ref != null:
+		_update_shadow_pool()
+		_update_bounce_shadow_pool(_player_ref.position)
+	print("[level_e] тени: ", _lf3_profile_label() if enabled else "REFERENCE")
+
+
+func lf3_set_occlusion_priority(enabled: bool) -> void:
+	_lf3_occlusion_priority_enabled = enabled
+	if _lf3_shadow_mode and _player_ref != null:
+		_update_shadow_pool()
+		_update_bounce_shadow_pool(_player_ref.position)
+	print("[level_e] профиль теней: ", _lf3_profile_label())
+
+
+func lf3_set_far_frustum(enabled: bool) -> void:
+	_lf3_far_frustum_enabled = enabled
+	if _lf3_shadow_mode and _player_ref != null:
+		_update_shadow_pool()
+		_update_bounce_shadow_pool(_player_ref.position)
+	print("[level_e] дальние receiver: ", "ON" if enabled else "OFF")
+
+
+func lf3_set_sharp_checkpoint(enabled: bool) -> void:
+	_lf3_sharp_checkpoint_enabled = enabled
+	if _lf3_shadow_mode and _player_ref != null:
+		_update_shadow_pool()
+		_update_bounce_shadow_pool(_player_ref.position)
+	print("[level_e] профиль теней: ", _lf3_profile_label())
+
+
+func _lf3_profile_label() -> String:
+	if _lf3_sharp_checkpoint_enabled:
+		return "LF3-10J"
+	if _lf3_occlusion_priority_enabled and _lf3_far_frustum_enabled:
+		return "LF3-11F"
+	return "LF3-11P" if _lf3_occlusion_priority_enabled else "LF3-11X"
+
+
+func _lf3_capture_reference_shadow_profiles() -> void:
+	for l: OmniLight3D in _lamps:
+		_lf3_capture_reference_shadow_profile(l)
+	for l: OmniLight3D in _area_bounce_lamps:
+		_lf3_capture_reference_shadow_profile(l)
+
+
+func _lf3_capture_reference_shadow_profile(l: OmniLight3D) -> void:
+	if l == null or l.has_meta("lf3_ref_shadow_profile"):
+		return
+	l.set_meta("lf3_ref_shadow_profile", true)
+	l.set_meta("lf3_ref_shadow_enabled", l.shadow_enabled)
+	l.set_meta("lf3_ref_shadow_opacity", l.shadow_opacity)
+	l.set_meta("lf3_ref_shadow_blur", l.shadow_blur)
+	l.set_meta("lf3_ref_shadow_bias", l.shadow_bias)
+	l.set_meta("lf3_ref_shadow_normal_bias", l.shadow_normal_bias)
+
+
+func _lf3_restore_reference_shadow_profiles() -> void:
+	for l: OmniLight3D in _lamps:
+		_lf3_restore_reference_shadow_profile(l)
+	for l: OmniLight3D in _area_bounce_lamps:
+		_lf3_restore_reference_shadow_profile(l)
+
+
+func _lf3_restore_reference_shadow_profile(l: OmniLight3D) -> void:
+	if l == null or not l.has_meta("lf3_ref_shadow_profile"):
+		return
+	l.shadow_enabled = bool(l.get_meta("lf3_ref_shadow_enabled", false))
+	l.shadow_opacity = float(l.get_meta("lf3_ref_shadow_opacity", 1.0))
+	l.shadow_blur = float(l.get_meta("lf3_ref_shadow_blur", 1.0))
+	l.shadow_bias = float(l.get_meta("lf3_ref_shadow_bias", 0.1))
+	l.shadow_normal_bias = float(l.get_meta("lf3_ref_shadow_normal_bias", 1.0))
+
+
+func _update_shadow_pool() -> void:
+	# В AreaLight-режиме direct даёт AreaLight, а архитектурная мягкая заливка —
+	# bounce Omni; её пул обрабатывается отдельным override ниже.
+	if _area_lights_active():
+		super._update_shadow_pool()
+		return
+	if not _lf3_shadow_mode:
+		for l: OmniLight3D in _lamps:
+			_lf3_restore_reference_shadow_profile(l)
+		super._update_shadow_pool()
+		return
+	_lf3_apply_stable_shadow_pool(_lamps, _player_ref.position if _player_ref != null else Vector3.ZERO, false)
+
+
+func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
+	if not _lf3_shadow_mode:
+		for l: OmniLight3D in _area_bounce_lamps:
+			_lf3_restore_reference_shadow_profile(l)
+		super._update_bounce_shadow_pool(player_pos)
+		return
+	if not (_area_bounce_shadows_enabled() and _area_bounce_mode \
+			and _area_lights_active()):
+		for l: OmniLight3D in _area_bounce_lamps:
+			_lf3_set_shadow(l, false)
+		return
+	_lf3_apply_stable_shadow_pool(_area_bounce_lamps, player_pos, true)
+
+
+func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
+		player_pos: Vector3, bounce_family: bool) -> void:
+	var candidates: Array[Dictionary] = []
+	var receiver_data := _lf3_receiver_probe_data(player_pos,
+		_lf3_far_frustum_enabled and not _lf3_sharp_checkpoint_enabled)
+	var receiver_probes: Array = receiver_data["probes"]
+	var far_receiver_probes: Array = receiver_data["far_probes"]
+	for l: OmniLight3D in lights:
+		_lf3_capture_reference_shadow_profile(l)
+		var allowed := bool(l.get_meta("bounce_shadow_allowed", true))
+		var far := bounce_family and bool(l.get_meta("far_bounce", false))
+		var pool_on := bool(l.get_meta("pool_want", l.visible))
+		if not pool_on or not allowed or far:
+			l.set_meta("lf3_occlusion_risk", 0.0)
+			l.set_meta("lf3_far_occlusion_risk", 0.0)
+			_lf3_set_shadow(l, false)
+			continue
+		var distance := l.global_position.distance_to(player_pos)
+		var occlusion_risk := _lf3_light_occlusion_risk(l, receiver_probes) \
+			if _lf3_occlusion_priority_enabled and not _lf3_sharp_checkpoint_enabled \
+			else 0.0
+		var far_occlusion_risk := _lf3_light_occlusion_risk(l, far_receiver_probes) \
+			if _lf3_far_frustum_enabled and not _lf3_sharp_checkpoint_enabled \
+			else 0.0
+		l.set_meta("lf3_occlusion_risk", occlusion_risk)
+		l.set_meta("lf3_far_occlusion_risk", far_occlusion_risk)
+		candidates.append({
+			"lamp": l,
+			"distance": distance,
+			"occlusion_risk": occlusion_risk,
+			"far_occlusion_risk": far_occlusion_risk,
+			"rank_score": distance - occlusion_risk * LF3_OCCLUSION_PRIORITY_BONUS,
+			"id": l.get_instance_id(),
+		})
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var sa := float(a["rank_score"])
+		var sb := float(b["rank_score"])
+		if not is_equal_approx(sa, sb):
+			return sa < sb
+		var da := float(a["distance"])
+		var db := float(b["distance"])
+		if not is_equal_approx(da, db):
+			return da < db
+		return int(a["id"]) < int(b["id"])
+	)
+	var active_ids := {}
+	var profile_limit := LF3_SHADOW_CASTERS if _lf3_sharp_checkpoint_enabled \
+		else LF3_SHADOW_TRANSIENT_CASTERS
+	var limit := mini(profile_limit, candidates.size())
+	var boundary_near_weight := 1.0
+	var boundary_far_weight := 0.0
+	if candidates.size() > LF3_SHADOW_CASTERS:
+		var boundary_near_score := float(candidates[LF3_SHADOW_CASTERS - 1]["rank_score"])
+		var boundary_far_score := float(candidates[LF3_SHADOW_CASTERS]["rank_score"])
+		var boundary_gap := maxf(0.0, boundary_far_score - boundary_near_score)
+		if _lf3_sharp_checkpoint_enabled:
+			boundary_near_weight = smoothstep(
+				0.0, LF3_SHADOW_BOUNDARY_GAP, boundary_gap)
+		else:
+			boundary_near_weight = 0.5 + 0.5 * smoothstep(
+				0.0, LF3_SHADOW_BOUNDARY_GAP, boundary_gap)
+			boundary_far_weight = 1.0 - boundary_near_weight
+	for index in range(limit):
+		var candidate: Dictionary = candidates[index]
+		var distance := float(candidate["distance"])
+		var shadow_off_distance := LF3_FRUSTUM_RECEIVER_DISTANCE \
+			if float(candidate["far_occlusion_risk"]) > 0.001 \
+			else LF3_SHADOW_OFF_DISTANCE
+		var opacity := (1.0 - smoothstep(
+			LF3_SHADOW_FULL_DISTANCE, shadow_off_distance, distance)) \
+			* LF3_SHADOW_OPACITY
+		if index == LF3_SHADOW_CASTERS - 1:
+			opacity *= boundary_near_weight
+		elif index == LF3_SHADOW_CASTERS:
+			opacity *= boundary_far_weight
+		var l := candidate["lamp"] as OmniLight3D
+		if opacity > 0.001:
+			active_ids[l.get_instance_id()] = true
+			_lf3_set_shadow_opacity(l, opacity)
+		else:
+			_lf3_set_shadow(l, false)
+	for l: OmniLight3D in lights:
+		if not active_ids.has(l.get_instance_id()):
+			_lf3_set_shadow(l, false)
+
+
+func _lf3_receiver_probe_data(player_pos: Vector3, include_far: bool) -> Dictionary:
+	var camera := get_viewport().get_camera_3d()
+	var forward := Vector3(0.0, 0.0, -1.0)
+	var right := Vector3(1.0, 0.0, 0.0)
+	if camera != null:
+		forward = -camera.global_basis.z
+		forward.y = 0.0
+		if forward.length_squared() > 0.0001:
+			forward = forward.normalized()
+		right = camera.global_basis.x
+		right.y = 0.0
+		if right.length_squared() > 0.0001:
+			right = right.normalized()
+	var local_probes: Array[Vector3] = [
+		player_pos,
+		player_pos + forward * 3.0,
+		player_pos + forward * 6.0,
+		player_pos + right * 2.5,
+		player_pos - right * 2.5,
+		player_pos + forward * 4.0 + right * 2.5,
+		player_pos + forward * 4.0 - right * 2.5,
+	]
+	var far_probes: Array[Vector3] = []
+	if include_far:
+		var half_angle := deg_to_rad(60.0)
+		for ray_index in range(LF3_FRUSTUM_RECEIVER_RAYS):
+			var fraction := float(ray_index) / float(maxi(LF3_FRUSTUM_RECEIVER_RAYS - 1, 1))
+			var angle := lerpf(-half_angle, half_angle, fraction)
+			var direction := forward.rotated(Vector3.UP, angle).normalized()
+			var receiver := _lf3_first_occupancy_receiver(player_pos, direction)
+			if receiver != Vector3.INF and receiver.distance_to(player_pos) >= 6.0:
+				far_probes.append(receiver)
+	var probes: Array[Vector3] = local_probes.duplicate()
+	probes.append_array(far_probes)
+	return {
+		"probes": probes,
+		"local_probes": local_probes,
+		"far_probes": far_probes,
+		"local_count": local_probes.size(),
+		"far_count": far_probes.size(),
+	}
+
+
+func _lf3_first_occupancy_receiver(origin: Vector3, direction: Vector3) -> Vector3:
+	var step_size := maxf(CELL * 0.5, 0.1)
+	var steps := int(ceil(LF3_FRUSTUM_RECEIVER_DISTANCE / step_size))
+	for index in range(2, steps + 1):
+		var point := origin + direction * (float(index) * step_size)
+		var cell := Vector2i(int(floor(point.x / CELL)), int(floor(point.z / CELL)))
+		var cell_type := int(_grid.get(cell, K_SOLID))
+		if cell_type == K_WALL or cell_type == K_PARTITION:
+			return Vector3(
+				(float(cell.x) + 0.5) * CELL,
+				origin.y,
+				(float(cell.y) + 0.5) * CELL)
+	return Vector3.INF
+
+
+func _lf3_light_occlusion_risk(light: OmniLight3D, probes: Array) -> float:
+	var strongest := 0.0
+	var blocked_count := 0
+	var light_range := maxf(light.omni_range, 0.001)
+	for probe: Vector3 in probes:
+		var distance := Vector2(light.global_position.x, light.global_position.z).distance_to(
+			Vector2(probe.x, probe.z))
+		if distance >= light_range:
+			continue
+		if not _lf3_occupancy_blocks_segment(light.global_position, probe):
+			continue
+		blocked_count += 1
+		var reach := 1.0 - smoothstep(0.0, light_range, distance)
+		strongest = maxf(strongest, reach)
+	if blocked_count <= 0:
+		return 0.0
+	return clampf(strongest + 0.08 * float(blocked_count - 1), 0.0, 1.0)
+
+
+func _lf3_occupancy_blocks_segment(from_world: Vector3, to_world: Vector3) -> bool:
+	var a := Vector2(from_world.x, from_world.z)
+	var b := Vector2(to_world.x, to_world.z)
+	var length := a.distance_to(b)
+	if length <= 0.001:
+		return false
+	var steps := maxi(2, int(ceil(length / maxf(CELL * 0.25, 0.05))))
+	for index in range(1, steps):
+		var point := a.lerp(b, float(index) / float(steps))
+		var cell := Vector2i(int(floor(point.x / CELL)), int(floor(point.y / CELL)))
+		if _light_block.has(cell):
+			return true
+		var cell_type := int(_grid.get(cell, K_SOLID))
+		if cell_type == K_WALL or cell_type == K_PARTITION:
+			return true
+	return false
+
+
+func _lf3_set_shadow(l: OmniLight3D, enabled: bool) -> void:
+	if l == null:
+		return
+	l.shadow_enabled = enabled
+	l.shadow_opacity = LF3_SHADOW_OPACITY if enabled else 0.0
+	l.shadow_blur = LF3_SHADOW_BLUR
+	l.shadow_bias = LF3_SHADOW_BIAS
+	l.shadow_normal_bias = LF3_SHADOW_NORMAL_BIAS
+
+
+func _lf3_set_shadow_opacity(l: OmniLight3D, opacity: float) -> void:
+	if l == null:
+		return
+	l.shadow_enabled = opacity > 0.001
+	l.shadow_opacity = clampf(opacity, 0.0, LF3_SHADOW_OPACITY)
+	l.shadow_blur = LF3_SHADOW_BLUR
+	l.shadow_bias = LF3_SHADOW_BIAS
+	l.shadow_normal_bias = LF3_SHADOW_NORMAL_BIAS
+
+
+func lf3_debug_leak_risk() -> Dictionary:
+	var family: Array[OmniLight3D] = _area_bounce_lamps \
+		if _area_lights_active() else _lamps
+	var blocked_lights := 0
+	var shadowed_blocked_lights := 0
+	var unshadowed_blocked_lights := 0
+	var total_risk := 0.0
+	var unshadowed_energy_risk := 0.0
+	var player_pos := _player_ref.position if _player_ref != null else Vector3.ZERO
+	# Диагностический risk всегда использует дальний frustum для честного
+	# сравнения REFERENCE/10J/11F, независимо от allocation текущего профиля.
+	var receiver_data := _lf3_receiver_probe_data(player_pos, true)
+	var receiver_probes: Array = receiver_data["probes"]
+	for l: OmniLight3D in family:
+		if not bool(l.get_meta("pool_want", l.visible)):
+			continue
+		var risk := _lf3_light_occlusion_risk(l, receiver_probes)
+		if risk <= 0.001:
+			continue
+		blocked_lights += 1
+		total_risk += risk
+		if l.shadow_enabled:
+			shadowed_blocked_lights += 1
+		else:
+			unshadowed_blocked_lights += 1
+			unshadowed_energy_risk += risk * maxf(l.light_energy, 0.0)
+	return {
+		"blocked_lights": blocked_lights,
+		"shadowed_blocked_lights": shadowed_blocked_lights,
+		"unshadowed_blocked_lights": unshadowed_blocked_lights,
+		"total_risk": total_risk,
+		"unshadowed_energy_risk": unshadowed_energy_risk,
+		"local_receiver_count": int(receiver_data["local_count"]),
+		"far_receiver_count": int(receiver_data["far_count"]),
+	}
+
+
+func lf3_debug_shadow_state() -> Dictionary:
+	var family: Array[OmniLight3D] = _area_bounce_lamps \
+		if _area_lights_active() else _lamps
+	var active := 0
+	var transitioning := 0
+	var occlusion_priority_shadows := 0
+	var profile_errors := []
+	var shadow_signature := []
+	for l: OmniLight3D in family:
+		if not l.shadow_enabled:
+			continue
+		active += 1
+		var occlusion_risk := float(l.get_meta("lf3_occlusion_risk", 0.0))
+		if occlusion_risk > 0.001:
+			occlusion_priority_shadows += 1
+		shadow_signature.append({
+			"id": l.get_instance_id(),
+			"opacity": l.shadow_opacity,
+			"occlusion_risk": occlusion_risk,
+			"far_occlusion_risk": float(l.get_meta("lf3_far_occlusion_risk", 0.0)),
+		})
+		if _lf3_shadow_mode and not is_equal_approx(l.shadow_opacity, LF3_SHADOW_OPACITY):
+			transitioning += 1
+		if _lf3_shadow_mode and (l.shadow_opacity < 0.0 \
+				or l.shadow_opacity > LF3_SHADOW_OPACITY \
+				or not is_equal_approx(l.shadow_blur, LF3_SHADOW_BLUR) \
+				or not is_equal_approx(l.shadow_bias, LF3_SHADOW_BIAS) \
+				or not is_equal_approx(l.shadow_normal_bias, LF3_SHADOW_NORMAL_BIAS)):
+			profile_errors.append(l.get_instance_id())
+	shadow_signature.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a["id"]) < int(b["id"])
+	)
+	return {
+		"mode": "lf3" if _lf3_shadow_mode else "reference",
+		"profile": _lf3_profile_label(),
+		"family": "bounce" if _area_lights_active() else "legacy",
+		"active_shadows": active,
+		"candidate_limit": LF3_SHADOW_CASTERS if _lf3_sharp_checkpoint_enabled \
+			else LF3_SHADOW_TRANSIENT_CASTERS,
+		"steady_candidate_limit": LF3_SHADOW_CASTERS,
+		"transitioning_shadows": transitioning,
+		"occlusion_priority_shadows": occlusion_priority_shadows,
+		"pending_incoming": false,
+		"handoff_progress": 0.0,
+		"shadow_signature": shadow_signature,
+		"profile_errors": profile_errors,
+	}
+
+
+# Автоматический визуальный A/B реального level_e. Игрок переносится вместе с
+# light/streaming-пулом, а отдельная камера сохраняет один и тот же ракурс для
+# REFERENCE и LF3-11X. После прогона исходное состояние восстанавливается.
+func _lf3_level_e_capture_suite() -> void:
+	if _lf3_level_e_capture_running:
+		return
+	_lf3_level_e_capture_running = true
+	for _frame in range(8):
+		await get_tree().process_frame
+	if _player_ref == null:
+		push_error("LF3 level_e capture: player is not ready")
+		get_tree().quit(2)
+		return
+
+	var stamp := Time.get_datetime_string_from_system(false, true).replace(":", "-")
+	var relative_dir := ".lf3_level_e/%s" % stamp
+	var absolute_dir := ProjectSettings.globalize_path("res://%s" % relative_dir)
+	if DirAccess.make_dir_recursive_absolute(absolute_dir) != OK:
+		push_error("LF3 level_e capture: cannot create %s" % absolute_dir)
+		get_tree().quit(2)
+		return
+
+	var original_transform := _player_ref.global_transform
+	var original_physics := _player_ref.is_physics_processing()
+	var original_input := _player_ref.is_processing_input()
+	var original_hud_visible := _hud_label.visible if _hud_label != null else false
+	var original_map_visible := _minimap.visible if _minimap != null else false
+	var original_window_size := get_window().size
+	var player_camera: Camera3D = null
+	var cameras := _player_ref.find_children("*", "Camera3D", true, false)
+	if not cameras.is_empty():
+		player_camera = cameras[0] as Camera3D
+
+	_player_ref.set_physics_process(false)
+	_player_ref.set_process_input(false)
+	_player_ref.velocity = Vector3.ZERO
+	if _hud_label != null:
+		_hud_label.visible = false
+	if _minimap != null:
+		_minimap.visible = false
+	get_window().size = Vector2i(1280, 720)
+
+	var capture_camera := Camera3D.new()
+	add_child(capture_camera)
+	capture_camera.fov = 75.0
+	capture_camera.current = true
+	var views := [
+		{"name": "maze_north_wide", "area": MAZE_AFTER_PIT_CELL, "eye": Vector2(3.75, 3.75), "look": Vector2(8.75, 3.75)},
+		{"name": "maze_north_cross", "area": MAZE_AFTER_PIT_CELL, "eye": Vector2(11.25, 6.25), "look": Vector2(6.25, 6.25)},
+		{"name": "maze_south_wide", "area": MAZE_AFTER_PIT_TAIL_CELL, "eye": Vector2(3.75, 8.75), "look": Vector2(8.75, 8.75)},
+		{"name": "maze_south_cross", "area": MAZE_AFTER_PIT_TAIL_CELL, "eye": Vector2(11.25, 11.25), "look": Vector2(6.25, 11.25)},
+	]
+	var report := {
+		"timestamp": stamp,
+		"scene": "level_e.tscn",
+		"maze_seed": maze_seed,
+		"profile": {
+			"steady_casters": LF3_SHADOW_CASTERS,
+			"transient_casters": LF3_SHADOW_TRANSIENT_CASTERS,
+			"opacity": LF3_SHADOW_OPACITY,
+			"blur": LF3_SHADOW_BLUR,
+			"bias": LF3_SHADOW_BIAS,
+			"normal_bias": LF3_SHADOW_NORMAL_BIAS,
+		},
+		"pairs": [],
+	}
+
+	for view_index in range(views.size()):
+		var view: Dictionary = views[view_index]
+		var area: Vector2i = view["area"]
+		var eye: Vector2 = view["eye"]
+		var look: Vector2 = view["look"]
+		var eye_world := _local_world(area.x, area.y, eye.x, eye.y, 1.65)
+		var look_world := _local_world(area.x, area.y, look.x, look.y, 1.35)
+		_player_ref.global_position = eye_world
+		capture_camera.global_position = eye_world
+		capture_camera.look_at(look_world, Vector3.UP)
+		# level_e строит не более одного чанка за кадр; это окно также стабилизирует
+		# активный световой пул перед первой стороной пары.
+		for _frame in range(40):
+			await get_tree().process_frame
+
+		var profile_names := ["reference", "lf3_10j", "lf3_11f"]
+		var images := {}
+		var states := {}
+		var leak_states := {}
+		var frame_times := {}
+		for profile_name: String in profile_names:
+			_lf3_apply_test_profile(profile_name)
+			var started := Time.get_ticks_usec()
+			for _frame in range(12):
+				await get_tree().process_frame
+			frame_times[profile_name] = float(Time.get_ticks_usec() - started) / 12000.0
+			await RenderingServer.frame_post_draw
+			var captured := get_viewport().get_texture().get_image()
+			images[profile_name] = captured.duplicate()
+			states[profile_name] = lf3_debug_shadow_state().duplicate(true)
+			leak_states[profile_name] = lf3_debug_leak_risk().duplicate(true)
+			var filename := "%02d_%s__%s.png" % [
+				view_index + 1, view["name"], profile_name]
+			if captured.save_png(absolute_dir.path_join(filename)) != OK:
+				push_error("LF3 level_e capture: failed to save %s" % filename)
+
+		for comparison_name in ["lf3_10j", "lf3_11f"]:
+			var reference_image := images["reference"] as Image
+			var comparison_image := images[comparison_name] as Image
+			var metrics := _lf3_compare_level_e_images(reference_image, comparison_image)
+			_lf3_save_level_e_pair(reference_image, comparison_image,
+				absolute_dir.path_join("%02d_%s__reference_vs_%s.png" % [
+					view_index + 1, view["name"], comparison_name]))
+			(report["pairs"] as Array).append({
+				"view": view["name"],
+				"comparison": comparison_name,
+				"reference_file": "%02d_%s__reference.png" % [view_index + 1, view["name"]],
+				"lf3_file": "%02d_%s__%s.png" % [view_index + 1, view["name"], comparison_name],
+				"reference_frame_ms": frame_times["reference"],
+				"lf3_frame_ms": frame_times[comparison_name],
+				"reference_shadow_state": states["reference"],
+				"lf3_shadow_state": states[comparison_name],
+				"reference_leak_risk": leak_states["reference"],
+				"lf3_leak_risk": leak_states[comparison_name],
+				"rgb_mae": metrics["rgb_mae"],
+				"reference_mean_luma": metrics["reference_mean_luma"],
+				"lf3_mean_luma": metrics["lf3_mean_luma"],
+				"luma_ratio": metrics["luma_ratio"],
+			})
+
+	# Vulkan-стресс передачи: LF3 остаётся включённым, игрок и камера плавно
+	# ходят поперёк активного maze-пула. Проверяем реальный renderer, а не только
+	# data-only состояние, и жёстко следим за лимитом 10 shadow-cubemap.
+	var motion_start := _local_world(
+		MAZE_AFTER_PIT_CELL.x, MAZE_AFTER_PIT_CELL.y, 1.25, 3.75, 1.65)
+	var motion_peak_shadows := 0
+	var motion_transition_frames := 0
+	var motion_frame_ms_sum := 0.0
+	var motion_frame_ms_max := 0.0
+	var motion_stationary_progress_error := -1.0
+	var motion_frames := 900
+	for frame in range(motion_frames):
+		var cycle := float(frame % 360) / 359.0
+		var triangle := cycle * 2.0 if cycle <= 0.5 else (1.0 - cycle) * 2.0
+		var pos := motion_start + Vector3(triangle * 15.0, 0.0, 0.0)
+		_player_ref.global_position = pos
+		capture_camera.global_position = pos
+		capture_camera.look_at(pos + Vector3(2.0 if cycle <= 0.5 else -2.0, -0.25, 0.0), Vector3.UP)
+		var frame_started := Time.get_ticks_usec()
+		await get_tree().process_frame
+		var frame_ms := float(Time.get_ticks_usec() - frame_started) / 1000.0
+		motion_frame_ms_sum += frame_ms
+		motion_frame_ms_max = maxf(motion_frame_ms_max, frame_ms)
+		var state := lf3_debug_shadow_state()
+		motion_peak_shadows = maxi(motion_peak_shadows, int(state["active_shadows"]))
+		if int(state["transitioning_shadows"]) > 0 or bool(state["pending_incoming"]):
+			motion_transition_frames += 1
+		var progress := float(state.get("handoff_progress", 0.0))
+		if motion_stationary_progress_error < 0.0 \
+				and bool(state.get("pending_incoming", false)) \
+				and progress > 0.05 and progress < 0.95:
+			for _still_frame in range(30):
+				await get_tree().process_frame
+			var stationary_state := lf3_debug_shadow_state()
+			motion_stationary_progress_error = absf(
+				float(stationary_state.get("handoff_progress", 0.0)) - progress)
+			if motion_stationary_progress_error > 0.0001:
+				push_error("LF3 level_e capture: distance handoff moved while stationary")
+				get_tree().quit(2)
+				return
+		if motion_peak_shadows > LF3_SHADOW_TRANSIENT_CASTERS:
+			push_error("LF3 level_e capture: handoff exceeded 11 shadow casters")
+			get_tree().quit(2)
+			return
+	for _frame in range(120):
+		await get_tree().process_frame
+	report["handoff_motion"] = {
+		"frames": motion_frames,
+		"peak_active_shadows": motion_peak_shadows,
+		"transition_frames": motion_transition_frames,
+		"stationary_progress_error": motion_stationary_progress_error,
+		"mean_frame_ms": motion_frame_ms_sum / float(motion_frames),
+		"max_frame_ms": motion_frame_ms_max,
+		"final_stationary_state": lf3_debug_shadow_state(),
+	}
+
+	lf3_set_shadow_mode(false)
+	_player_ref.global_transform = original_transform
+	_player_ref.set_physics_process(original_physics)
+	_player_ref.set_process_input(original_input)
+	if player_camera != null:
+		player_camera.current = true
+	if _hud_label != null:
+		_hud_label.visible = original_hud_visible
+	if _minimap != null:
+		_minimap.visible = original_map_visible
+	get_window().size = original_window_size
+	capture_camera.queue_free()
+	var report_file := FileAccess.open(absolute_dir.path_join("report.json"), FileAccess.WRITE)
+	if report_file != null:
+		report_file.store_string(JSON.stringify(report, "\t"))
+	print("LF3_LEVEL_E_CAPTURE_OK: ", absolute_dir)
+	get_tree().quit()
+
+
+func _lf3_box_shadow_capture_suite() -> void:
+	for _frame in range(10):
+		await get_tree().process_frame
+	if _player_ref == null:
+		push_error("LF3 box capture: player is not ready")
+		get_tree().quit(2)
+		return
+	var box := find_child("arrow_cardboard_box_01", true, false) as Node3D
+	if box == null:
+		push_error("LF3 box capture: arrow cardboard boxes are missing")
+		get_tree().quit(2)
+		return
+	var box_bounds := _node_world_aabb(box)
+	var target := box_bounds.position + box_bounds.size * Vector3(0.5, 0.15, 0.5)
+	var stamp := Time.get_datetime_string_from_system(false, true).replace(":", "-")
+	var absolute_dir := ProjectSettings.globalize_path(
+		"res://.lf3_level_e_boxes/%s" % stamp)
+	if DirAccess.make_dir_recursive_absolute(absolute_dir) != OK:
+		push_error("LF3 box capture: cannot create output directory")
+		get_tree().quit(2)
+		return
+
+	var original_transform := _player_ref.global_transform
+	var original_physics := _player_ref.is_physics_processing()
+	var original_input := _player_ref.is_processing_input()
+	var original_hud_visible := _hud_label.visible if _hud_label != null else false
+	var original_map_visible := _minimap.visible if _minimap != null else false
+	var original_window_size := get_window().size
+	var player_camera: Camera3D = null
+	var cameras := _player_ref.find_children("*", "Camera3D", true, false)
+	if not cameras.is_empty():
+		player_camera = cameras[0] as Camera3D
+	_player_ref.set_physics_process(false)
+	_player_ref.set_process_input(false)
+	_player_ref.velocity = Vector3.ZERO
+	if _hud_label != null:
+		_hud_label.visible = false
+	if _minimap != null:
+		_minimap.visible = false
+	get_window().size = Vector2i(1280, 720)
+
+	var capture_camera := Camera3D.new()
+	add_child(capture_camera)
+	capture_camera.fov = 68.0
+	var far_pos := _local_world(2, 1, 8.3, 14.0, 1.2)
+	var near_pos := _local_world(2, 1, 8.3, 1.8, 1.2)
+	capture_camera.global_position = Vector3(far_pos.x, 1.65, far_pos.z)
+	capture_camera.look_at(target, Vector3.UP)
+	capture_camera.current = true
+	var sample_count := 31
+	var report := {
+		"timestamp": stamp,
+		"scene": "level_e.tscn",
+		"target": target,
+		"sample_count_per_direction": sample_count,
+		"sequences": {},
+		"ab_pairs": {},
+		"directional_hysteresis": [],
+	}
+	var image_sets := {}
+
+	for mode: Dictionary in [
+			{"name": "reference", "enabled": false},
+			{"name": "lf3", "enabled": true}]:
+		_player_ref.global_position = far_pos
+		lf3_set_shadow_mode(bool(mode["enabled"]))
+		for _frame in range(20):
+			await get_tree().process_frame
+		for direction in ["approach", "retreat"]:
+			var images: Array[Image] = []
+			var samples := []
+			var peak_mae := -1.0
+			var peak_index := -1
+			var peak_pair: Array[Image] = []
+			var previous: Image = null
+			for index in range(sample_count):
+				var fraction := float(index) / float(sample_count - 1)
+				if direction == "retreat":
+					fraction = 1.0 - fraction
+				var player_pos := far_pos.lerp(near_pos, fraction)
+				_player_ref.global_position = player_pos
+				capture_camera.global_position = Vector3(player_pos.x, 1.65, player_pos.z)
+				capture_camera.look_at(target, Vector3.UP)
+				for _frame in range(2):
+					await get_tree().process_frame
+				await RenderingServer.frame_post_draw
+				var full := get_viewport().get_texture().get_image()
+				var thumb := full.duplicate()
+				thumb.convert(Image.FORMAT_RGBA8)
+				thumb.resize(320, 180, Image.INTERPOLATE_LANCZOS)
+				images.append(thumb)
+				var step_mae := 0.0 if previous == null else _lf3_box_image_mae(previous, thumb)
+				if previous != null and step_mae > peak_mae:
+					peak_mae = step_mae
+					peak_index = index
+					peak_pair = [previous.duplicate(), thumb.duplicate()]
+				var state := lf3_debug_shadow_state()
+				samples.append({
+					"index": index,
+					"path_fraction": fraction,
+					"distance_to_boxes": player_pos.distance_to(target),
+					"roi_luma": _lf3_box_roi_luma(thumb),
+					"step_rgb_mae": step_mae,
+					"active_shadows": state["active_shadows"],
+					"transitioning_shadows": state["transitioning_shadows"],
+					"handoff_progress": state["handoff_progress"],
+				})
+				previous = thumb
+			var key := "%s_%s" % [mode["name"], direction]
+			image_sets[key] = images
+			report["sequences"][key] = {
+				"samples": samples,
+				"peak_step_index": peak_index,
+				"peak_step_rgb_mae": peak_mae,
+			}
+			_lf3_box_save_contact_sheet(images, absolute_dir.path_join("%s__contact.png" % key))
+			if peak_pair.size() == 2:
+				_lf3_box_save_pair(peak_pair[0], peak_pair[1],
+					absolute_dir.path_join("%s__peak_step.png" % key))
+
+	for direction in ["approach", "retreat"]:
+		var reference_images: Array = image_sets["reference_%s" % direction]
+		var lf3_images: Array = image_sets["lf3_%s" % direction]
+		var ab := []
+		for index in range(sample_count):
+			ab.append({
+				"index": index,
+				"rgb_mae": _lf3_box_image_mae(reference_images[index], lf3_images[index]),
+				"reference_roi_luma": _lf3_box_roi_luma(reference_images[index]),
+				"lf3_roi_luma": _lf3_box_roi_luma(lf3_images[index]),
+			})
+		report["ab_pairs"][direction] = ab
+
+	var lf3_approach: Array = image_sets["lf3_approach"]
+	var lf3_retreat: Array = image_sets["lf3_retreat"]
+	var directional := []
+	var directional_peak_mae := -1.0
+	var directional_peak_index := -1
+	for index in range(sample_count):
+		var retreat_index := sample_count - 1 - index
+		var mae := _lf3_box_image_mae(lf3_approach[index], lf3_retreat[retreat_index])
+		var fraction := float(index) / float(sample_count - 1)
+		var player_pos := far_pos.lerp(near_pos, fraction)
+		directional.append({
+			"approach_index": index,
+			"retreat_index": retreat_index,
+			"distance_to_boxes": player_pos.distance_to(target),
+			"rgb_mae": mae,
+		})
+		if mae > directional_peak_mae:
+			directional_peak_mae = mae
+			directional_peak_index = index
+	report["directional_hysteresis"] = directional
+	report["directional_peak"] = {
+		"approach_index": directional_peak_index,
+		"retreat_index": sample_count - 1 - directional_peak_index,
+		"rgb_mae": directional_peak_mae,
+	}
+	if directional_peak_index >= 0:
+		_lf3_box_save_pair(
+			lf3_approach[directional_peak_index],
+			lf3_retreat[sample_count - 1 - directional_peak_index],
+			absolute_dir.path_join("lf3_approach_vs_retreat__peak.png"))
+
+	lf3_set_shadow_mode(false)
+	_player_ref.global_transform = original_transform
+	_player_ref.set_physics_process(original_physics)
+	_player_ref.set_process_input(original_input)
+	if player_camera != null:
+		player_camera.current = true
+	if _hud_label != null:
+		_hud_label.visible = original_hud_visible
+	if _minimap != null:
+		_minimap.visible = original_map_visible
+	get_window().size = original_window_size
+	capture_camera.queue_free()
+	var report_file := FileAccess.open(absolute_dir.path_join("report.json"), FileAccess.WRITE)
+	if report_file != null:
+		report_file.store_string(JSON.stringify(report, "\t"))
+	print("LF3_LEVEL_E_BOX_CAPTURE_OK: ", absolute_dir)
+	get_tree().quit()
+
+
+func _lf3_apply_test_profile(profile_name: String) -> void:
+	match profile_name:
+		"reference":
+			lf3_set_far_frustum(true)
+			lf3_set_shadow_mode(false)
+		"lf3_10j":
+			lf3_set_far_frustum(true)
+			lf3_set_occlusion_priority(false)
+			lf3_set_sharp_checkpoint(true)
+			lf3_set_shadow_mode(true)
+		"lf3_11p":
+			lf3_set_sharp_checkpoint(false)
+			lf3_set_occlusion_priority(true)
+			lf3_set_far_frustum(false)
+			lf3_set_shadow_mode(true)
+		"lf3_11f":
+			lf3_set_sharp_checkpoint(false)
+			lf3_set_occlusion_priority(true)
+			lf3_set_far_frustum(true)
+			lf3_set_shadow_mode(true)
+
+
+func _lf3_box_shadow_smoothness_capture_suite() -> void:
+	for _frame in range(10):
+		await get_tree().process_frame
+	if _player_ref == null:
+		push_error("LF3 smoothness capture: player is not ready")
+		get_tree().quit(2)
+		return
+	var box := find_child("arrow_cardboard_box_01", true, false) as Node3D
+	if box == null:
+		push_error("LF3 smoothness capture: arrow cardboard boxes are missing")
+		get_tree().quit(2)
+		return
+	var box_bounds := _node_world_aabb(box)
+	var target := box_bounds.position + box_bounds.size * Vector3(0.5, 0.15, 0.5)
+	var far_pos := _local_world(2, 1, 8.3, 14.0, 1.2)
+	var near_pos := _local_world(2, 1, 8.3, 1.8, 1.2)
+	var stamp := Time.get_datetime_string_from_system(false, true).replace(":", "-")
+	var absolute_dir := ProjectSettings.globalize_path(
+		"res://.lf3_level_e_shadow_smoothness/%s" % stamp)
+	if DirAccess.make_dir_recursive_absolute(absolute_dir) != OK:
+		push_error("LF3 smoothness capture: cannot create output directory")
+		get_tree().quit(2)
+		return
+
+	var original_transform := _player_ref.global_transform
+	var original_physics := _player_ref.is_physics_processing()
+	var original_input := _player_ref.is_processing_input()
+	var original_hud_visible := _hud_label.visible if _hud_label != null else false
+	var original_map_visible := _minimap.visible if _minimap != null else false
+	var original_window_size := get_window().size
+	var player_camera: Camera3D = null
+	var cameras := _player_ref.find_children("*", "Camera3D", true, false)
+	if not cameras.is_empty():
+		player_camera = cameras[0] as Camera3D
+	_player_ref.set_physics_process(false)
+	_player_ref.set_process_input(false)
+	_player_ref.velocity = Vector3.ZERO
+	if _hud_label != null:
+		_hud_label.visible = false
+	if _minimap != null:
+		_minimap.visible = false
+	get_window().size = Vector2i(960, 540)
+
+	var capture_camera := Camera3D.new()
+	add_child(capture_camera)
+	capture_camera.fov = 62.0
+	# Неподвижный близкий ракурс: в кадре меняются только свет и тени.
+	var camera_anchor := far_pos.lerp(near_pos, 0.62)
+	capture_camera.global_position = Vector3(camera_anchor.x, 1.55, camera_anchor.z)
+	capture_camera.look_at(target, Vector3.UP)
+	capture_camera.current = true
+	var sample_count := 81
+	var report := {
+		"timestamp": stamp,
+		"scene": "level_e.tscn",
+		"target": target,
+		"fixed_camera": capture_camera.global_position,
+		"sample_count_per_direction": sample_count,
+		"distance_step_m": far_pos.distance_to(near_pos) / float(sample_count - 1),
+		"sequences": {},
+		"directional": {},
+		"ab": {},
+	}
+	var image_sets := {}
+
+	var profile_names := ["reference", "lf3_10j", "lf3_11f"]
+	for mode_name: String in profile_names:
+		_lf3_apply_test_profile(mode_name)
+		for direction in ["approach", "retreat"]:
+			var direction_start := far_pos if direction == "approach" else near_pos
+			_player_ref.global_position = direction_start
+			for _frame in range(24):
+				await get_tree().process_frame
+			var images: Array[Image] = []
+			var samples := []
+			var peak_mae := -1.0
+			var peak_index := -1
+			var peak_pair: Array[Image] = []
+			var previous: Image = null
+			for index in range(sample_count):
+				var fraction := float(index) / float(sample_count - 1)
+				if direction == "retreat":
+					fraction = 1.0 - fraction
+				var player_pos := far_pos.lerp(near_pos, fraction)
+				_player_ref.global_position = player_pos
+				for _frame in range(2):
+					await get_tree().process_frame
+				await RenderingServer.frame_post_draw
+				var thumb := get_viewport().get_texture().get_image().duplicate()
+				thumb.convert(Image.FORMAT_RGBA8)
+				thumb.resize(480, 270, Image.INTERPOLATE_LANCZOS)
+				images.append(thumb)
+				var step_mae := 0.0 if previous == null else \
+					_lf3_box_image_mae(previous, thumb)
+				if previous != null and step_mae > peak_mae:
+					peak_mae = step_mae
+					peak_index = index
+					peak_pair = [previous.duplicate(), thumb.duplicate()]
+				var state := lf3_debug_shadow_state()
+				var leak_risk := lf3_debug_leak_risk()
+				samples.append({
+					"index": index,
+					"path_fraction": fraction,
+					"distance_to_boxes": player_pos.distance_to(target),
+					"roi_luma": _lf3_box_roi_luma(thumb),
+					"step_rgb_mae": step_mae,
+					"active_shadows": state["active_shadows"],
+					"transitioning_shadows": state["transitioning_shadows"],
+					"shadow_signature": state["shadow_signature"],
+					"leak_risk": leak_risk,
+				})
+				previous = thumb
+			var key := "%s_%s" % [mode_name, direction]
+			image_sets[key] = images
+			report["sequences"][key] = {
+				"samples": samples,
+				"stats": _lf3_smoothness_stats(samples),
+				"peak_step_index": peak_index,
+				"peak_step_rgb_mae": peak_mae,
+			}
+			_lf3_box_save_contact_sheet(images,
+				absolute_dir.path_join("%s__contact.png" % key))
+			if peak_pair.size() == 2:
+				_lf3_box_save_pair(peak_pair[0], peak_pair[1],
+					absolute_dir.path_join("%s__peak_step.png" % key))
+
+	for mode_name: String in profile_names:
+		var approach: Array = image_sets["%s_approach" % mode_name]
+		var retreat: Array = image_sets["%s_retreat" % mode_name]
+		var pairs := []
+		var peak := -1.0
+		var peak_index := -1
+		for index in range(sample_count):
+			var mirrored := sample_count - 1 - index
+			var mae := _lf3_box_image_mae(approach[index], retreat[mirrored])
+			pairs.append({"index": index, "mirrored_index": mirrored, "rgb_mae": mae})
+			if mae > peak:
+				peak = mae
+				peak_index = index
+		report["directional"][mode_name] = {
+			"peak_rgb_mae": peak,
+			"peak_index": peak_index,
+			"pairs": pairs,
+		}
+
+	for comparison_name in ["lf3_10j", "lf3_11f"]:
+		for direction in ["approach", "retreat"]:
+			var reference_images: Array = image_sets["reference_%s" % direction]
+			var lf3_images: Array = image_sets["%s_%s" % [comparison_name, direction]]
+			var pairs := []
+			var peak := -1.0
+			for index in range(sample_count):
+				var mae := _lf3_box_image_mae(reference_images[index], lf3_images[index])
+				pairs.append({"index": index, "rgb_mae": mae})
+				peak = maxf(peak, mae)
+			report["ab"]["%s_%s" % [comparison_name, direction]] = {
+				"peak_rgb_mae": peak,
+				"pairs": pairs,
+			}
+
+	# Одинаковый 900-кадровый FPS/leak-risk маршрут для всех трёх профилей.
+	var stress_frames := 900
+	var stress_reports := {}
+	for profile_name: String in profile_names:
+		_lf3_apply_test_profile(profile_name)
+		_player_ref.global_position = far_pos
+		for _frame in range(24):
+			await get_tree().process_frame
+		var stress_peak_shadows := 0
+		var stress_frames_at_eleven := 0
+		var stress_frame_ms_sum := 0.0
+		var stress_frame_ms_max := 0.0
+		var leak_energy_sum := 0.0
+		var leak_energy_max := 0.0
+		var unshadowed_blocked_max := 0
+		for frame in range(stress_frames):
+			var cycle := float(frame % 320) / 319.0
+			var fraction := cycle * 2.0 if cycle <= 0.5 else (1.0 - cycle) * 2.0
+			_player_ref.global_position = far_pos.lerp(near_pos, fraction)
+			var started := Time.get_ticks_usec()
+			await get_tree().process_frame
+			var frame_ms := float(Time.get_ticks_usec() - started) / 1000.0
+			stress_frame_ms_sum += frame_ms
+			stress_frame_ms_max = maxf(stress_frame_ms_max, frame_ms)
+			var state := lf3_debug_shadow_state()
+			var active := int(state["active_shadows"])
+			stress_peak_shadows = maxi(stress_peak_shadows, active)
+			if active == LF3_SHADOW_TRANSIENT_CASTERS:
+				stress_frames_at_eleven += 1
+			if active > LF3_SHADOW_TRANSIENT_CASTERS:
+				push_error("LF3 smoothness capture: exceeded 11 shadow casters")
+				get_tree().quit(2)
+				return
+			var leak := lf3_debug_leak_risk()
+			var leak_energy := float(leak["unshadowed_energy_risk"])
+			leak_energy_sum += leak_energy
+			leak_energy_max = maxf(leak_energy_max, leak_energy)
+			unshadowed_blocked_max = maxi(unshadowed_blocked_max,
+				int(leak["unshadowed_blocked_lights"]))
+		stress_reports[profile_name] = {
+			"frames": stress_frames,
+			"peak_active_shadows": stress_peak_shadows,
+			"frames_at_eleven": stress_frames_at_eleven,
+			"mean_frame_ms": stress_frame_ms_sum / float(stress_frames),
+			"max_frame_ms": stress_frame_ms_max,
+			"mean_unshadowed_energy_risk": leak_energy_sum / float(stress_frames),
+			"max_unshadowed_energy_risk": leak_energy_max,
+			"max_unshadowed_blocked_lights": unshadowed_blocked_max,
+		}
+	report["profile_stress"] = stress_reports
+
+	lf3_set_shadow_mode(false)
+	_player_ref.global_transform = original_transform
+	_player_ref.set_physics_process(original_physics)
+	_player_ref.set_process_input(original_input)
+	if player_camera != null:
+		player_camera.current = true
+	if _hud_label != null:
+		_hud_label.visible = original_hud_visible
+	if _minimap != null:
+		_minimap.visible = original_map_visible
+	get_window().size = original_window_size
+	capture_camera.queue_free()
+	var report_file := FileAccess.open(absolute_dir.path_join("report.json"), FileAccess.WRITE)
+	if report_file != null:
+		report_file.store_string(JSON.stringify(report, "\t"))
+	print("LF3_LEVEL_E_SHADOW_SMOOTHNESS_CAPTURE_OK: ", absolute_dir)
+	get_tree().quit()
+
+
+func _lf3_smoothness_stats(samples: Array) -> Dictionary:
+	var values := []
+	for sample: Dictionary in samples:
+		if int(sample["index"]) > 0:
+			values.append(float(sample["step_rgb_mae"]))
+	values.sort()
+	if values.is_empty():
+		return {"median_step_rgb_mae": 0.0, "p95_step_rgb_mae": 0.0,
+			"peak_step_rgb_mae": 0.0, "peak_to_median": 0.0}
+	var median := float(values[int(float(values.size() - 1) * 0.5)])
+	var p95 := float(values[int(float(values.size() - 1) * 0.95)])
+	var peak := float(values[values.size() - 1])
+	return {
+		"median_step_rgb_mae": median,
+		"p95_step_rgb_mae": p95,
+		"peak_step_rgb_mae": peak,
+		"peak_to_median": peak / maxf(median, 0.000001),
+	}
+
+
+func _lf3_box_roi_luma(image: Image) -> float:
+	var x0 := int(float(image.get_width()) * 0.2)
+	var x1 := int(float(image.get_width()) * 0.8)
+	var y0 := int(float(image.get_height()) * 0.35)
+	var y1 := int(float(image.get_height()) * 0.95)
+	var sum := 0.0
+	var count := 0
+	for y in range(y0, y1, 2):
+		for x in range(x0, x1, 2):
+			sum += image.get_pixel(x, y).get_luminance()
+			count += 1
+	return sum / float(maxi(count, 1))
+
+
+func _lf3_box_image_mae(a: Image, b: Image) -> float:
+	var width := mini(a.get_width(), b.get_width())
+	var height := mini(a.get_height(), b.get_height())
+	var error := 0.0
+	var count := 0
+	for y in range(0, height, 2):
+		for x in range(0, width, 2):
+			var ca := a.get_pixel(x, y)
+			var cb := b.get_pixel(x, y)
+			error += (absf(ca.r - cb.r) + absf(ca.g - cb.g) + absf(ca.b - cb.b)) / 3.0
+			count += 1
+	return error / float(maxi(count, 1))
+
+
+func _lf3_box_save_contact_sheet(images: Array[Image], path: String) -> void:
+	if images.is_empty():
+		return
+	var columns := 8
+	var tile_size := images[0].get_size()
+	var rows := int(ceil(float(images.size()) / float(columns)))
+	var sheet := Image.create(tile_size.x * columns, tile_size.y * rows,
+		false, Image.FORMAT_RGBA8)
+	sheet.fill(Color.BLACK)
+	for index in range(images.size()):
+		sheet.blit_rect(images[index], Rect2i(Vector2i.ZERO, tile_size),
+			Vector2i((index % columns) * tile_size.x,
+				int(float(index) / float(columns)) * tile_size.y))
+	sheet.save_png(path)
+
+
+func _lf3_box_save_pair(a: Image, b: Image, path: String) -> void:
+	var size := a.get_size()
+	var sheet := Image.create(size.x * 2, size.y, false, Image.FORMAT_RGBA8)
+	sheet.fill(Color.BLACK)
+	sheet.blit_rect(a, Rect2i(Vector2i.ZERO, size), Vector2i.ZERO)
+	sheet.blit_rect(b, Rect2i(Vector2i.ZERO, size), Vector2i(size.x, 0))
+	sheet.save_png(path)
+
+
+func _lf3_compare_level_e_images(reference: Image, lf3: Image) -> Dictionary:
+	var width := mini(reference.get_width(), lf3.get_width())
+	var height := mini(reference.get_height(), lf3.get_height())
+	var reference_luma := 0.0
+	var lf3_luma := 0.0
+	var rgb_error := 0.0
+	var count := 0
+	for y in range(0, height, 4):
+		for x in range(0, width, 4):
+			var a := reference.get_pixel(x, y)
+			var b := lf3.get_pixel(x, y)
+			reference_luma += a.get_luminance()
+			lf3_luma += b.get_luminance()
+			rgb_error += (absf(a.r - b.r) + absf(a.g - b.g) + absf(a.b - b.b)) / 3.0
+			count += 1
+	var divisor := float(maxi(count, 1))
+	var mean_reference := reference_luma / divisor
+	var mean_lf3 := lf3_luma / divisor
+	return {
+		"reference_mean_luma": mean_reference,
+		"lf3_mean_luma": mean_lf3,
+		"luma_ratio": mean_lf3 / maxf(mean_reference, 0.0001),
+		"rgb_mae": rgb_error / divisor,
+	}
+
+
+func _lf3_save_level_e_pair(reference: Image, lf3: Image, path: String) -> void:
+	var tile_w := maxi(1, int(float(reference.get_width()) * 0.5))
+	var tile_h := maxi(1, int(float(reference.get_height()) * 0.5))
+	var sheet := Image.create(tile_w * 2, tile_h, false, Image.FORMAT_RGBA8)
+	sheet.fill(Color.BLACK)
+	for item in [[reference, 0], [lf3, tile_w]]:
+		var tile := (item[0] as Image).duplicate()
+		tile.convert(Image.FORMAT_RGBA8)
+		tile.resize(tile_w, tile_h, Image.INTERPOLATE_LANCZOS)
+		sheet.blit_rect(tile, Rect2i(Vector2i.ZERO, tile.get_size()), Vector2i(int(item[1]), 0))
+	sheet.save_png(path)
 
 
 func _amb_read() -> float:
@@ -396,17 +1690,23 @@ func _update_streaming() -> void:
 	if not _stream_on or _player_ref == null:
 		return
 	var pb := _block_of(_player_ref.global_position)
-	if pb == _last_pb:
-		return   # окно не сдвинулось — ничего не делаем
-	_last_pb = pb
-	# освободить далёкие
-	for block: Vector2i in _block_holder.keys():
-		if _cheby(block, pb) > STREAM_FREE_RADIUS:
-			_free_block(block)
-	# построить близкие, которых нет
-	for block: Vector2i in _known_blocks.keys():
+	if pb != _last_pb:
+		_last_pb = pb
+		_stream_build_queue.clear()
+		# Освобождаем далёкие сразу, а недостающие ставим в очередь по расстоянию.
+		for block: Vector2i in _block_holder.keys():
+			if _cheby(block, pb) > STREAM_FREE_RADIUS:
+				_free_block(block)
+		for distance in range(STREAM_BUILD_RADIUS + 1):
+			for block: Vector2i in _known_blocks.keys():
+				if _cheby(block, pb) == distance and not _block_holder.has(block):
+					_stream_build_queue.append(block)
+	# Не больше одного rebuild за кадр: офисный блок сам по себе занимает ~7 мс.
+	while not _stream_build_queue.is_empty():
+		var block: Vector2i = _stream_build_queue.pop_front()
 		if _cheby(block, pb) <= STREAM_BUILD_RADIUS and not _block_holder.has(block):
 			_rebuild_block(block)
+			break
 
 
 func _free_block(block: Vector2i) -> void:

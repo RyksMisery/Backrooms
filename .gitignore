@@ -2,3 +2,11 @@
 .godot/
 /android/
 *.apk
+/.lf2_captures/
+/.lf3_captures/
+/.lf3_debug/
+/.lf3_motion/
+/.lf3_level_e/
+/.lf3_level_e_boxes/
+/.lf3_level_e_shadow_smoothness/
+/.lf3_leak/

@@ -49,8 +49,17 @@ const PARTITION_T := 0.5                        # тонкая перегоро�
 const OFFICE_DOOR_SCALE := 1.5
 const OFFICE_DOOR_DEPTH := 0.1808
 const OFFICE_REVEAL_TRIM_T := 0.08
-const OFFICE_FRAME_OUTSET := 0.015
-const OFFICE_DOOR_PANEL := "res://3d/wite_door.glb"
+const OFFICE_FRAME_OUTSET := 0.025
+const OFFICE_DOOR_PANEL := "res://3d/white_door_comparison_clean.glb"
+const OFFICE_DOOR_V2_LEAF_SCENE := preload("res://3d/office_door_v2_leaf.tscn")
+const OFFICE_DOOR_V2_CASING_SCENE := preload("res://3d/original_door_casing_preview.tscn")
+const OFFICE_DOOR_V2_INNER_HALF_W_RAW := 0.384
+const OFFICE_DOOR_V2_INNER_TOP_RAW := 1.9722
+const OFFICE_DOOR_V2_FRAME_W_RAW := 0.9090005457
+const OFFICE_DOOR_V2_FRAME_H_RAW := 2.0547001362
+const OFFICE_DOOR_V2_CASING_DEPTH_RAW := 0.0075596943
+const OFFICE_DOOR_V2_LEAF_INSET := 0.10
+const OFFICE_DOOR_V2_SIDE_HYSTERESIS := 0.02
 # Проёмы офиса: 3 пустых + 1 проём с отдельной дверной панелью.
 const OFFICE_DOOR_CENTER := Vector2(11.5, 7.5)  # полная дверь, горизонтальная линия
 
@@ -372,6 +381,7 @@ var _flicker: Array = []              # мерцающие панели-подс
 var _drawn_lights: Array = []         # свет нарисованного шаблона (мир, у потолка)
 var _oc_openings: Array = []          # офисные проёмы шаблона {area,center,normal,door}
 var _office_wall_openings: Array = [] # офисные проёмы на глухих/толстых стенах {area,center,nrm,opening_id,door_panel}
+var _office_door_v2_instances: Array[Node3D] = []
 var _maze_start_doors: Array = []      # лабиринт(ы): [{area,wp,nrm}, ...] у входа (только автономный превью)
 var _maze_finish_doors: Array = []     # лабиринт(ы): [{area,wp,nrm,side,lo,hi,real_exit}, ...] у выхода;
 									   # real_exit=false -> офисный проём с дверью + знак EXIT (тупик), true -> настоящий
@@ -430,6 +440,8 @@ var _mat_ceil: StandardMaterial3D
 var _mat_lamp: StandardMaterial3D
 var _mat_lamp_glow: ShaderMaterial
 var _mat_base: StandardMaterial3D
+var _mat_office_new_leaf: BaseMaterial3D
+var _mat_office_new_handle: BaseMaterial3D
 var _mat_pit: StandardMaterial3D
 var _mat_round_lamp: StandardMaterial3D
 var _mat_void: StandardMaterial3D        # = _mat_floor (стенки колодца как пол)
@@ -548,6 +560,7 @@ func _set_ambient(v: float) -> void:
 
 
 func _process(delta: float) -> void:
+	_update_office_door_v2_view_side()
 	_update_shadow_pool()
 	_update_light_pool()
 	_update_light_fades(delta)
@@ -1132,7 +1145,7 @@ func _build_office_corridor(area: Dictionary) -> void:
 		_drawn_lights.append(_oc_local_world(area, float(lp[0]) + 0.5, float(lp[1]) + 0.5, CEIL_H + 0.02))
 	# Торцевой проём-карман у ЮЖНОГО конца. Ниша — только локальное расширение
 	# глухой стены на ширину коридора; в торце остаётся пустой офисный проём.
-	var end_center_x := 13.0
+	var end_center_x := 12.5
 	var niche_min := 11
 	var niche_max := 15
 	var end_side_line := OC_CORRIDOR_WALL_LINE
@@ -2753,16 +2766,21 @@ func _maze_bfs_distances(starts: Array[Vector2i], edges: Dictionary, nz: int = M
 # на тот же локальный мировой офсет (ROOM_CELLS), т.к. южная стена физически
 # всегда лицо ОДНОЙ конкретной области (той, что содержит эту сторону).
 func _maze_wall_spot(side: String, idx: int, nx: int = MAZE_SUB, nz: int = MAZE_SUB) -> Dictionary:
+	var along := _snap_opening_anchor_cell_center((float(idx) + 0.5) * MAZE_CELL)
 	match side:
 		"N":
-			return {"cell": Vector2i(idx, 0), "wp": Vector2((float(idx) + 0.5) * MAZE_CELL, 0.0), "nrm": Vector2(0.0, 1.0)}
+			return {"cell": Vector2i(idx, 0), "wp": Vector2(along, 0.0), "nrm": Vector2(0.0, 1.0)}
 		"S":
-			return {"cell": Vector2i(idx, nz - 1), "wp": Vector2((float(idx) + 0.5) * MAZE_CELL, float(ROOM_CELLS)), "nrm": Vector2(0.0, -1.0)}
+			return {"cell": Vector2i(idx, nz - 1), "wp": Vector2(along, float(ROOM_CELLS)), "nrm": Vector2(0.0, -1.0)}
 		"W":
-			return {"cell": Vector2i(0, idx), "wp": Vector2(0.0, (float(idx) + 0.5) * MAZE_CELL), "nrm": Vector2(1.0, 0.0)}
+			return {"cell": Vector2i(0, idx), "wp": Vector2(0.0, along), "nrm": Vector2(1.0, 0.0)}
 		"E":
-			return {"cell": Vector2i(nx - 1, idx), "wp": Vector2(float(ROOM_CELLS), (float(idx) + 0.5) * MAZE_CELL), "nrm": Vector2(-1.0, 0.0)}
+			return {"cell": Vector2i(nx - 1, idx), "wp": Vector2(float(ROOM_CELLS), along), "nrm": Vector2(-1.0, 0.0)}
 	return {}
+
+
+func _snap_opening_anchor_cell_center(value: float) -> float:
+	return floorf(value) + 0.5
 
 
 # Вход — либо середина северной стены автономного превью-теста (офисная дверь +
@@ -2938,20 +2956,30 @@ func _add_office_opening_liner(area: Dictionary, center: Vector2, normal: Vector
 	var opening_width_panels := _opening_width() if open_w_panels <= 0.0 else open_w_panels
 	var opening_height := DOOR_HEIGHT + DOOR_TOP_CLEARANCE if open_h <= 0.0 else open_h
 	var open_w := opening_width_panels * CELL
-	var trim := OFFICE_REVEAL_TRIM_T
+	var frame_scale := minf(
+		open_w / OFFICE_DOOR_V2_FRAME_W_RAW,
+		opening_height / OFFICE_DOOR_V2_FRAME_H_RAW)
+	var inner_half_w := OFFICE_DOOR_V2_INNER_HALF_W_RAW * frame_scale
+	var inner_top := OFFICE_DOOR_V2_INNER_TOP_RAW * frame_scale
+	var side_fill := maxf(0.0, open_w * 0.5 - inner_half_w)
+	var top_fill := maxf(0.0, opening_height - inner_top)
 	var cx := center.x * CELL
 	var cz := center.y * CELL
 	var o := _local_world(c.x, c.y, 0.0, 0.0, 0.0)
 	if absf(normal.y) > 0.0:
 		for sx in [-1.0, 1.0]:
-			var x: float = cx + sx * (open_w * 0.5 - trim * 0.5)
-			_put("base", Vector3(trim, opening_height, liner_depth), o + Vector3(x, opening_height * 0.5, cz), false)
-		_put("base", Vector3(open_w, trim, liner_depth), o + Vector3(cx, opening_height - trim * 0.5, cz), false)
+			var x: float = cx + sx * (inner_half_w + side_fill * 0.5)
+			_put("base", Vector3(side_fill, inner_top, liner_depth),
+				o + Vector3(x, inner_top * 0.5, cz), false)
+		_put("base", Vector3(open_w, top_fill, liner_depth),
+			o + Vector3(cx, inner_top + top_fill * 0.5, cz), false)
 	else:
 		for sz in [-1.0, 1.0]:
-			var z: float = cz + sz * (open_w * 0.5 - trim * 0.5)
-			_put("base", Vector3(liner_depth, opening_height, trim), o + Vector3(cx, opening_height * 0.5, z), false)
-		_put("base", Vector3(liner_depth, trim, open_w), o + Vector3(cx, opening_height - trim * 0.5, cz), false)
+			var z: float = cz + sz * (inner_half_w + side_fill * 0.5)
+			_put("base", Vector3(liner_depth, inner_top, side_fill),
+				o + Vector3(cx, inner_top * 0.5, z), false)
+		_put("base", Vector3(liner_depth, top_fill, open_w),
+			o + Vector3(cx, inner_top + top_fill * 0.5, cz), false)
 
 
 func _add_office_wall_opening(area: Dictionary, wp: Vector2, nrm: Vector2, opening_id: String, door_panel := false, collide := true) -> void:
@@ -3148,18 +3176,236 @@ func _spawn_door_leaf_model(scene: PackedScene, floor_pos: Vector3, yaw: float, 
 
 func _spawn_office_opening_frames(scene: PackedScene, area: Dictionary, center: Vector2, normal: Vector2,
 		node_name: String, opening_id: String) -> void:
-	var yaw := atan2(normal.x, normal.y)
+	var opening_center := _office_opening_center_world_pos(area, center)
+	var normal3 := Vector3(normal.x, 0.0, normal.y).normalized()
 	for side: float in [-1.0, 1.0]:
-		var p := _office_frame_world_pos(area, center, normal * side)
-		var side_yaw := yaw + (PI if side < 0.0 else 0.0)
-		_spawn_door_frame_model(scene, p, side_yaw, OFFICE_DOOR_SCALE, node_name, opening_id, side)
+		_spawn_office_new_frame(scene, opening_center, normal3 * side,
+			"%s_%s" % [node_name, "neg" if side < 0.0 else "pos"], opening_id, side)
 
 
-func _spawn_office_door_panel(scene: PackedScene, area: Dictionary, center: Vector2, normal: Vector2,
+func _spawn_office_door_panel(_scene: PackedScene, area: Dictionary, center: Vector2, normal: Vector2,
 		node_name: String, opening_id: String, collide := true) -> void:
-	var yaw := atan2(normal.x, normal.y)
-	_spawn_door_leaf_model(scene, _office_door_panel_world_pos(area, center), yaw,
-		OFFICE_DOOR_SCALE, node_name, opening_id, 1.0, collide)
+	var opening_center := _office_opening_center_world_pos(area, center)
+	var normal3 := Vector3(normal.x, 0.0, normal.y).normalized()
+	_spawn_office_new_leaf(opening_center, normal3, node_name, opening_id, collide)
+
+
+func _spawn_office_new_frame(scene: PackedScene, opening_center: Vector3, outward: Vector3,
+		node_name: String, opening_id: String, side: float) -> void:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return
+	inst.name = node_name
+	add_child(inst)
+	var leaf := inst.find_child("Canterbury_Door_1981 _762", true, false)
+	if leaf != null:
+		leaf.free()
+	var frame := inst.find_child("Basic_Door_Frame_1981_762", true, false) as MeshInstance3D
+	if frame == null:
+		inst.queue_free()
+		return
+	frame.material_override = _mat_base
+	var scale_factor := _office_new_scale()
+	inst.scale = Vector3.ONE * scale_factor
+	inst.rotation.y = _office_new_yaw(outward)
+	_office_new_align_center_floor(inst, frame, opening_center)
+	var contact_scalar := (opening_center + outward * (
+		PARTITION_T * CELL * 0.5 + OFFICE_FRAME_OUTSET)).dot(outward)
+	var box := frame.global_transform * frame.get_aabb()
+	inst.global_position += outward * (contact_scalar - _office_new_aabb_max(box, outward))
+	_spawn_office_new_casing(inst, opening_center, outward, scale_factor, contact_scalar)
+	_mark_office_opening_node(inst, opening_id, "frame", side)
+	inst.set_meta("opening_style", "office_new")
+	inst.set_meta("office_new_center", opening_center)
+	inst.set_meta("office_new_outward", outward)
+
+
+func _spawn_office_new_casing(frame_root: Node3D, opening_center: Vector3, outward: Vector3,
+		scale_factor: float, contact_scalar: float) -> void:
+	var casing := OFFICE_DOOR_V2_CASING_SCENE.instantiate() as Node3D
+	if casing == null:
+		return
+	casing.name = "OriginalOuterCasing"
+	add_child(casing)
+	casing.scale = Vector3.ONE * scale_factor
+	# Извлечённый наличник лежит в X<0: локальный +X направляем внутрь стены.
+	casing.rotation.y = _office_new_yaw(-outward)
+	var mesh := casing.find_child("OriginalDoorCasing", true, false) as MeshInstance3D
+	if mesh == null:
+		casing.queue_free()
+		return
+	mesh.material_override = _mat_base
+	_office_new_align_center_floor(casing, mesh, opening_center)
+	var box := mesh.global_transform * mesh.get_aabb()
+	casing.global_position += outward * (contact_scalar - _office_new_aabb_min(box, outward))
+	casing.reparent(frame_root, true)
+
+
+func _spawn_office_new_leaf(opening_center: Vector3, normal: Vector3,
+		node_name: String, opening_id: String, collide: bool) -> void:
+	var inst := OFFICE_DOOR_V2_LEAF_SCENE.instantiate() as Node3D
+	if inst == null:
+		return
+	inst.name = node_name
+	var leaf := inst.find_child("Canterbury_Door_1981 _762", true, false) as MeshInstance3D
+	if leaf == null:
+		inst.free()
+		return
+	_office_new_tune_leaf_materials(inst)
+	# Не добавляем исходный normal/AO-вариант в дерево ни на один кадр.
+	add_child(inst)
+	inst.scale = Vector3.ONE * _office_new_scale()
+	var face := 1.0
+	if _player_ref != null and is_instance_valid(_player_ref):
+		face = 1.0 if (_player_ref.global_position - opening_center).dot(normal) >= 0.0 else -1.0
+	inst.set_meta("office_new_center", opening_center)
+	inst.set_meta("office_new_normal", normal)
+	inst.set_meta("office_new_face", face)
+	inst.set_meta("opening_style", "office_new")
+	_position_office_new_leaf(inst, opening_center, normal, face)
+	_mark_office_opening_node(inst, opening_id, "door", face)
+	if collide:
+		_add_office_new_leaf_collision(inst, leaf)
+	_office_door_v2_instances.append(inst)
+
+
+func _position_office_new_leaf(inst: Node3D, opening_center: Vector3,
+		normal: Vector3, face: float) -> void:
+	var leaf := inst.find_child("Canterbury_Door_1981 _762", true, false) as MeshInstance3D
+	if leaf == null:
+		return
+	var outward := normal * face
+	inst.rotation.y = _office_new_yaw(outward)
+	_office_new_align_center_floor(inst, leaf, opening_center)
+	var visible_face_scalar := (opening_center + outward * (
+		PARTITION_T * CELL * 0.5 + OFFICE_FRAME_OUTSET
+		+ OFFICE_DOOR_V2_CASING_DEPTH_RAW * _office_new_scale())).dot(outward)
+	var box := leaf.global_transform * leaf.get_aabb()
+	inst.global_position += outward * (
+		visible_face_scalar - OFFICE_DOOR_V2_LEAF_INSET - _office_new_aabb_max(box, outward))
+	inst.set_meta("office_new_face", face)
+	inst.set_meta("opening_side", face)
+
+
+func _update_office_door_v2_view_side() -> void:
+	if _player_ref == null or not is_instance_valid(_player_ref):
+		return
+	for index in range(_office_door_v2_instances.size() - 1, -1, -1):
+		var inst := _office_door_v2_instances[index]
+		if inst == null or not is_instance_valid(inst) or inst.is_queued_for_deletion():
+			_office_door_v2_instances.remove_at(index)
+			continue
+		var opening_center := inst.get_meta("office_new_center", Vector3.ZERO) as Vector3
+		var normal := inst.get_meta("office_new_normal", Vector3.RIGHT) as Vector3
+		var current_face := float(inst.get_meta("office_new_face", 1.0))
+		var distance := (_player_ref.global_position - opening_center).dot(normal)
+		var desired_face := current_face
+		if distance > OFFICE_DOOR_V2_SIDE_HYSTERESIS:
+			desired_face = 1.0
+		elif distance < -OFFICE_DOOR_V2_SIDE_HYSTERESIS:
+			desired_face = -1.0
+		if desired_face != current_face:
+			_position_office_new_leaf(inst, opening_center, normal, desired_face)
+
+
+func _office_new_scale() -> float:
+	return minf(
+		(_opening_width() * CELL) / OFFICE_DOOR_V2_FRAME_W_RAW,
+		(DOOR_HEIGHT + DOOR_TOP_CLEARANCE) / OFFICE_DOOR_V2_FRAME_H_RAW)
+
+
+func _office_new_yaw(outward: Vector3) -> float:
+	return atan2(-outward.z, outward.x)
+
+
+func _office_new_align_center_floor(root: Node3D, mesh: MeshInstance3D,
+		opening_center: Vector3) -> void:
+	var box := mesh.global_transform * mesh.get_aabb()
+	var center := box.position + box.size * 0.5
+	root.global_position += Vector3(
+		opening_center.x - center.x,
+		opening_center.y - box.position.y,
+		opening_center.z - center.z)
+
+
+func _office_new_aabb_radius(box: AABB, axis: Vector3) -> float:
+	return (absf(axis.x) * box.size.x + absf(axis.y) * box.size.y
+		+ absf(axis.z) * box.size.z) * 0.5
+
+
+func _office_new_aabb_max(box: AABB, axis: Vector3) -> float:
+	return box.get_center().dot(axis) + _office_new_aabb_radius(box, axis)
+
+
+func _office_new_aabb_min(box: AABB, axis: Vector3) -> float:
+	return box.get_center().dot(axis) - _office_new_aabb_radius(box, axis)
+
+
+func _office_new_tune_leaf_materials(root: Node3D) -> void:
+	for node in root.find_children("*", "MeshInstance3D", true, false):
+		var mesh_instance := node as MeshInstance3D
+		if mesh_instance == null or mesh_instance.mesh == null:
+			continue
+		var ancestor := mesh_instance.get_parent()
+		var handle_part := false
+		while ancestor != null and ancestor != root:
+			if String(ancestor.name) == "Handle" or String(ancestor.name) == "Handle2":
+				handle_part = true
+				break
+			ancestor = ancestor.get_parent()
+		for surface in range(mesh_instance.mesh.get_surface_count()):
+			var source := mesh_instance.get_active_material(surface)
+			if source == null:
+				continue
+			var material := _office_new_shared_door_material(source, handle_part)
+			mesh_instance.set_surface_override_material(surface, material)
+
+
+func _office_new_shared_door_material(source: Material, handle_part: bool) -> BaseMaterial3D:
+	var cached := _mat_office_new_handle if handle_part else _mat_office_new_leaf
+	if cached != null:
+		return cached
+	var material := source.duplicate() as BaseMaterial3D
+	_strip_unstable_office_door_maps(material)
+	if handle_part:
+		material.resource_name = "OfficeDoorHandleShared"
+		material.metallic = 0.55
+		material.roughness = 0.72
+		material.metallic_specular = 0.30
+		_mat_office_new_handle = material
+	else:
+		material.resource_name = "OfficeDoorLeafShared"
+		material.metallic = 0.0
+		material.roughness = 1.0
+		material.metallic_specular = 0.0
+		_mat_office_new_leaf = material
+	return material
+
+
+func _strip_unstable_office_door_maps(material: BaseMaterial3D) -> void:
+	material.normal_enabled = false
+	material.normal_texture = null
+	material.roughness_texture = null
+	material.metallic_texture = null
+	material.ao_enabled = false
+	material.ao_texture = null
+
+
+func _add_office_new_leaf_collision(inst: Node3D, leaf: MeshInstance3D) -> void:
+	var local_box := inst.global_transform.affine_inverse() * (
+		leaf.global_transform * leaf.get_aabb())
+	if local_box.size.x <= 0.0 or local_box.size.y <= 0.0 or local_box.size.z <= 0.0:
+		return
+	var body := StaticBody3D.new()
+	body.name = "DoorBody"
+	inst.add_child(body)
+	var shape := BoxShape3D.new()
+	shape.size = local_box.size
+	var collision := CollisionShape3D.new()
+	collision.name = "DoorCollision"
+	collision.shape = shape
+	collision.position = local_box.get_center()
+	body.add_child(collision)
 
 
 func _keep_door_frame_only(root: Node3D) -> void:
@@ -5164,6 +5410,9 @@ func _make_materials() -> void:
 
 	_mat_base = StandardMaterial3D.new()
 	_mat_base.albedo_color = Color(0.95, 0.92, 0.78)
+	_mat_base.metallic = 0.0
+	_mat_base.roughness = 1.0
+	_mat_base.metallic_specular = 0.0
 
 	_mat_pit = StandardMaterial3D.new()
 	_mat_pit.albedo_color = Color(1.0, 0.04, 0.02)
@@ -5208,6 +5457,7 @@ func _setup_environment() -> void:
 
 
 func _begin() -> void:
+	_office_door_v2_instances.clear()
 	_st.clear()
 	for n in ["wall", "floor", "ceil", "lamp", "lamp_glow", "base", "pit"]:
 		var st := SurfaceTool.new()

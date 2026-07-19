@@ -1,0 +1,19 @@
+[remap]
+
+importer="mp3"
+type="AudioStreamMP3"
+uid="uid://twek2j6tlivk"
+path="res://.godot/imported/Single Fluorescent-light-turned-on(1).mp3-14188bba2c8aff122ba882943bd79801.mp3str"
+
+[deps]
+
+source_file="res://sounds/Single Fluorescent-light-turned-on(1).mp3"
+dest_files=["res://.godot/imported/Single Fluorescent-light-turned-on(1).mp3-14188bba2c8aff122ba882943bd79801.mp3str"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4

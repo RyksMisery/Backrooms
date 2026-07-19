@@ -76,6 +76,37 @@ Priority:
 The passage does not have to be geometrically centered. Route quality has
 priority over symmetry.
 
+## Door-Sized Opening Grid Alignment (mandatory)
+
+Every door-sized/office-style opening, both empty and fitted with a door, is
+anchored to the canonical panel/occupancy grid of its owning area or chunk.
+The wall-normal coordinate is fixed by the host wall/partition centerline;
+the opening's longitudinal coordinate along that wall MUST be the center of a
+grid cell/lane transformed with the area. Do not place an opening at an
+arbitrary meter offset or nudge it off-grid to improve visual centering.
+
+"Opening in the center of the wall/room" means: project the requested
+geometric center onto the host wall, enumerate legal grid-cell centers along
+that wall, and choose the closest one. If the target lies exactly between two
+cells, choose the smaller local longitudinal cell index unless the template
+explicitly names the other tied GRID CELL. If the nearest anchor is blocked or
+violates jamb/obstacle clearance, continue to the next closest legal grid
+anchor; never solve the conflict with an off-grid offset.
+
+Grid alignment applies to the logical ANCHOR, not to the calibrated aperture
+edges. Opening width and height may be non-integer panel sizes (for example,
+the calibrated office-door aperture); they remain symmetric around the grid
+anchor and are not rounded to whole cells.
+
+An empty opening and the same opening with a door are one geometry contract.
+The aperture, lintel, liner/reveal, frames, casings, optional collision, and
+door leaf all derive from the same `opening_id`, anchor, host-wall centerline,
+and yaw. Adding/removing the leaf must not move or recalculate the aperture.
+The leaf may have an explicit wall-normal depth/inset rule, but it must never
+receive an independent offset along the wall. Rotated or mirrored areas apply
+their transform to the grid anchor first and derive every opening component
+from that transformed anchor.
+
 ## Internal Layouts
 
 The internal maze shown in `areas.png` is approximate.
@@ -102,25 +133,21 @@ are explicit continuations of a thick wall around an office pocket/jamb; this
 preserves the old good-looking niche behavior without enabling baseboards on
 free thin partitions or clear slits.
 
-Office-like internal openings use the white door module as their reference
-size. Door openings keep the same width as the scaled `3d/wite_door.glb`
-door plus 0.18 m side clearance on each side, and the lintel starts at the
-scaled door height plus 0.97 m. The canonical empty office opening is the
-office-corridor prototype: frame/trim from `3d/wite_door.glb` on both sides
-of the partition, frame material overridden to the baseboard material color,
-and each frame moved 0.015 m outward from its side so it barely protrudes
-past the floor baseboard. The internal perimeter is not a recessed reveal:
-it is a baseboard-color edge liner placed exactly on the aperture edge and
-spanning the thickness between the two frames.
+Office-like internal openings use the classification and style resolution in
+`docs/openings.md`. The default for every decorated opening, door, and niche is
+`office_new` (Canterbury v2). The former `3d/wite_door.glb` calibration is the
+explicit `office_old` legacy style only; historical code paths do not make it
+the default. Each style owns its calibrated width, lintel, frame outset,
+liner, casing, leaf assets, materials, and wall-normal leaf inset.
 
-An "office opening" and a "door in an office opening" are separate elements.
+An "office opening" and a "door in an office opening" are separate elements
+that share the mandatory grid anchor defined above.
 The office opening owns the aperture, lintel, edge liner, and the two frames.
-The door element is only the door panel/leaf placed at the exact center of the
-opening depth (`_office_opening_center_world_pos`), using the same yaw as the
-opening. An "office opening with door" is therefore composed as
-office-opening + door-panel. Door leaves and handles keep the original
-white-door materials. Closed door panels must include collision so the player
-cannot pass through them.
+The door element is only the door panel/leaf placed from the same anchor and
+yaw using the selected style's wall-normal inset rule. An "office opening with
+door" is therefore composed as office-opening + door-panel. Door materials
+come from the selected style. Closed door panels must include collision so the
+player cannot pass through them.
 
 Office openings and office doors are reusable semantic elements: nodes should
 be marked with `office_opening`, full door nodes also with `office_door`, and
@@ -141,9 +168,9 @@ passage, or corridor face in a thick wall, place a virtual office partition
 module of thickness `0.5` panel from the wall face into the wall, then compute
 the opening center at the center of that virtual module. Door panels, frames,
 and reveals are then computed from that opening center with the same formulas
-as a real 0.5-panel office partition. Frames protrude 0.015 m outward from
-their side, and the internal perimeter uses the same edge liner on the
-aperture edge. A niche is the required local change in
+as a real 0.5-panel office partition. Frame outset, casing, liner, and leaf
+depth are taken from the selected style (`office_new` by default), never from
+an unlabelled legacy constant. A niche is the required local change in
 blind-wall thickness around this module: it may be 1 cell wide or widened to
 match local corridor geometry, but it does not redefine the opening-pocket
 size. This keeps the door module independent from decorative wall shaping.
@@ -154,10 +181,9 @@ partition centerline.
 
 For any internal partition with the same 0.5-panel thickness as the office
 partitions, office-style doors, frames, and openings use the calibrated office
-placement from this prototype across the whole labyrinth. Keep the same
-room-facing protrusion, frame placement on both sides, lintel height, reveal
-trim, and baseboard-color frame/reveal treatment unless a specific area design
-explicitly overrides it.
+placement from `docs/openings.md` across the whole labyrinth. Resolve an absent
+style to `office_new`; use `office_old` only when the object explicitly requests
+that legacy variant.
 
 ## Open-Area Dressing: Mixed Partition Weight (Atmosphere, Not Density)
 
@@ -222,6 +248,18 @@ rectangular blocks/meshes/collisions.
 
 This keeps the generator from patching holes after the fact and makes runtime
 visibility and light management easier.
+
+### Runtime streaming in `level_e`
+
+- При смене блока игрока недостающая геометрия окна стриминга строится через
+  очередь, ближайшие блоки первыми.
+- За один кадр разрешено перестраивать не больше одного блока. Пакетная
+  перестройка нескольких блоков в одном кадре запрещена: у офисной области один
+  полный блок занимает около `7 мс`, а два одновременно давали измеренный пик
+  `13–18 мс` при входе по основной цепочке.
+- Освобождение далёких блоков остаётся немедленным; явное отключение стриминга
+  клавишей `K` по-прежнему может синхронно восстановить весь уровень как
+  диагностическая операция.
 
 ## Current Known Area Types From `areas.png`
 

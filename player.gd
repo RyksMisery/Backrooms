@@ -7,7 +7,8 @@ const STEP_STRIDE  = 1.8
 # Параметры приседания
 const STAND_HEIGHT  = 2.0
 const CROUCH_HEIGHT = 1.0
-const STAND_CAM_Y   = 0.5
+# Локальные 0.6225 м дают фактические 1.7 м от пола с текущим safe_margin капсулы.
+const STAND_CAM_Y   = 0.6225
 const CROUCH_CAM_Y  = -0.4
 
 const CAM_FOV_DEFAULT  := 75.0
