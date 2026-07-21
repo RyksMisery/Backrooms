@@ -121,8 +121,8 @@ const WIN_LANE := 11         # лейн щели — в РУКАВЕ (9..14), в
 const SLIT_W := 0.25         # ширина сквозной щели, панели (капсула ⌀0.8 не влезает)
 const SLIT_BASE_H := 0.12    # добор плинтуса под боковыми простенками щели
 const SLIT_BASE_PAD := 0.05  # тот же выступ/запас, что у обычного плинтуса
-const LAMP_SOURCE_DROP_D := 0.625  # все runtime-источники света опускаем ниже базовой позиции
-const MAC_RENDER_SCALE := 0.65  # 3D render scale ТОЛЬКО на macOS (тяжёлый Retina-fill)
+const LAMP_SOURCE_DROP_D := LIGHTING.SOURCE_LEVEL_DROP
+const MAC_RENDER_SCALE := ARCHITECTURE.MAC_RENDER_SCALE
 const HALL_LIGHT_CHECKER := true  # в больших залах часть позиций полностью без светильника
 const CARDBOARD_BOX_PATH := "res://objects/cardboard_box_01_1k/cardboard_box_01_1k.gltf"
 const HALL_ARROW_TEXTURE_PATH := "res://decals/backrooms_arrow_black.png"
@@ -535,7 +535,8 @@ func _place_pit_warning_sign() -> void:
 
 
 func _build_hud() -> void:
-	# Наследуем HUD родителя, затем увеличиваем миникарту в 2 раза (360 → 720).
+	# Канонические HUD и карта создаются раздельными модулями compatibility-базы;
+	# для этой раскладки локально увеличиваем только карту (360 → 720).
 	super._build_hud()
 	if _minimap != null:
 		_minimap.offset_left = -732

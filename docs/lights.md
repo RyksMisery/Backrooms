@@ -1,5 +1,9 @@
 # Lights
 
+> Кодовый источник канона: `modules/lighting_module.gd`. Уровни описывают
+> occupancy и допустимые локальные overrides, но не копируют параметры панели,
+> источника, AreaLight/bounce или продуктового профиля теней.
+
 ## Финальный профиль level_e
 
 С `2026-07-19` продуктовый свет `level_e` — `LF3-11F`: occupancy-priority,
@@ -20,6 +24,34 @@ A/B-бота и регрессионных проверок. Их наличие
 активны 11 теней все 900 stress-кадров. Валидатор подтвердил старт в `11F`,
 атомарный возврат Reference для теста и переключение `FINAL WAV ↔ reference`
 без потери обоих профилей.
+
+## Model-only fill — лабораторный слой
+
+Следующий изолированный эксперимент не меняет `LF3-11F`: импортные props
+получают дополнительный visual layer, а управляемые `OmniLight3D` без теней
+видят только этот слой. Основной world-layer у моделей сохраняется, поэтому
+штатный свет и отбрасываемые тени работают как раньше. Архитектурные меши,
+пол, стены, потолок и плинтус в model-layer не входят.
+
+Первый общий допуск `level_e`: одна система регистрирует кластер коробок
+большого зала и модели табличек у провала; для каждого пространственного
+кластера строится локальный fill с общей энергией `0.05`. `4` включает/
+выключает всю систему, `1/2` меняют единый параметр энергии. Система остаётся
+экспериментальным A/B-харнессом для будущих импортных props, а не обязательным
+светом всех моделей. Новую модель можно временно зарегистрировать receiver'ом
+только для парной проверки `OFF/ON`; после теста отдельно решается, оставлять ли
+её в профиле. Для каждого нового receiver обязательны проверки бокового света,
+формы материала, отсутствия самосвечения и неизменности архитектуры и
+отбрасываемой тени. Переключатель `4` и регулировка `1/2` сохраняются до
+завершения этих тестов.
+
+Автоконтроль `2026-07-19 03-18-02/03-18-59`: зарегистрировано 5 receivers
+(3 коробки + 2 предупреждающие таблички), создано 3 локальных источника с
+`cull_mask=MODEL_FILL`, `shadow_enabled=false`. Для коробок ROI luma
+`0.19152→0.19231` (`+0.41%`), `RGB MAE=0.000902`: изменение заметно на форме,
+но не осветляет окружение. Vulkan stress прошёл 900 кадров с 11 тенями,
+`mean=14.244 ms`, `max=28.822 ms`; среднее остаётся внутри ранее измеренного
+разброса. Таблички требуют ручного A/B клавишей `4`.
 
 > В `level_e` отдельно испытывается профиль окклюзии LF3-8O: клавиша `8`
 > переключает неизменённый `REFERENCE` и стабильный пул до 10 теней
@@ -171,6 +203,11 @@ nearest legal grid cell is found; never solve a blockage by nudging the fixture
 off-grid. Multi-panel fixtures must likewise be unions of whole adjacent grid
 cells and remain anchored to their cell centers.
 
+Для полного пакета стандартной области `15×15` применяется сетка
+`lighting_module.STANDARD_HALL_STRIDE_MULTIPLIER`: индексы панелей вычисляет
+сам световой модуль. Спецификация комнаты не копирует шаг, отступ или численные
+параметры источников.
+
 ## Placement Order
 
 Light placement happens after architectural occupancy is known.
@@ -289,10 +326,10 @@ the player's current area group lit. If FPS recovers, re-enable quality one
 feature at a time. If performance or device support still fails, switch Android
 back to the old `OmniLight3D` family as the runtime fallback.
 
-Do not reference `AreaLight3D` as a hard typed class in scripts while the
-project may still be opened with older Godot versions; instantiate it through
-`ClassDB` and set `area_*` properties dynamically. This keeps the project
-loadable before/after the engine update.
+Проект поддерживает только Godot 4.7 stable: совместимость этого кода с 4.6 и
+более ранними версиями не требуется. Текущее динамическое создание
+`AreaLight3D` через `ClassDB` можно сохранять как деталь реализации, но оно не
+должно использоваться как причина ограничивать возможности Godot 4.7.
 
 Area lights are more expensive than omni lights. Keep shadows off by default
 for the full-level pass; enable them later only for selected hero fixtures if

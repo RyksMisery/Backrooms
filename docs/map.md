@@ -1,5 +1,11 @@
 # Map
 
+## Единственный источник правил
+
+Стандартная карта создаётся только `modules/map_module.gd`. HUD и карта — два
+независимых модуля: изменение, отключение или замена одного не требует менять
+другой и не должно дублировать его Canvas/UI-код.
+
 ## Scope
 
 Rules for the in-game minimap and future map/debug views.
@@ -46,13 +52,15 @@ builder whenever possible.
 
 Avoid maintaining a separate hand-drawn map that can drift from geometry.
 
-## Current Test Implementation
+## Подключение
 
-`level_blueprint.gd` contains a temporary minimap for the area prototype.
+`modules/standard_area_module.gd` подключает карту автоматически и передаёт ей
+ту же occupancy-сетку, из которой построена стандартная область. Составные
+лаборатории передают модулю свою общую динамическую occupancy-сетку.
 
-Future direction:
+Карта стандартной области включается клавишей `M`. Геометрия стен, проходов,
+колонн и провалов отображается только по реальным данным builder-а. Ручная
+карта, способная разойтись с геометрией, запрещена.
 
-- move map rendering to a reusable UI/control script;
-- source map data from the same logical area graph and occupancy grid used by
-  the generator;
-- support discovered/undiscovered areas later if needed.
+Скрытие неизведанных областей может быть добавлено позднее как режим этого же
+модуля, а не как отдельная реализация карты.

@@ -1,13 +1,17 @@
 extends Node3D
 
-const GAME_FONT := preload("res://fonts/VCR_OSD_Mono_cyr.ttf")
+const ARCHITECTURE := preload("res://modules/architecture_module.gd")
+const OPENINGS := preload("res://modules/opening_module.gd")
+const LIGHTING := preload("res://modules/lighting_module.gd")
+const HUD := preload("res://modules/hud_module.gd")
+const MAP := preload("res://modules/map_module.gd")
 const PLAYER_SCENE := preload("res://player.tscn")
 const OFFICE_DOOR_SCENE := preload("res://3d/wite_door.glb")
 
-const CELL := 1.25
-const CEIL_H := 4.0
-const SLAB_T := 0.20
-const WALL_CELLS := 3
+const CELL := ARCHITECTURE.CELL
+const CEIL_H := ARCHITECTURE.CEIL_H
+const SLAB_T := ARCHITECTURE.SLAB_T
+const WALL_CELLS := ARCHITECTURE.WALL_CELLS
 const WALL_T := CELL * WALL_CELLS
 const CORRIDOR_W_CELLS := 4
 const CORRIDOR_W := CELL * CORRIDOR_W_CELLS
@@ -20,14 +24,14 @@ const CHUNK_COUNT := 14
 const END_DISTANCE := CHUNK_LEN * 6.0    # дальний кап: 60 м (глубже, торцы дальше)
 const RECYCLE_BEHIND := CHUNK_LEN * 7.0  # 70 м (кап 60 внутри окна, запас 10)
 const RECYCLE_AHEAD := CHUNK_LEN * 7.0   # 70 м
-const BASE_H := 0.12
-const BASE_PAD := 0.05
+const BASE_H := ARCHITECTURE.BASEBOARD_H
+const BASE_PAD := ARCHITECTURE.BASEBOARD_PAD
 # Параметры ламп = level_d (soft default): широкий радиус + мягкое затухание.
-const LAMP_RANGE := 10.0
-const LAMP_ENERGY := 0.42
-const LAMP_ATTEN := 0.85
-const LAMP_COLOR := Color(0.92, 0.88, 0.62)
-const LAMP_SOURCE_DROP := 0.625  # доп. опускание источника ниже панели (level_d LAMP_SOURCE_DROP_D)
+const LAMP_RANGE := LIGHTING.LAMP_RANGE
+const LAMP_ENERGY := LIGHTING.LAMP_ENERGY
+const LAMP_ATTEN := LIGHTING.LAMP_ATTEN
+const LAMP_COLOR := LIGHTING.LIGHT_COLOR
+const LAMP_SOURCE_DROP := LIGHTING.SOURCE_LEVEL_DROP
 # Тени — только у ближних ламп по дистанции, с fade (аналог AREA_LIGHT_BOUNCE_SHADOW_* level_d).
 const SHADOW_CASTERS := 10
 const SHADOW_FULL_DIST := 5.0
@@ -46,21 +50,21 @@ const LIGHT_WAVE_START_BEHIND := CHUNK_LEN * 1.0
 const LIGHT_WAVE_STEP := CHUNK_LEN * 0.5
 const LIGHT_FADE_SPEED := 3.0  # мягче временное разгорание/гашение дальних ламп
 const FAR_GUIDE_LIGHTS := 4
-const LAMP_PANEL_EMISSION := 2.1
+const LAMP_PANEL_EMISSION := LIGHTING.PANEL_EMISSION
 const LAMP_PANEL_GUIDE_MIN := 0.45
 const AMBIENT_START := 0.035
 const AMBIENT_DARK := 0.002
 const AMBIENT_DARK_CYCLES := 4.0
 const AMBIENT_FADE_SPEED := 2.5
-const DOOR_WIDTH := 1.008042
-const DOOR_HEIGHT := 2.116508
-const DOOR_SIDE_CLEARANCE := 0.18
-const DOOR_TOP_CLEARANCE := 0.97
-const PARTITION_T := 0.5
-const OFFICE_DOOR_SCALE := 1.5
-const OFFICE_DOOR_DEPTH := 0.1808
-const OFFICE_REVEAL_TRIM_T := 0.08
-const OFFICE_FRAME_OUTSET := 0.025
+const DOOR_WIDTH := OPENINGS.DOOR_WIDTH
+const DOOR_HEIGHT := OPENINGS.DOOR_HEIGHT
+const DOOR_SIDE_CLEARANCE := OPENINGS.DOOR_SIDE_CLEARANCE
+const DOOR_TOP_CLEARANCE := OPENINGS.DOOR_TOP_CLEARANCE
+const PARTITION_T := OPENINGS.PARTITION_T_CELLS
+const OFFICE_DOOR_SCALE := OPENINGS.OFFICE_DOOR_SCALE
+const OFFICE_DOOR_DEPTH := OPENINGS.OFFICE_DOOR_DEPTH
+const OFFICE_REVEAL_TRIM_T := OPENINGS.OFFICE_REVEAL_TRIM_T
+const OFFICE_FRAME_OUTSET := OPENINGS.OFFICE_FRAME_OUTSET
 const OFFICE_DOOR_STEP_CHUNKS := 1
 const MAP_W := 160.0
 const MAP_H := 240.0
@@ -98,6 +102,8 @@ var _far_end: Node3D
 var _player_ref: CharacterBody3D
 var _hud_label: Label
 var _minimap: Control
+var _hud_module
+var _map_module
 var _corridor_lights: Array[Dictionary] = []
 var _cycle_count := 0
 var _start_z := 0.0
@@ -157,38 +163,17 @@ func _process(delta: float) -> void:
 		_hud_label.text = "БЕСКОНЕЧНЫЙ КОРИДОР\n%.1f м\nциклы: %d\nдверь: %s\nтыл: %s" % [
 			walked, _cycle_count, door_state, rear_state
 		]
-	if _minimap != null:
-		_minimap.queue_redraw()
+	if _map_module != null:
+		_map_module.update()
 
 
 func _make_materials() -> void:
-	_mat_wall = StandardMaterial3D.new()
-	_mat_wall.albedo_texture = load("res://textures/wall1.png")
-	_mat_wall.albedo_color = Color(1.10, 1.05, 0.52)
-	_mat_wall.uv1_triplanar = true
-	_mat_wall.uv1_scale = Vector3(4, 4, 4)
-
-	_mat_floor = StandardMaterial3D.new()
-	_mat_floor.albedo_texture = load("res://textures/floor.png")
-	_mat_floor.albedo_color = Color(1.0, 0.94, 0.46)
-	_mat_floor.uv1_triplanar = true
-	_mat_floor.uv1_scale = Vector3(0.2, 0.2, 0.2)
-
-	_mat_ceil = StandardMaterial3D.new()
-	_mat_ceil.albedo_texture = load("res://textures/ceiling1.png")
-	_mat_ceil.albedo_color = Color(1.25, 1.20, 0.70)
-	_mat_ceil.uv1_triplanar = true
-	_mat_ceil.uv1_scale = Vector3(0.8, 0.8, 0.8)
-
-	_mat_lamp = StandardMaterial3D.new()
-	_mat_lamp.albedo_color = Color(1.0, 0.98, 0.86)
-	_mat_lamp.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_mat_lamp.emission_enabled = true
-	_mat_lamp.emission = Color(0.90, 0.87, 0.76)
-	_mat_lamp.emission_energy_multiplier = LAMP_PANEL_EMISSION
-
-	_mat_base = StandardMaterial3D.new()
-	_mat_base.albedo_color = Color(0.95, 0.92, 0.78)
+	var canonical := ARCHITECTURE.create_materials()
+	_mat_wall = canonical["wall"]
+	_mat_floor = canonical["floor"]
+	_mat_ceil = canonical["ceiling"]
+	_mat_lamp = canonical["lamp"]
+	_mat_base = canonical["baseboard"]
 
 	# Замуровка: та же кладка, но холодный серый тон — явно отличается от
 	# жёлтых стен, читается как «свежая заделка проёма».
@@ -419,20 +404,15 @@ func _build_entrance() -> void:
 
 
 func _build_hud() -> void:
-	var layer := CanvasLayer.new()
-	add_child(layer)
-	_hud_label = Label.new()
-	_hud_label.position = Vector2(16, 14)
-	_hud_label.add_theme_font_override("font", GAME_FONT)
-	_hud_label.add_theme_font_size_override("font_size", 18)
-	_hud_label.add_theme_color_override("font_color", Color(0.92, 0.88, 0.58))
-	layer.add_child(_hud_label)
+	_hud_module = HUD.new(self)
+	_hud_label = _hud_module.setup()
+	_map_module = MAP.new(self)
 	_minimap = InfiniteCorridorMinimap.new()
 	_minimap.level = self
 	_minimap.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_minimap.position = Vector2(-MAP_W - MAP_MARGIN, MAP_MARGIN)
 	_minimap.custom_minimum_size = Vector2(MAP_W, MAP_H)
-	layer.add_child(_minimap)
+	_map_module.setup_custom(_minimap, true)
 
 
 func _recycle_chunks() -> void:

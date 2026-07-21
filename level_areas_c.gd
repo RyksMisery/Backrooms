@@ -5,16 +5,23 @@ extends Node3D
 # (перегородка/проём), вся геометрия/карта/свет деривируются из одной сетки.
 # level_blueprint.gd при этом не трогается (заморожен как вариант 1).
 
-const GAME_FONT := preload("res://fonts/VCR_OSD_Mono_cyr.ttf")
-const CELL := 1.25
-const ROOM_CELLS := 15
-const WALL_CELLS := 3
-const PITCH := ROOM_CELLS + WALL_CELLS        # шаг области в панелях
-const CEIL_H := 4.0
-const SLAB_T := 0.20
+const ARCHITECTURE := preload("res://modules/architecture_module.gd")
+const OPENINGS := preload("res://modules/opening_module.gd")
+const LIGHTING := preload("res://modules/lighting_module.gd")
+const AUDIO := preload("res://modules/audio_module.gd")
+const HUD := preload("res://modules/hud_module.gd")
+const MAP := preload("res://modules/map_module.gd")
+const CELL := ARCHITECTURE.CELL
+const ROOM_CELLS := ARCHITECTURE.ROOM_CELLS
+const WALL_CELLS := ARCHITECTURE.WALL_CELLS
+const PITCH := ARCHITECTURE.PITCH
+const CEIL_H := ARCHITECTURE.CEIL_H
+const SLAB_T := ARCHITECTURE.SLAB_T
+const BASEBOARD_H := ARCHITECTURE.BASEBOARD_H
+const BASEBOARD_PAD := ARCHITECTURE.BASEBOARD_PAD
 
-const LIGHT_STEP := 2
-const LIGHT_MARGIN := 1
+const LIGHT_STEP := LIGHTING.LIGHT_STEP
+const LIGHT_MARGIN := LIGHTING.LIGHT_MARGIN
 const SINGLE_LIGHT_CLEAR_CELLS := 2
 const SHADOW_CASTERS := 0                       # сколько ближних ламп дают тени
 # Управление включёнными лампами (не тенями — самим светом). Раньше все
@@ -41,25 +48,25 @@ const LIGHT_MODEL_PATH := "res://objects/Light_Rail_01.glb"
 const LIGHT_MODEL_LEN := 1.0                    # длина рейла как доля длинной стороны панели
 
 # Калибровка офисного проёма и отдельной дверной панели.
-const DOOR_WIDTH := 1.008042
-const DOOR_HEIGHT := 2.116508
-const DOOR_SIDE_CLEARANCE := 0.18
-const DOOR_TOP_CLEARANCE := 0.97
-const PARTITION_T := 0.5                        # тонкая перегородка, панели
-const OFFICE_DOOR_SCALE := 1.5
-const OFFICE_DOOR_DEPTH := 0.1808
-const OFFICE_REVEAL_TRIM_T := 0.08
-const OFFICE_FRAME_OUTSET := 0.025
+const DOOR_WIDTH := OPENINGS.DOOR_WIDTH
+const DOOR_HEIGHT := OPENINGS.DOOR_HEIGHT
+const DOOR_SIDE_CLEARANCE := OPENINGS.DOOR_SIDE_CLEARANCE
+const DOOR_TOP_CLEARANCE := OPENINGS.DOOR_TOP_CLEARANCE
+const PARTITION_T := OPENINGS.PARTITION_T_CELLS
+const OFFICE_DOOR_SCALE := OPENINGS.OFFICE_DOOR_SCALE
+const OFFICE_DOOR_DEPTH := OPENINGS.OFFICE_DOOR_DEPTH
+const OFFICE_REVEAL_TRIM_T := OPENINGS.OFFICE_REVEAL_TRIM_T
+const OFFICE_FRAME_OUTSET := OPENINGS.OFFICE_FRAME_OUTSET
 const OFFICE_DOOR_PANEL := "res://3d/white_door_comparison_clean.glb"
 const OFFICE_DOOR_V2_LEAF_SCENE := preload("res://3d/office_door_v2_leaf.tscn")
 const OFFICE_DOOR_V2_CASING_SCENE := preload("res://3d/original_door_casing_preview.tscn")
-const OFFICE_DOOR_V2_INNER_HALF_W_RAW := 0.384
-const OFFICE_DOOR_V2_INNER_TOP_RAW := 1.9722
-const OFFICE_DOOR_V2_FRAME_W_RAW := 0.9090005457
-const OFFICE_DOOR_V2_FRAME_H_RAW := 2.0547001362
-const OFFICE_DOOR_V2_CASING_DEPTH_RAW := 0.0075596943
-const OFFICE_DOOR_V2_LEAF_INSET := 0.10
-const OFFICE_DOOR_V2_SIDE_HYSTERESIS := 0.02
+const OFFICE_DOOR_V2_INNER_HALF_W_RAW := OPENINGS.OFFICE_DOOR_V2_INNER_HALF_W_RAW
+const OFFICE_DOOR_V2_INNER_TOP_RAW := OPENINGS.OFFICE_DOOR_V2_INNER_TOP_RAW
+const OFFICE_DOOR_V2_FRAME_W_RAW := OPENINGS.OFFICE_DOOR_V2_FRAME_W_RAW
+const OFFICE_DOOR_V2_FRAME_H_RAW := OPENINGS.OFFICE_DOOR_V2_FRAME_H_RAW
+const OFFICE_DOOR_V2_CASING_DEPTH_RAW := OPENINGS.OFFICE_DOOR_V2_CASING_DEPTH_RAW
+const OFFICE_DOOR_V2_LEAF_INSET := OPENINGS.OFFICE_DOOR_V2_LEAF_INSET
+const OFFICE_DOOR_V2_SIDE_HYSTERESIS := OPENINGS.OFFICE_DOOR_V2_SIDE_HYSTERESIS
 # Проёмы офиса: 3 пустых + 1 проём с отдельной дверной панелью.
 const OFFICE_DOOR_CENTER := Vector2(11.5, 7.5)  # полная дверь, горизонтальная линия
 
@@ -96,107 +103,104 @@ const WETSIGN_SPOT_ANGLE := 32.0
 const WETSIGN_SPOT_RANGE := 5.0
 const WETSIGN_SPOT_COLOR := Color(0.95, 0.92, 0.82)
 # ЭКСПЕРИМЕНТ атмосферы: ниже ambient = контрастнее свет/темнота (откат → 0.08).
-const AMBIENT_ENERGY := 0.010   # приглушённый ambient по умолчанию (как в коридоре; было 0.025)
+const AMBIENT_ENERGY := ARCHITECTURE.AMBIENT_ENERGY
 const AMBIENT_STEP := 0.005   # шаг рантайм-регулятора амбиента (клавиши -/+)
 const AMBIENT_MAX := 0.2      # верхний предел регулятора
 # Источники-лампы (одинаковые у всех светильников). Радиус больше + затухание
 # площе → лужи света шире и мягче перекрываются, без резких тёмных пятен в залах.
-const LAMP_RANGE := 10.0
-const LAMP_ENERGY := 0.42
-const LAMP_ATTEN := 0.85
+const LAMP_RANGE := LIGHTING.LAMP_RANGE
+const LAMP_ENERGY := LIGHTING.LAMP_ENERGY
+const LAMP_ATTEN := LIGHTING.LAMP_ATTEN
 # Старые параметры света — для переключателя сравнения (кнопка G).
 const AMBIENT_ENERGY_OLD := 0.08
-const LAMP_RANGE_OLD := 7.0
-const LAMP_ATTEN_OLD := 1.0
+const LAMP_RANGE_OLD := LIGHTING.LAMP_RANGE_OLD
+const LAMP_ATTEN_OLD := LIGHTING.LAMP_ATTEN_OLD
 # Опциональный fps-оптимизированный свет (клавиша 2): малый радиус (цена освещения
 # — в радиусе/перекрытии), низкое затухание + чуть выше энергия для заливки.
 # Значения зафиксированы после ручной настройки; рантайм-крутилки удалены.
-const TUNED_RANGE := 7.25         # мягкие лампы
-const TUNED_ATTEN := 0.45
-const TUNED_RANGE_TIGHT := 5.45   # тугие лампы (большие залы)
-const TUNED_ATTEN_TIGHT := 0.55
-const TUNED_ENERGY_MUL := 1.10
+const TUNED_RANGE := LIGHTING.TUNED_RANGE
+const TUNED_ATTEN := LIGHTING.TUNED_ATTEN
+const TUNED_RANGE_TIGHT := LIGHTING.TUNED_RANGE_TIGHT
+const TUNED_ATTEN_TIGHT := LIGHTING.TUNED_ATTEN_TIGHT
+const TUNED_ENERGY_MUL := LIGHTING.TUNED_ENERGY_MUL
 # Цвет теней = цвет ambient (тень = отсутствие света, заливается окружением).
-const AMBIENT_COLOR := Color(0.90, 0.88, 0.50)        # тёплый (дефолт)
+const AMBIENT_COLOR := ARCHITECTURE.AMBIENT_COLOR
 # Более ТЁПЛАЯ (желтее) тень в опт-режиме (клавиша 2): R/G высокие, синий снижен
 # сильнее дефолта → тени уходят в насыщенный жёлтый, а не в нейтраль/синь.
-const TUNED_AMBIENT_COLOR := Color(0.95, 0.86, 0.28)  # насыщенный тёплый жёлтый
-const TUNED_AMBIENT_ENERGY := 0.010                   # приглушённый ambient (было 0.035); level_d по умолчанию включает tuned-режим
+const TUNED_AMBIENT_COLOR := ARCHITECTURE.AMBIENT_COLOR
+const TUNED_AMBIENT_ENERGY := ARCHITECTURE.AMBIENT_ENERGY
 # Пресет «0» (клавиша 0) — зафиксированный настроенный вид поверх опт-базы
 # + тёплая жёлтая тень.
-const P0_RANGE := 7.98           # TUNED_RANGE 7.25 × 1.10
-const P0_ATTEN := 0.66           # TUNED_ATTEN 0.45 × 1.46
-const P0_RANGE_TIGHT := 6.00     # TUNED_RANGE_TIGHT 5.45 × 1.10
-const P0_ATTEN_TIGHT := 0.66     # сравнено с комнатами (было 0.80) — пол в зале ярче, fps не тронут
-const P0_ENERGY_MUL := 1.10      # TUNED_ENERGY_MUL 1.10 × 1.00
+const P0_RANGE := LIGHTING.P0_RANGE
+const P0_ATTEN := LIGHTING.P0_ATTEN
+const P0_RANGE_TIGHT := LIGHTING.P0_RANGE_TIGHT
+const P0_ATTEN_TIGHT := LIGHTING.P0_ATTEN_TIGHT
+const P0_ENERGY_MUL := LIGHTING.P0_ENERGY_MUL
 const P0_AMBIENT_COLOR := TUNED_AMBIENT_COLOR
 const P0_AMBIENT_ENERGY := TUNED_AMBIENT_ENERGY
 # Тёплый distance-туман (клавиша 3): дымка вдаль — глубина + мягко гасит дальние
 # засветы сквозь стены. Плотность низкая, чтобы дальние коридоры оставались видны.
-const FOG_COLOR := Color(0.22, 0.18, 0.10)  # тёплый тёмно-янтарный (к фону палитры)
-const FOG_DENSITY := 0.015                  # низкая — даль не тонет, лишь дымка
+const FOG_COLOR := ARCHITECTURE.FOG_COLOR
+const FOG_DENSITY := ARCHITECTURE.FOG_DENSITY
 # Нормализация по плотности (только новый режим): в плотных залах лампы тусклее
 # (не пересвечивают), в редких (провал) — ярче. Снимает накопление в больших залах.
-const LAMP_DENSITY_R := 4.5     # радиус подсчёта соседних ламп, м
-const LAMP_DENSITY_K := 0.35    # сила снижения яркости на каждого соседа
+const LAMP_DENSITY_R := LIGHTING.LAMP_DENSITY_R
+const LAMP_DENSITY_K := LIGHTING.LAMP_DENSITY_K
 const HUB_SEAM_STEP := 3        # шаг ламп в стыковых полосах хаба (гуще — пол не чернеет при малом радиусе)
 # Плавное загорание/гашение ламп пула по ВРЕМЕНИ (не по расстоянию): скорость
 # фейда энергии при входе/выходе области из пула света. ~4 → переход около 0.25–0.5 с.
-const LIGHT_FADE_SPEED := 4.0
+const LIGHT_FADE_SPEED := LIGHTING.LIGHT_FADE_SPEED
 # Distance-fade: дальние лампы плавно гаснут и не рисуются (перф). Флаг для A/B FPS.
-const LAMP_FADE_ENABLED := false   # выкл: прироста FPS не дал, а дальние лужи гасли
-const LAMP_FADE_BEGIN := 28.0   # с какой дистанции лампа начинает гаснуть, м
-const LAMP_FADE_LENGTH := 8.0   # длина затухания, м (дальше begin+length — не рисуется)
+const LAMP_FADE_ENABLED := LIGHTING.LAMP_FADE_ENABLED
+const LAMP_FADE_BEGIN := LIGHTING.LAMP_FADE_BEGIN
+const LAMP_FADE_LENGTH := LIGHTING.LAMP_FADE_LENGTH
 # AreaLight3D (Godot 4.7+): прямоугольный runtime-свет от видимых панелей.
 # Создаём через ClassDB, чтобы проект оставался открываемым в 4.6.x.
-const AREA_LIGHT_DEFAULT_ON := true
-const AREA_LIGHT_DISABLE_ON_ANDROID := false
-const AREA_LIGHT_RANGE_MUL := 1.0
-const AREA_LIGHT_PANEL_RANGE_DEFAULT_ON := false
-const AREA_LIGHT_PANEL_RANGE_ON_ANDROID := false
-const AREA_LIGHT_RANGE_TEST_OFF := 0.05
-const AREA_LIGHT_ENERGY_MUL := 2.0
-const AREA_LIGHT_SHADOWS := false
-const AREA_LIGHT_PANEL_Y_OFFSET := -0.04
-const AREA_LIGHT_BOUNCE_RANGE := 8.0
-const AREA_LIGHT_BOUNCE_ENERGY := 0.36
-const AREA_LIGHT_BOUNCE_ATTEN := 1.0
-const AREA_LIGHT_BOUNCE_Y_OFFSET := -0.75
-const AREA_LIGHT_FAR_BOUNCE_ENABLED := true
-const AREA_LIGHT_FAR_BOUNCE_HOPS := 2
-const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := 0.65   # было 0.45: заливка depth 2 дальше (те же лампы, лёгкая цена fill-rate)
-const AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL := 0.60  # было 0.30: depth 2 ярче (энергия для FPS бесплатна)
-const AREA_LIGHT_BOUNCE_SHADOWS := true
-const AREA_LIGHT_BOUNCE_SHADOW_CASTERS := 10
-const AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST := 5.0
-const AREA_LIGHT_BOUNCE_SHADOW_FADE_DIST := 11.0
-const AREA_LIGHT_BOUNCE_SHADOW_OPACITY := 0.74
-const AREA_LIGHT_BOUNCE_SHADOW_BLUR := 2.25
-const AREA_LIGHT_BOUNCE_SHADOW_BIAS := 0.06
-const AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS := 1.25
-const AREA_LIGHT_BOUNCE_SHADOWS_ON_ANDROID := false
+const AREA_LIGHT_DEFAULT_ON := LIGHTING.AREA_LIGHT_DEFAULT_ON
+const AREA_LIGHT_DISABLE_ON_ANDROID := LIGHTING.AREA_LIGHT_DISABLE_ON_ANDROID
+const AREA_LIGHT_RANGE_MUL := LIGHTING.AREA_LIGHT_RANGE_MUL
+const AREA_LIGHT_PANEL_RANGE_DEFAULT_ON := LIGHTING.AREA_LIGHT_PANEL_RANGE_DEFAULT_ON
+const AREA_LIGHT_PANEL_RANGE_ON_ANDROID := LIGHTING.AREA_LIGHT_PANEL_RANGE_ON_ANDROID
+const AREA_LIGHT_RANGE_TEST_OFF := LIGHTING.AREA_LIGHT_RANGE_TEST_OFF
+const AREA_LIGHT_ENERGY_MUL := LIGHTING.AREA_LIGHT_ENERGY_MUL
+const AREA_LIGHT_SHADOWS := LIGHTING.AREA_LIGHT_SHADOWS
+const AREA_LIGHT_PANEL_Y_OFFSET := LIGHTING.AREA_LIGHT_PANEL_Y_OFFSET
+const AREA_LIGHT_BOUNCE_RANGE := LIGHTING.AREA_LIGHT_BOUNCE_RANGE
+const AREA_LIGHT_BOUNCE_ENERGY := LIGHTING.AREA_LIGHT_BOUNCE_ENERGY
+const AREA_LIGHT_BOUNCE_ATTEN := LIGHTING.AREA_LIGHT_BOUNCE_ATTEN
+const AREA_LIGHT_BOUNCE_Y_OFFSET := LIGHTING.AREA_LIGHT_BOUNCE_Y_OFFSET
+const AREA_LIGHT_FAR_BOUNCE_ENABLED := LIGHTING.AREA_LIGHT_FAR_BOUNCE_ENABLED
+const AREA_LIGHT_FAR_BOUNCE_HOPS := LIGHTING.AREA_LIGHT_FAR_BOUNCE_HOPS
+const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := LIGHTING.AREA_LIGHT_FAR_BOUNCE_RANGE_MUL
+const AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL := LIGHTING.AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL
+const AREA_LIGHT_BOUNCE_SHADOWS := LIGHTING.AREA_LIGHT_BOUNCE_SHADOWS
+const AREA_LIGHT_BOUNCE_SHADOW_CASTERS := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_CASTERS
+const AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST
+const AREA_LIGHT_BOUNCE_SHADOW_FADE_DIST := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_FADE_DIST
+const AREA_LIGHT_BOUNCE_SHADOW_OPACITY := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_OPACITY
+const AREA_LIGHT_BOUNCE_SHADOW_BLUR := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BLUR
+const AREA_LIGHT_BOUNCE_SHADOW_BIAS := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BIAS
+const AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
+const AREA_LIGHT_BOUNCE_SHADOWS_ON_ANDROID := LIGHTING.AREA_LIGHT_BOUNCE_SHADOWS_ON_ANDROID
 const ACTIVE_LIGHT_NEIGHBORS_ON_ANDROID := false
-const AREA_LIGHT_WORLD_LAYER := 1 << 0
-const AREA_LIGHT_CEILING_FILL_LAYER := 1 << 1
-const AREA_LIGHT_CEILING_GLOW_ENABLED := false
-const AREA_LIGHT_CEILING_GLOW_RADIUS_PAD := 1.35
-const AREA_LIGHT_CEILING_GLOW_Y := CEIL_H - 0.015
-const AREA_LIGHT_FACE_EPS := 0.03
-const AREA_LIGHT_SIGN_PLATES := false
+const AREA_LIGHT_WORLD_LAYER := LIGHTING.AREA_LIGHT_WORLD_LAYER
+const AREA_LIGHT_CEILING_FILL_LAYER := LIGHTING.AREA_LIGHT_CEILING_FILL_LAYER
+const AREA_LIGHT_CEILING_GLOW_ENABLED := LIGHTING.AREA_LIGHT_CEILING_GLOW_ENABLED
+const AREA_LIGHT_CEILING_GLOW_RADIUS_PAD := LIGHTING.AREA_LIGHT_CEILING_GLOW_RADIUS_PAD
+const AREA_LIGHT_CEILING_GLOW_Y := LIGHTING.AREA_LIGHT_CEILING_GLOW_Y
+const AREA_LIGHT_FACE_EPS := LIGHTING.AREA_LIGHT_FACE_EPS
+const AREA_LIGHT_SIGN_PLATES := LIGHTING.AREA_LIGHT_SIGN_PLATES
 # Гул: ядро плотности ламп (σ, м) и насыщение (acc для полной громкости в зале).
-const HUM_SIGMA := 4.0
-const HUM_FULL := 5.0
+const HUM_SIGMA := AUDIO.HUM_SIGMA
+const HUM_FULL := AUDIO.HUM_FULL
 # Мерцающая лампа: "on" — горит 3с, "dot" — мерцает 1с. Паттерн «- .. - ... -».
-const FLICK_PATTERN := [
-	["on", 3.0], ["dot", 1.0], ["dot", 1.0],
-	["on", 3.0], ["dot", 1.0], ["dot", 1.0], ["dot", 1.0],
-]
-const FLICK_STUTTER_FULL_CHANCE := 0.35
-const FLICK_STUTTER_LOW_CHANCE := 0.35
-const FLICK_STUTTER_LOW_LEVEL := 0.08
-const FLICK_STUTTER_DIM_MAX := 0.16
-const FLICK_PANEL_MIN_LEVEL := 0.52
-const FLICK_PANEL_EMISSION_MIN_LEVEL := 0.32
+const FLICK_PATTERN := LIGHTING.FLICK_PATTERN
+const FLICK_STUTTER_FULL_CHANCE := LIGHTING.FLICK_STUTTER_FULL_CHANCE
+const FLICK_STUTTER_LOW_CHANCE := LIGHTING.FLICK_STUTTER_LOW_CHANCE
+const FLICK_STUTTER_LOW_LEVEL := LIGHTING.FLICK_STUTTER_LOW_LEVEL
+const FLICK_STUTTER_DIM_MAX := LIGHTING.FLICK_STUTTER_DIM_MAX
+const FLICK_PANEL_MIN_LEVEL := LIGHTING.FLICK_PANEL_MIN_LEVEL
+const FLICK_PANEL_EMISSION_MIN_LEVEL := LIGHTING.FLICK_PANEL_EMISSION_MIN_LEVEL
 
 const PASSAGE_W := 3                            # ширина прохода между областями, плитки
 
@@ -396,6 +400,8 @@ var _blob_texture: ImageTexture
 var _light_model_scene: PackedScene
 var _hud_label: Label
 var _minimap: Control
+var _hud_module
+var _map_module
 var _env: Environment                   # для переключения ambient в рантайме
 var _ambient_energy := AMBIENT_ENERGY   # рантайм-регулятор амбиента (клавиши -/+)
 var _light_new := true                  # режим света: ON=новый, OFF=старый (G)
@@ -454,6 +460,14 @@ var _flash_t := 0.0
 
 
 func _ready() -> void:
+	_initialize_level_runtime()
+	_build_level_content()
+	_initialize_level_presentation()
+
+
+# Общий lifecycle нужен не только живой раскладке, но и лабораториям level_e.
+# Тест заменяет только content-фазу; runtime и presentation остаются общими.
+func _initialize_level_runtime() -> void:
 	# Лабиринт Уилсона рероллится случайно при каждой загрузке карты (иначе
 	# один и тот же остов на весь плейтест); отключить — снять галочку
 	# randomize_maze_seed и задать maze_seed вручную для отладки.
@@ -473,6 +487,9 @@ func _ready() -> void:
 	_body = StaticBody3D.new()
 	add_child(_body)
 	_begin()
+
+
+func _build_level_content() -> void:
 	_init_areas()                   # список областей
 	_build_grid()                   # полы/стены/area_id всех областей
 	_build_area_content()           # перегородки, провалы по типу области
@@ -498,6 +515,9 @@ func _ready() -> void:
 	_add_pit_flicker_light()        # одиночный мерцающий светильник по центру провала
 	_add_correct_path_flicker()     # мерцающая панель-подсказка у верного прохода
 	_spawn_player()
+
+
+func _initialize_level_presentation() -> void:
 	_build_hud()
 	_setup_audio()                  # гул ламп + звук мерцающей лампы
 
@@ -510,7 +530,7 @@ func _input(event: InputEvent) -> void:
 		return
 	# Тогглы по событию (не теряются при низком FPS, в отличие от поллинга).
 	if ke.keycode == KEY_M and _minimap != null:
-		_minimap.visible = not _minimap.visible
+		_map_module.toggle()
 	elif ke.keycode == KEY_G:
 		_light_new = not _light_new
 		if _p0_on:
@@ -571,8 +591,8 @@ func _process(delta: float) -> void:
 			_current_area_name(), _render_diag, Engine.get_frames_per_second(),
 			("ON" if _light_new else "OFF"), _area_light_mode_label(), ("ON" if _area_panel_range_mode else "OFF"), ("ON" if _post_on else "OFF"),
 			("ON" if _tuned_on else "OFF"), ("ON" if _p0_on else "OFF"), _ambient_energy]
-	if _minimap != null and _minimap.visible:
-		_minimap.queue_redraw()
+	if _map_module != null:
+		_map_module.update()
 	_update_pit_flicker(delta)
 	_update_audio(delta)
 
@@ -3511,7 +3531,7 @@ func _pit_walk(c: Vector2i, lx0: float, lz0: float, w: float, h: float) -> void:
 
 
 func _opening_width() -> float:
-	return (DOOR_WIDTH + DOOR_SIDE_CLEARANCE * 2.0) / CELL   # в панелях
+	return OPENINGS.opening_width_cells()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4511,7 +4531,7 @@ func _add_center_down_light(pos: Vector3) -> void:
 	var spot := SpotLight3D.new()
 	spot.position = Vector3(pos.x, CEIL_H - 0.25, pos.z)
 	spot.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
-	spot.light_color = Color(0.92, 0.88, 0.62)
+	spot.light_color = LIGHTING.LIGHT_COLOR
 	spot.light_energy = 1.2
 	spot.spot_range = 7.0
 	spot.spot_angle = 26.0
@@ -4539,13 +4559,13 @@ func _spawn_lamp_source(pos: Vector3, tight := false) -> void:
 	l.omni_range = LAMP_RANGE_OLD if tight else LAMP_RANGE
 	l.omni_attenuation = LAMP_ATTEN_OLD if tight else LAMP_ATTEN
 	l.light_energy = LAMP_ENERGY
-	l.light_color = Color(0.92, 0.88, 0.62)
+	l.light_color = LIGHTING.LIGHT_COLOR
 	l.shadow_enabled = false
 	if LAMP_FADE_ENABLED:
 		l.distance_fade_enabled = true
 		l.distance_fade_begin = LAMP_FADE_BEGIN
 		l.distance_fade_length = LAMP_FADE_LENGTH
-	l.position = pos + Vector3(0, -0.32, 0)
+	l.position = pos + Vector3(0, -LIGHTING.SOURCE_BASE_DROP, 0)
 	l.set_meta("tight", tight)
 	# Своя область (по мировой позиции лампы, та же конверсия, что и у игрока
 	# в _current_area_name/_update_light_pool) — нужна, чтобы пул света ниже
@@ -4642,7 +4662,7 @@ func _spawn_area_panel_light(pos: Vector3, area_size: Vector2, tight: bool, area
 	l.name = "area_ceiling_light"
 	l.position = pos + Vector3(0.0, AREA_LIGHT_PANEL_Y_OFFSET, 0.0)
 	l.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
-	l.light_color = Color(0.92, 0.88, 0.62)
+	l.light_color = LIGHTING.LIGHT_COLOR
 	l.shadow_enabled = AREA_LIGHT_SHADOWS
 	l.set("area_size", area_size)
 	l.set("area_normalize_energy", true)
@@ -4669,7 +4689,7 @@ func _spawn_area_bounce_light(pos: Vector3, area_id: String) -> OmniLight3D:
 	l.omni_range = AREA_LIGHT_BOUNCE_RANGE
 	l.omni_attenuation = AREA_LIGHT_BOUNCE_ATTEN
 	l.light_energy = AREA_LIGHT_BOUNCE_ENERGY
-	l.light_color = Color(0.92, 0.88, 0.62)
+	l.light_color = LIGHTING.LIGHT_COLOR
 	l.shadow_enabled = false
 	_set_light_property_if_exists(l, &"shadow_opacity", 0.0)
 	_set_light_property_if_exists(l, &"shadow_blur", AREA_LIGHT_BOUNCE_SHADOW_BLUR)
@@ -4922,10 +4942,10 @@ func _spawn_flicker_panel(pos: Vector3) -> void:
 	var l := OmniLight3D.new()
 	l.omni_range = LAMP_RANGE
 	l.omni_attenuation = LAMP_ATTEN
-	l.light_color = Color(0.92, 0.88, 0.62)
+	l.light_color = LIGHTING.LIGHT_COLOR
 	l.shadow_enabled = false
 	l.light_energy = LAMP_ENERGY
-	l.position = pos + Vector3(0, -0.32, 0)
+	l.position = pos + Vector3(0, -LIGHTING.SOURCE_BASE_DROP, 0)
 	_apply_runtime_light_rules(l)
 	add_child(l)
 	_legacy_aux_lights.append(l)
@@ -5333,33 +5353,27 @@ func _spawn_player() -> void:
 
 
 func _build_hud() -> void:
-	var canvas := CanvasLayer.new()
-	add_child(canvas)
-	_hud_label = Label.new()
-	_hud_label.position = Vector2(16, 12)
-	_hud_label.add_theme_font_override("font", GAME_FONT)
-	_hud_label.add_theme_font_size_override("font_size", 28)
-	_hud_label.text = ""
-	canvas.add_child(_hud_label)
-	var map := AreasGridMap.new()
-	map.configure(self, CELL, K_WALL, K_PARTITION, K_PIT, K_COLUMN)
-	# Якорим к правому верхнему углу — не зависит от итогового размера окна.
-	map.anchor_left = 1.0
-	map.anchor_right = 1.0
-	map.offset_left = -372
-	map.offset_top = 12
-	map.offset_right = -12
-	map.offset_bottom = 372
-	map.visible = false
-	canvas.add_child(map)
-	_minimap = map
+	_hud_module = HUD.new(self)
+	_hud_label = _hud_module.setup()
+	_map_module = MAP.new(self)
+	_minimap = _map_module.setup(_canonical_map_data, _canonical_map_player,
+		CELL, [K_WALL, K_PARTITION, K_COLUMN])
 	# Полноэкранная жёлтая вспышка ноклипа (поверх всего, не ловит мышь).
 	_flash_overlay = ColorRect.new()
 	_flash_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_flash_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_flash_overlay.color = Color(FLASH_COLOR.r, FLASH_COLOR.g, FLASH_COLOR.b, 0.0)
 	_flash_overlay.visible = false
-	canvas.add_child(_flash_overlay)
+	_hud_module.canvas.add_child(_flash_overlay)
+
+
+func _canonical_map_data() -> Dictionary:
+	return {"grid": _grid, "gmin": _gmin, "gmax": _gmax,
+		"pits": _pit_rects}
+
+
+func _canonical_map_player() -> Node3D:
+	return _player_ref
 
 
 # ─────────────────────────────────────────────────────────────
@@ -5367,89 +5381,20 @@ func _build_hud() -> void:
 # ─────────────────────────────────────────────────────────────
 
 func _make_materials() -> void:
-	_mat_wall = StandardMaterial3D.new()
-	_mat_wall.albedo_texture = load("res://textures/wall1.png")
-	_mat_wall.albedo_color = Color(1.10, 1.05, 0.52)
-	_mat_wall.uv1_triplanar = true
-	_mat_wall.uv1_scale = Vector3(4, 4, 4)
-
-	_mat_floor = StandardMaterial3D.new()
-	_mat_floor.albedo_texture = load("res://textures/floor.png")
-	_mat_floor.albedo_color = Color(1.0, 0.94, 0.46)
-	_mat_floor.uv1_triplanar = true
-	_mat_floor.uv1_scale = Vector3(0.2, 0.2, 0.2)
-
-	_mat_ceil = StandardMaterial3D.new()
-	_mat_ceil.albedo_texture = load("res://textures/ceiling1.png")
-	_mat_ceil.albedo_color = Color(1.25, 1.20, 0.70)
-	_mat_ceil.uv1_triplanar = true
-	_mat_ceil.uv1_scale = Vector3(0.8, 0.8, 0.8)
-
-	_mat_lamp = StandardMaterial3D.new()
-	_mat_lamp.albedo_color = Color(1.0, 0.98, 0.86)
-	_mat_lamp.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_mat_lamp.emission_enabled = true
-	_mat_lamp.emission = Color(0.90, 0.87, 0.76)
-	_mat_lamp.emission_energy_multiplier = 2.2
-
-	_mat_lamp_glow = ShaderMaterial.new()
-	var glow_shader := Shader.new()
-	glow_shader.code = "shader_type spatial;\n" \
-		+ "render_mode unshaded, blend_add, depth_draw_never, cull_disabled;\n" \
-		+ "uniform vec3 glow_color : source_color = vec3(0.92, 0.88, 0.62);\n" \
-		+ "uniform float glow_strength = 0.32;\n" \
-		+ "void fragment() {\n" \
-		+ "\tfloat r = length((UV - vec2(0.5)) * 2.0);\n" \
-		+ "\tfloat a = smoothstep(1.0, 0.0, r);\n" \
-		+ "\ta = a * a * (3.0 - 2.0 * a);\n" \
-		+ "\tALBEDO = glow_color;\n" \
-		+ "\tEMISSION = glow_color * glow_strength;\n" \
-		+ "\tALPHA = a * glow_strength;\n" \
-		+ "}\n"
-	_mat_lamp_glow.shader = glow_shader
-
-	_mat_base = StandardMaterial3D.new()
-	_mat_base.albedo_color = Color(0.95, 0.92, 0.78)
-	_mat_base.metallic = 0.0
-	_mat_base.roughness = 1.0
-	_mat_base.metallic_specular = 0.0
-
-	_mat_pit = StandardMaterial3D.new()
-	_mat_pit.albedo_color = Color(1.0, 0.04, 0.02)
-	_mat_pit.emission_enabled = true
-	_mat_pit.emission = Color(1.0, 0.0, 0.0)
-	_mat_pit.emission_energy_multiplier = 0.8
-	# «Бездна»: стенки колодца = ТОТ ЖЕ материал, что и пол (единый) — те же
-	# shader-features, новый пайплайн не компилируется (иначе MoltenVK падает).
-	# Глубина темнеет спадом света ламп; дно — отдельный чёрный unshaded-материал.
-	# (Единая с infinite_corridor_e схема провала.)
-	_mat_void = _mat_floor
-	_mat_void_bottom = StandardMaterial3D.new()
-	_mat_void_bottom.albedo_color = Color(0, 0, 0)
-	_mat_void_bottom.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	var canonical := ARCHITECTURE.create_materials()
+	_mat_wall = canonical["wall"]
+	_mat_floor = canonical["floor"]
+	_mat_ceil = canonical["ceiling"]
+	_mat_lamp = canonical["lamp"]
+	_mat_base = canonical["baseboard"]
+	_mat_pit = canonical["pit"]
+	_mat_void = canonical["void"]
+	_mat_void_bottom = canonical["void_bottom"]
+	_mat_lamp_glow = LIGHTING.create_lamp_glow_material()
 
 
 func _setup_environment() -> void:
-	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.18, 0.15, 0.07)
-	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = AMBIENT_COLOR
-	env.ambient_light_energy = AMBIENT_ENERGY
-	# Тёплый distance-туман (клавиша 3): параметры заданы, включение по тумблеру.
-	env.fog_light_color = FOG_COLOR
-	env.fog_density = FOG_DENSITY
-	env.fog_enabled = false
-	env.ssao_enabled = _post_on
-	env.ssao_radius = 0.6
-	env.ssao_intensity = 2.0
-	# Glow строго по HDR-порогу: bloom=0 (иначе подсвечивает и подпороговые
-	# панели). Лампы (эмиссия ~0.85) ниже порога 1.0 — не цветут; ореол получают
-	# только ярче-порога пиксели (сейчас знак не пробивает порог — glow для будущего).
-	env.glow_enabled = _post_on
-	env.glow_intensity = 0.3
-	env.glow_bloom = 0.0
-	env.glow_hdr_threshold = 1.0
+	var env := ARCHITECTURE.create_environment(_post_on)
 	_env = env
 	var we := WorldEnvironment.new()
 	we.environment = env
@@ -5504,8 +5449,8 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 		cs.position = pos
 		_body.add_child(cs)
 	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05 and (force_base or _wall_base_allowed(size)):
-		var bs := Vector3(size.x + 0.05, 0.12, size.z + 0.05)
-		_st["base"].append_from(_get_box(bs), 0, Transform3D(Basis(), Vector3(pos.x, 0.06, pos.z)))
+		var bs := Vector3(size.x + BASEBOARD_PAD, BASEBOARD_H, size.z + BASEBOARD_PAD)
+		_st["base"].append_from(_get_box(bs), 0, Transform3D(Basis(), Vector3(pos.x, BASEBOARD_H * 0.5, pos.z)))
 
 
 func _wall_base_allowed(size: Vector3) -> bool:
@@ -5518,68 +5463,3 @@ func _get_box(size: Vector3) -> BoxMesh:
 		bm.size = size
 		_mesh_cache[size] = bm
 	return _mesh_cache[size]
-
-
-# ─────────────────────────────────────────────────────────────
-#  Миникарта — читает ту же сетку (единый источник правды)
-# ─────────────────────────────────────────────────────────────
-
-class AreasGridMap:
-	extends Control
-
-	# Значения передаём явно — вложенный класс не видит константы внешнего скрипта.
-	var _level: Node
-	var _cell := 1.25
-	var _k_wall := 2
-	var _k_partition := 4
-	var _k_pit := 5
-	var _k_column := 6
-
-	func configure(level: Node, cell: float, k_wall: int, k_partition: int, k_pit: int, k_column: int) -> void:
-		_level = level
-		_cell = cell
-		_k_wall = k_wall
-		_k_partition = k_partition
-		_k_pit = k_pit
-		_k_column = k_column
-
-	func _draw() -> void:
-		if _level == null:
-			return
-		draw_rect(Rect2(Vector2.ZERO, size), Color(0.85, 0.83, 0.70, 0.85), true)
-		var grid: Dictionary = _level._grid
-		var gmin: Vector2i = _level._gmin
-		var gmax: Vector2i = _level._gmax
-		var span_x := float(gmax.x - gmin.x + 1)
-		var span_z := float(gmax.y - gmin.y + 1)
-		var pad := 10.0
-		var avail := minf(size.x, size.y) - pad * 2.0
-		if avail <= 0.0:
-			return
-		var px := avail / maxf(span_x, span_z)
-		var wall_col := Color(0, 0, 0, 0.6)
-		var pit_col := Color(1.0, 0.05, 0.02, 0.7)
-		for c: Vector2i in grid.keys():
-			var t: int = grid[c]
-			if t != _k_wall and t != _k_partition and t != _k_column:
-				continue
-			var rx := pad + float(c.x - gmin.x) * px
-			var ry := pad + float(c.y - gmin.y) * px
-			draw_rect(Rect2(rx, ry, px + 0.5, px + 0.5), wall_col, true)
-		# Провалы — по реальным дробным прямоугольникам, не по клеткам.
-		var pits: Array = _level._pit_rects
-		for r: Rect2 in pits:
-			var prx := pad + (r.position.x - float(gmin.x)) * px
-			var pry := pad + (r.position.y - float(gmin.y)) * px
-			draw_rect(Rect2(prx, pry, r.size.x * px, r.size.y * px), pit_col, true)
-		var player = _level._player_ref
-		if player != null:
-			var pp: Vector3 = player.position
-			var gx := pp.x / _cell
-			var gz := pp.z / _cell
-			var mx := pad + (gx - float(gmin.x)) * px
-			var my := pad + (gz - float(gmin.y)) * px
-			# Маркер игрока: кислотно-зелёный с тёмной обводкой — хорошо виден
-			# и не путается с красными провалами.
-			draw_circle(Vector2(mx, my), 7.0, Color(0.0, 0.0, 0.0, 0.9))
-			draw_circle(Vector2(mx, my), 5.0, Color(0.45, 1.0, 0.05, 1.0))

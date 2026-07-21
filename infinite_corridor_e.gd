@@ -6,10 +6,13 @@ extends "res://infinite_corridor_test.gd"
 # родителем: аномалия не часть его occupancy/стриминг-графа.
 #
 # Свет локальный (конечный пул подвижных чанков), но его базовые числа
-# читаются прямо из общего профиля level_areas_c. Особенность аномалии —
+# читаются прямо из канонических модулей. Особенность аномалии —
 # симметричное дистанционное затухание до капов; оно остаётся из теста.
 
-const LIGHT_COMMON := preload("res://level_areas_c.gd")
+const CANONICAL_ARCHITECTURE := preload("res://modules/architecture_module.gd")
+const CANONICAL_OPENINGS := preload("res://modules/opening_module.gd")
+const CANONICAL_LIGHTING := preload("res://modules/lighting_module.gd")
+const CANONICAL_AUDIO := preload("res://modules/audio_module.gd")
 const AMBIENT_KEY_STEP := 0.005
 const RANGE_KEY_STEP := 0.5
 const ENERGY_KEY_STEP := 0.05
@@ -20,8 +23,8 @@ const ORIGINAL_OUTER_CASING_SCENE := preload("res://3d/original_door_casing_prev
 # Исходный офисный вариант из infinite_corridor_test остаётся без изменений.
 const OFFICE_DOOR_V2_SCENE := preload("res://3d/white_door_comparison_clean.glb")
 const OFFICE_DOOR_V2_LEAF_SCENE := preload("res://3d/office_door_v2_leaf.tscn")
-const STORY_LAMP_HUM_STREAM := preload("res://sounds/fluorescent_lamp_hum.wav")
-const STORY_LAMP_FLICK_STREAM := preload("res://sounds/fluorescent_lamp_flick.wav")
+const STORY_LAMP_HUM_STREAM := CANONICAL_AUDIO.LAMP_HUM_STREAM
+const STORY_LAMP_FLICK_STREAM := CANONICAL_AUDIO.LAMP_FLICK_STREAM
 const LF_CONTROLLER := preload("res://lighting_field/lighting_mode_controller.gd")
 const LF3_SOLVER := preload("res://lighting_field/lf3_occupancy_solver.gd")
 const LF3_ADAPTER := preload("res://lighting_field/lf3_occupancy_adapter.gd")
@@ -29,19 +32,26 @@ const LF3_FLOOR_RENDERER := preload(
 	"res://lighting_field/lf3_floor_indirect_renderer.gd")
 const LF_CORRIDOR_VISUAL_MASK := 1
 const LF_STORY_VISUAL_MASK := 2
+const CHAIR_FILL_VISUAL_MASK := 4
+const CHAIR_FILL_ENERGY_DEFAULT := 0.05
+const CHAIR_FILL_ENERGY_STEP := 0.0125
+const CHAIR_FILL_RANGE := 3.5
 const FLOOR_CLASSIC_ALBEDO := preload("res://textures/floor.png")
-const FLOOR_COMPARISON_ALBEDO := preload("res://textures/floor1.png")
+const FLOOR_COMPARISON_ALBEDO := CANONICAL_ARCHITECTURE.FLOOR_TEXTURE
 const FLOOR_CLASSIC_TINT := Color(1.0, 0.94, 0.46)
 const FLOOR_CLASSIC_UV_SCALE := 0.2
-const FLOOR_COMPARISON_UV_SCALE := 0.222
+const FLOOR_COMPARISON_UV_SCALE := CANONICAL_ARCHITECTURE.FLOOR_UV_SCALE
 # Провал: стенка колодца использует ТОТ ЖЕ материал, что и пол (см. _make_story_void_material).
 # Никаких новых shader-features — иначе MoltenVK падает при первой отрисовке провала.
 
 var _live_ambient := 0.010   # коридор: приглушённый ambient (было TUNED_AMBIENT_ENERGY=0.035)
-var _live_range := LIGHT_COMMON.LAMP_RANGE
+var _live_range := CANONICAL_LIGHTING.LAMP_RANGE
 var _live_energy_mul := 1.0
 var _story_room: Node3D
 var _story_chair: Node3D
+var _story_chair_fill: OmniLight3D
+var _chair_fill_enabled := true
+var _chair_fill_energy := CHAIR_FILL_ENERGY_DEFAULT
 var _story_pit_world := Rect2()
 var _story_pit_local := Vector3.ZERO
 var _story_fall_t := -1.0
@@ -74,6 +84,7 @@ var _new_lamp_audio_enabled := true
 var _mat_void_bottom: StandardMaterial3D
 var _finite_end_z := 0.0
 var _stop_sign: Node3D
+var _stop_sign_fill: OmniLight3D
 var _comparison_floor_enabled := true
 var _mat_office_opening_base: StandardMaterial3D
 var _mat_office_door_leaf: BaseMaterial3D
@@ -107,6 +118,10 @@ var _lf3_last_rebuild_profile := {}
 var _lf3_motion_running := false
 var _lf3_leak_capture_running := false
 var _lf3_leak_capture_state := {}
+var embedded_mode := false
+var embedded_player: CharacterBody3D
+var embedded_environment: Environment
+var _embedded_active := false
 
 const LF2_REFERENCE_VIEW_NAMES := [
 	"КОРИДОР",
@@ -120,10 +135,10 @@ const LF2_LIGHT_SAMPLE_LEVELS := [-1.0, 1.0, 0.08]
 # Две лампы на 10-метровый чанк: 24 источника покрывают всё кольцо 120 м.
 # Граница пула поэтому всегда лежит за референсным LAMP_DARK_DIST=50 м.
 const LF3_DIRECT_POOL_SIZE := 24
-const LF3_SHADOW_CASTERS := 10
+const LF3_SHADOW_CASTERS := CANONICAL_LIGHTING.LF3_SHADOW_CASTERS
 const LF3_FLOOR_INDIRECT_GAIN := 0.035
-const LF3_OCCLUSION_SHADOW_OPACITY := 1.0
-const LF3_OCCLUSION_SHADOW_BLUR := 2.75
+const LF3_OCCLUSION_SHADOW_OPACITY := CANONICAL_LIGHTING.LF3_SHADOW_OPACITY
+const LF3_OCCLUSION_SHADOW_BLUR := CANONICAL_LIGHTING.LF3_SHADOW_BLUR
 const LF3_LEAK_ROIS := {
 	"upper_room_wall": Rect2(0.34, 0.08, 0.32, 0.42),
 	"upper_partition": Rect2(0.66, 0.08, 0.32, 0.42),
@@ -132,26 +147,26 @@ const LF3_LEAK_ROIS := {
 var _lf3_direct_pool_ids := {}
 var _lf3_direct_weights := {}
 
-const STORY_PIT_DEPTH := LIGHT_COMMON.PIT_DEPTH
-const STORY_PIT_SIZE := LIGHT_COMMON.CELL * 1.25
+const STORY_PIT_DEPTH := CANONICAL_ARCHITECTURE.PIT_DEPTH
+const STORY_PIT_SIZE := CANONICAL_ARCHITECTURE.CELL * 1.25
 const STORY_FALL_TIME := 0.55
 const STORY_FLASH_TIME := 0.45
-const STORY_HUM_BASE_DB := -22.0
-const STORY_FLICK_BASE_DB := -38.0
-const STORY_AUDIO_SILENT_DB := -80.0
+const STORY_HUM_BASE_DB := CANONICAL_AUDIO.HUM_BASE_DB
+const STORY_FLICK_BASE_DB := CANONICAL_AUDIO.FLICK_BASE_DB
+const STORY_AUDIO_SILENT_DB := CANONICAL_AUDIO.SILENT_DB
 # Временно выключено для свободного A/B-тестирования Lighting Field из комнаты.
 const STORY_TRIGGER_ENABLED := false
 # Внутренний контур Canterbury-рамы в исходных координатах GLB.
 # Z=±0.384 — плоскость косяков с бывшими вырезами под петли; Y=1.9722 — низ перемычки.
-const OFFICE_DOOR_V2_INNER_HALF_W_RAW := 0.384
-const OFFICE_DOOR_V2_INNER_TOP_RAW := 1.9722
-const OFFICE_DOOR_V2_FRAME_W_RAW := 0.9090005457
-const OFFICE_DOOR_V2_FRAME_H_RAW := 2.0547001362
-const OFFICE_DOOR_V2_OUTER_CASING_DEPTH_RAW := 0.0075596943
+const OFFICE_DOOR_V2_INNER_HALF_W_RAW := CANONICAL_OPENINGS.OFFICE_DOOR_V2_INNER_HALF_W_RAW
+const OFFICE_DOOR_V2_INNER_TOP_RAW := CANONICAL_OPENINGS.OFFICE_DOOR_V2_INNER_TOP_RAW
+const OFFICE_DOOR_V2_FRAME_W_RAW := CANONICAL_OPENINGS.OFFICE_DOOR_V2_FRAME_W_RAW
+const OFFICE_DOOR_V2_FRAME_H_RAW := CANONICAL_OPENINGS.OFFICE_DOOR_V2_FRAME_H_RAW
+const OFFICE_DOOR_V2_OUTER_CASING_DEPTH_RAW := CANONICAL_OPENINGS.OFFICE_DOOR_V2_CASING_DEPTH_RAW
 const OFFICE_DOOR_V2_BASE_YELLOW := Color(0.95, 0.92, 0.78, 1.0)
 # Закрытая створка всегда утоплена внутрь от выбранной игроком грани проёма на 10 см.
-const OFFICE_DOOR_V2_LEAF_INSET := 0.10
-const OFFICE_DOOR_V2_SIDE_HYSTERESIS := 0.02
+const OFFICE_DOOR_V2_LEAF_INSET := CANONICAL_OPENINGS.OFFICE_DOOR_V2_LEAF_INSET
+const OFFICE_DOOR_V2_SIDE_HYSTERESIS := CANONICAL_OPENINGS.OFFICE_DOOR_V2_SIDE_HYSTERESIS
 
 
 func _ready() -> void:
@@ -167,7 +182,11 @@ func _ready() -> void:
 	_setup_story_flash()
 	_setup_story_flick_audio()
 	_lf_setup()
+	# Продуктовый default совпадает с level_e; LEGACY остаётся только A/B-эталоном.
+	_lf_controller.set_mode(LF_CONTROLLER.Mode.FIELD)
 	_lf2_setup_reference_camera()
+	if embedded_mode:
+		set_embedded_active(false)
 	if "--lf3-leak-capture" in OS.get_cmdline_user_args():
 		_lf2_capture_auto_quit = true
 		call_deferred("_lf3_leak_capture_suite")
@@ -214,6 +233,34 @@ func _place_stop_sign() -> void:
 	# Ещё на одну клетку дальше: итого 2×CELL от внутренней грани к игроку (+Z).
 	var target := Vector3(0.0, 0.0, _finite_end_z + WALL_T * 0.5 + CELL * 2.0)
 	_stop_sign.global_position += target - Vector3(center.x, box.position.y, center.z)
+	_assign_stop_sign_fill_layer()
+	_create_stop_sign_fill()
+
+
+func _assign_stop_sign_fill_layer() -> void:
+	if _stop_sign == null or not is_instance_valid(_stop_sign):
+		return
+	for child in _stop_sign.find_children("*", "GeometryInstance3D", true, false):
+		var geometry := child as GeometryInstance3D
+		if geometry != null:
+			geometry.layers = LF_CORRIDOR_VISUAL_MASK | CHAIR_FILL_VISUAL_MASK
+
+
+func _create_stop_sign_fill() -> void:
+	if _stop_sign == null or not is_instance_valid(_stop_sign):
+		return
+	var sign_box := _node_world_aabb(_stop_sign)
+	_stop_sign_fill = OmniLight3D.new()
+	_stop_sign_fill.name = "finite_stop_sign_fill"
+	_stop_sign_fill.light_color = CANONICAL_ARCHITECTURE.AMBIENT_COLOR.lerp(Color.WHITE, 0.35)
+	_stop_sign_fill.omni_range = CHAIR_FILL_RANGE
+	_stop_sign_fill.omni_attenuation = 1.6
+	_stop_sign_fill.shadow_enabled = false
+	_stop_sign_fill.light_cull_mask = CHAIR_FILL_VISUAL_MASK
+	_far_end.add_child(_stop_sign_fill)
+	# Источник стоит со стороны игрока (+Z) и видит только меш знака.
+	_stop_sign_fill.global_position = sign_box.get_center() + Vector3(0.0, 0.35, CELL * 1.1)
+	_apply_story_chair_fill()
 
 
 func _setup_initial_solid_walls() -> void:
@@ -304,13 +351,13 @@ func _reveal_all_corridor_doors() -> void:
 
 
 func _build_hud() -> void:
-	# Карта остаётся специфичной для треадмилла, но типографика HUD точно как
-	# в level_e/level_areas_c: там 28 px и нет локального жёлтого color override из старого теста.
+	if embedded_mode:
+		_hud_label = null
+		_minimap = null
+		return
+	# Карта остаётся специфичной для треадмилла, но контейнер карты и HUD —
+	# независимые канонические модули базовой лаборатории.
 	super._build_hud()
-	_hud_label.position = Vector2(16, 12)
-	_hud_label.add_theme_font_override("font", GAME_FONT)
-	_hud_label.add_theme_font_size_override("font_size", 28)
-	_hud_label.remove_theme_color_override("font_color")
 
 
 func _process(delta: float) -> void:
@@ -334,16 +381,17 @@ func _process(delta: float) -> void:
 		var door := "закрыты"
 		if _open_active:
 			door = {"open": "открыта", "inside": "внутри", "sealed": "запечатана", "done": "открыта"}.get(_open_state, _open_state)
-		_hud_label.text = "INFINITE CORRIDOR E\nАНОМАЛЬНАЯ ЗОНА\n%d fps\nциклы:%d  дверь:%s  тыл:%s  M карта\nпол:%s (T)  звук:%s (0)\nA/B:%s (8)  indirect:%s (9)\nкамера:%s (7)  лампа:%s (6)  A/B BOT:%s (5)\nambient:%.3f (+/-)  range:%.1f ([ ])  energy:x%.2f (,.)" % [
+		_hud_label.text = "INFINITE CORRIDOR E\nАНОМАЛЬНАЯ ЗОНА\n%d fps\nциклы:%d  дверь:%s  тыл:%s  M карта\nпол:%s (T)  звук:%s (0)\nA/B:%s (8)  indirect:%s (9)\nкамера:%s (7)  лампа:%s (6)  A/B BOT:%s (5)\nmodel-fill:%s %.3f (4, 1/2)\nambient:%.3f (+/-)  range:%.1f ([ ])  energy:x%.2f (,.)" % [
 			Engine.get_frames_per_second(), _cycle_count, door,
 			("бесконечность" if _revealed else "вход"),
 			("FLOOR1 1024" if _comparison_floor_enabled else "CLASSIC 512"),
 			("NEW" if _new_lamp_audio_enabled else "OLD"),
-			("EXPERIMENT LF3" if _lf_field_active else "REFERENCE LEGACY"),
+			("FINAL LF3" if _lf_field_active else "REFERENCE LEGACY"),
 			("ON" if _lf3_indirect_enabled else "OFF"),
 			_lf2_reference_view_name(),
 			LF2_LIGHT_SAMPLE_NAMES[_lf2_light_sample_index],
 			_lf2_capture_status,
+			("ON" if _chair_fill_enabled else "OFF"), _chair_fill_energy,
 			_live_ambient, _live_range, _live_energy_mul
 		]
 
@@ -360,6 +408,15 @@ func _input(event: InputEvent) -> void:
 	elif key.keycode == KEY_0:
 		_new_lamp_audio_enabled = not _new_lamp_audio_enabled
 		_apply_lamp_audio_mode()
+	elif key.keycode == KEY_4:
+		_chair_fill_enabled = not _chair_fill_enabled
+		_apply_story_chair_fill()
+	elif key.keycode == KEY_1:
+		_chair_fill_energy = maxf(0.0, _chair_fill_energy - CHAIR_FILL_ENERGY_STEP)
+		_apply_story_chair_fill()
+	elif key.keycode == KEY_2:
+		_chair_fill_energy += CHAIR_FILL_ENERGY_STEP
+		_apply_story_chair_fill()
 	elif key.keycode == KEY_5:
 		_lf2_start_capture()
 	elif key.keycode == KEY_6:
@@ -523,7 +580,7 @@ func _lf2_apply_light_sample() -> void:
 		float(_story_light_entry.get("level", 1.0)), 0.0, 1.0)
 	_story_flick_level = level
 	light.light_energy = (
-		LIGHT_COMMON.LAMP_ENERGY * _live_energy_mul * distance_level * level)
+		CANONICAL_LIGHTING.LAMP_ENERGY * _live_energy_mul * distance_level * level)
 	if _lf_renderer != null:
 		_lf_renderer.set_lamp_multiplier(_lf_lamp_id(light), level)
 	if _lf2_renderer != null:
@@ -537,9 +594,9 @@ func _lf2_apply_light_sample() -> void:
 	var material := panel.material_override as StandardMaterial3D
 	if material == null:
 		return
-	var panel_level := maxf(level, LIGHT_COMMON.FLICK_PANEL_MIN_LEVEL)
+	var panel_level := maxf(level, CANONICAL_LIGHTING.FLICK_PANEL_MIN_LEVEL)
 	var emission_level := maxf(
-		level, LIGHT_COMMON.FLICK_PANEL_EMISSION_MIN_LEVEL)
+		level, CANONICAL_LIGHTING.FLICK_PANEL_EMISSION_MIN_LEVEL)
 	material.albedo_color = Color(
 		distance_level * panel_level,
 		0.98 * distance_level * panel_level,
@@ -594,11 +651,15 @@ func _lf2_capture_suite() -> void:
 		"captures": [],
 		"pair_metrics": [],
 		"indirect_toggle_metrics": {},
+		"chair_fill_metrics": {},
+		"stop_sign_fill_metrics": {},
 	}
 	var original_window_size := get_window().size
 	var original_hud_visible := _hud_label.visible if _hud_label != null else false
 	var original_minimap_visible := _minimap.visible if _minimap != null else false
 	var original_indirect_enabled := _lf3_indirect_enabled
+	var original_chair_fill_enabled := _chair_fill_enabled
+	var original_lf_field_active := _lf_field_active
 	_lf3_indirect_enabled = true
 	get_window().size = Vector2i(1280, 720)
 	if _hud_label != null:
@@ -699,6 +760,98 @@ func _lf2_capture_suite() -> void:
 			toggle_images[0], toggle_images[1],
 			absolute_dir.path_join("07_indirect_floor__contact.png"))
 	_lf3_indirect_enabled = true
+	# Изолированная пара: неизменные LF3/direct/камера, меняется только chair-only fill.
+	var chair_view_index := 4
+	_lf2_reference_view_index = chair_view_index
+	_lf2_apply_reference_view(views[chair_view_index])
+	_lf2_light_sample_index = 1
+	_lf2_apply_light_sample()
+	_lf_controller.set_mode(LF_CONTROLLER.Mode.FIELD)
+	var chair_fill_images: Array[Image] = []
+	for fill_enabled in [false, true]:
+		_chair_fill_enabled = fill_enabled
+		_apply_story_chair_fill()
+		_lf2_capture_status = "8 CHAIR FILL %s" % ("ON" if fill_enabled else "OFF")
+		var frame_ms := await _lf2_capture_settle_and_measure(10)
+		await _lf2_capture_wait_for_render()
+		var image := get_viewport().get_texture().get_image()
+		var state_slug := "on" if fill_enabled else "off"
+		var filename := "08_chair_fill__%s.png" % state_slug
+		if image.save_png(absolute_dir.path_join(filename)) != OK:
+			push_error("LF3 capture: failed to save %s" % filename)
+		chair_fill_images.append(image.duplicate())
+		report["captures"].append({
+			"view": "CHAIR FILL",
+			"lamp": "BRIGHT 1.00",
+			"mode": "lf3_chair_fill_%s" % state_slug,
+			"file": filename,
+			"mean_frame_ms": frame_ms,
+			"fps": Engine.get_frames_per_second(),
+		})
+	if chair_fill_images.size() == 2:
+		var chair_metrics := _lf2_compare_capture_images(
+			chair_fill_images[0], chair_fill_images[1])
+		report["chair_fill_metrics"] = {
+			"off_mean_luma": chair_metrics["legacy_mean_luma"],
+			"on_mean_luma": chair_metrics["lf3_mean_luma"],
+			"on_off_luma_ratio": chair_metrics["luma_ratio"],
+			"rgb_mae": chair_metrics["rgb_mae"],
+			"energy": _chair_fill_energy,
+		}
+		_lf3_save_toggle_sheet(
+			chair_fill_images[0], chair_fill_images[1],
+			absolute_dir.path_join("08_chair_fill__contact.png"))
+	_chair_fill_enabled = original_chair_fill_enabled
+	_apply_story_chair_fill()
+	# Та же пара для дальнего знака: один профиль и переключатель, другой receiver.
+	if _stop_sign != null and is_instance_valid(_stop_sign):
+		var stop_box := _node_world_aabb(_stop_sign)
+		var stop_target := stop_box.get_center()
+		var stop_view := {
+			"position": stop_target + Vector3(0.0, 0.2, 5.0),
+			"target": stop_target,
+		}
+		_lf2_apply_reference_view(stop_view)
+		_lf2_light_sample_index = 1
+		_lf2_apply_light_sample()
+		_lf_controller.set_mode(LF_CONTROLLER.Mode.FIELD)
+		var stop_fill_images: Array[Image] = []
+		for fill_enabled in [false, true]:
+			_chair_fill_enabled = fill_enabled
+			_apply_story_chair_fill()
+			_lf2_capture_status = "9 STOP SIGN FILL %s" % (
+				"ON" if fill_enabled else "OFF")
+			var frame_ms := await _lf2_capture_settle_and_measure(10)
+			await _lf2_capture_wait_for_render()
+			var image := get_viewport().get_texture().get_image()
+			var state_slug := "on" if fill_enabled else "off"
+			var filename := "09_stop_sign_fill__%s.png" % state_slug
+			if image.save_png(absolute_dir.path_join(filename)) != OK:
+				push_error("LF3 capture: failed to save %s" % filename)
+			stop_fill_images.append(image.duplicate())
+			report["captures"].append({
+				"view": "STOP SIGN FILL",
+				"lamp": "BRIGHT 1.00",
+				"mode": "lf3_stop_sign_fill_%s" % state_slug,
+				"file": filename,
+				"mean_frame_ms": frame_ms,
+				"fps": Engine.get_frames_per_second(),
+			})
+		if stop_fill_images.size() == 2:
+			var stop_metrics := _lf2_compare_capture_images(
+				stop_fill_images[0], stop_fill_images[1])
+			report["stop_sign_fill_metrics"] = {
+				"off_mean_luma": stop_metrics["legacy_mean_luma"],
+				"on_mean_luma": stop_metrics["lf3_mean_luma"],
+				"on_off_luma_ratio": stop_metrics["luma_ratio"],
+				"rgb_mae": stop_metrics["rgb_mae"],
+				"energy": _chair_fill_energy,
+			}
+			_lf3_save_toggle_sheet(
+				stop_fill_images[0], stop_fill_images[1],
+				absolute_dir.path_join("09_stop_sign_fill__contact.png"))
+	_chair_fill_enabled = original_chair_fill_enabled
+	_apply_story_chair_fill()
 	# Closed-door regression: both modes use the same physical leaf.
 	var original_open_state := _open_state
 	_open_state = "inside"
@@ -755,7 +908,8 @@ func _lf2_capture_suite() -> void:
 		absolute_dir.path_join("report.json"), FileAccess.WRITE)
 	if report_file != null:
 		report_file.store_string(JSON.stringify(report, "\t"))
-	_lf_controller.set_mode(LF_CONTROLLER.Mode.LEGACY)
+	_lf_controller.set_mode(LF_CONTROLLER.Mode.FIELD \
+		if original_lf_field_active else LF_CONTROLLER.Mode.LEGACY)
 	_lf3_indirect_enabled = original_indirect_enabled
 	_lf2_light_sample_index = 0
 	_lf2_apply_light_sample()
@@ -925,11 +1079,11 @@ func _lf3_apply_leak_capture_state() -> void:
 			if is_story else (1.0 if bool(state.get("corridor", false)) else 0.0)
 		var distance_level := clampf(float(entry.get("level", 1.0)), 0.0, 1.0)
 		light.light_energy = (
-			LIGHT_COMMON.LAMP_ENERGY * _live_energy_mul * distance_level * source_level)
+			CANONICAL_LIGHTING.LAMP_ENERGY * _live_energy_mul * distance_level * source_level)
 		light.visible = light.light_energy > 0.0001
 		var default_blur := LF3_OCCLUSION_SHADOW_BLUR \
 			if String(state.get("mode", "legacy")) == "lf3" \
-			else LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_BLUR
+			else CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BLUR
 		light.shadow_blur = float(state.get("shadow_blur", default_blur))
 		if shadow_mode == "current":
 			continue
@@ -937,22 +1091,22 @@ func _lf3_apply_leak_capture_state() -> void:
 			if light.shadow_enabled:
 				light.shadow_opacity = 1.0
 				light.shadow_blur = float(state.get(
-					"shadow_blur", LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_BLUR))
+					"shadow_blur", CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BLUR))
 			continue
 		var force_shadow := not is_story and light.visible \
 			and _lf3_leak_light_reaches_story_room(light) \
 			and (shadow_mode == "all_soft" or shadow_mode == "full" \
 				or shadow_mode == "full_low_bias")
 		light.shadow_enabled = force_shadow
-		light.shadow_opacity = (LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_OPACITY \
+		light.shadow_opacity = (CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_OPACITY \
 			if force_shadow and shadow_mode == "all_soft" \
 			else (1.0 if force_shadow else 0.0))
 		if shadow_mode == "full_low_bias":
 			light.shadow_bias = 0.02
 			light.shadow_normal_bias = 0.45
 		else:
-			light.shadow_bias = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_BIAS
-			light.shadow_normal_bias = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
+			light.shadow_bias = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BIAS
+			light.shadow_normal_bias = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
 	var panel := _story_light_entry.get("panel") as MeshInstance3D
 	if panel == null or not is_instance_valid(panel):
 		return
@@ -964,9 +1118,9 @@ func _lf3_apply_leak_capture_state() -> void:
 		material.albedo_color = Color.BLACK
 		material.emission_energy_multiplier = 0.0
 	else:
-		var visible_level := maxf(panel_level, LIGHT_COMMON.FLICK_PANEL_MIN_LEVEL)
+		var visible_level := maxf(panel_level, CANONICAL_LIGHTING.FLICK_PANEL_MIN_LEVEL)
 		var emission_level := maxf(
-			panel_level, LIGHT_COMMON.FLICK_PANEL_EMISSION_MIN_LEVEL)
+			panel_level, CANONICAL_LIGHTING.FLICK_PANEL_EMISSION_MIN_LEVEL)
 		material.albedo_color = Color(
 			visible_level, 0.98 * visible_level, 0.86 * visible_level)
 		material.emission_energy_multiplier = float(_story_light_entry.get(
@@ -1038,6 +1192,7 @@ func _lf3_leak_capture_snapshot() -> Dictionary:
 		if panel != null and is_instance_valid(panel) else null
 	return {
 		"ambient": _env.ambient_light_energy if _env != null else 0.0,
+		"lf_field_active": _lf_field_active,
 		"indirect": _lf3_indirect_enabled,
 		"flick_active": _story_light_flicker_active,
 		"flick_level": _story_flick_level,
@@ -1050,6 +1205,9 @@ func _lf3_leak_capture_snapshot() -> Dictionary:
 
 
 func _lf3_leak_capture_restore(snapshot: Dictionary) -> void:
+	_lf_controller.set_mode(LF_CONTROLLER.Mode.FIELD \
+		if bool(snapshot.get("lf_field_active", true)) \
+		else LF_CONTROLLER.Mode.LEGACY)
 	if _env != null:
 		_env.ambient_light_energy = float(snapshot.get("ambient", _live_ambient))
 	_lf3_indirect_enabled = bool(snapshot.get("indirect", true))
@@ -1388,10 +1546,10 @@ func _apply_floor_variant() -> void:
 
 
 func _apply_common_light_profile() -> void:
-	if _env != null:
-		_env.ambient_light_color = LIGHT_COMMON.TUNED_AMBIENT_COLOR
+	if _env != null and (not embedded_mode or _embedded_active):
+		_env.ambient_light_color = CANONICAL_ARCHITECTURE.AMBIENT_COLOR
 		_env.fog_enabled = false   # туман наследуется из теста включённым; в коридоре он не нужен
-	_apply_live_ambient()
+		_apply_live_ambient()
 	_apply_live_lamps()
 
 
@@ -1406,12 +1564,12 @@ func _apply_live_lamps() -> void:
 			continue
 		var light := entry["light"] as OmniLight3D
 		light.omni_range = _live_range
-		light.omni_attenuation = LIGHT_COMMON.LAMP_ATTEN
-		light.light_color = Color(0.92, 0.88, 0.62)
-		light.shadow_opacity = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_OPACITY
-		light.shadow_blur = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_BLUR
-		light.shadow_bias = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_BIAS
-		light.shadow_normal_bias = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
+		light.omni_attenuation = CANONICAL_LIGHTING.LAMP_ATTEN
+		light.light_color = CANONICAL_LIGHTING.LIGHT_COLOR
+		light.shadow_opacity = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_OPACITY
+		light.shadow_blur = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BLUR
+		light.shadow_bias = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BIAS
+		light.shadow_normal_bias = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
 
 
 # Та же прямая кривая, что в эталоне: панель и освещение уходят в
@@ -1432,7 +1590,7 @@ func _update_corridor_lights(_delta: float) -> void:
 		var light := entry["light"] as OmniLight3D
 		var d := absf(light.global_position.z - pz)
 		entry["level"] = clampf((LAMP_DARK_DIST - d) / span, 0.0, 1.0)
-		_apply_light_entry(entry, LIGHT_COMMON.LAMP_ENERGY * _live_energy_mul, false)
+		_apply_light_entry(entry, CANONICAL_LIGHTING.LAMP_ENERGY * _live_energy_mul, false)
 		# В LF3-0 используются те же настоящие источники, но только из
 		# ограниченного ближайшего пула. Его граница лежит уже в полностью
 		# тёмной зоне; видимая яркость задаётся только расстоянием выше.
@@ -1536,15 +1694,15 @@ func _update_shadow_pool() -> void:
 func _new_lamp(local_pos: Vector3) -> OmniLight3D:
 	var light := OmniLight3D.new()
 	light.position = local_pos + Vector3(0.0, -(0.32 + LAMP_SOURCE_DROP), 0.0)
-	light.light_color = Color(0.92, 0.88, 0.62)
-	light.light_energy = LIGHT_COMMON.LAMP_ENERGY * _live_energy_mul
+	light.light_color = CANONICAL_LIGHTING.LIGHT_COLOR
+	light.light_energy = CANONICAL_LIGHTING.LAMP_ENERGY * _live_energy_mul
 	light.omni_range = _live_range
-	light.omni_attenuation = LIGHT_COMMON.LAMP_ATTEN
+	light.omni_attenuation = CANONICAL_LIGHTING.LAMP_ATTEN
 	light.shadow_enabled = false
-	light.shadow_opacity = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_OPACITY
-	light.shadow_blur = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_BLUR
-	light.shadow_bias = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_BIAS
-	light.shadow_normal_bias = LIGHT_COMMON.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
+	light.shadow_opacity = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_OPACITY
+	light.shadow_blur = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BLUR
+	light.shadow_bias = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_BIAS
+	light.shadow_normal_bias = CANONICAL_LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
 	light.visible = not _lf_field_active
 	return light
 
@@ -1763,6 +1921,16 @@ func _lf_assign_story_visual_layers() -> void:
 			geometry.layers = LF_CORRIDOR_VISUAL_MASK
 			if _lf_is_opening_geometry(geometry):
 				geometry.layers = LF_CORRIDOR_VISUAL_MASK | LF_STORY_VISUAL_MASK
+	_assign_story_chair_fill_layer()
+
+
+func _assign_story_chair_fill_layer() -> void:
+	if _story_chair == null or not is_instance_valid(_story_chair):
+		return
+	for child in _story_chair.find_children("*", "GeometryInstance3D", true, false):
+		var geometry := child as GeometryInstance3D
+		if geometry != null:
+			geometry.layers = LF_STORY_VISUAL_MASK | CHAIR_FILL_VISUAL_MASK
 
 
 func _lf_is_opening_geometry(geometry: GeometryInstance3D) -> bool:
@@ -2215,14 +2383,14 @@ func _lf2_rebuild_story_room() -> void:
 			"id": source_id,
 			"position": light.global_position,
 			"color": light.light_color,
-			"energy": LIGHT_COMMON.LAMP_ENERGY * (
+			"energy": CANONICAL_LIGHTING.LAMP_ENERGY * (
 				0.25 if light == story_light else 0.70),
-			"indirect_energy": LIGHT_COMMON.LAMP_ENERGY * (
+			"indirect_energy": CANONICAL_LIGHTING.LAMP_ENERGY * (
 				0.35 if light == story_light else 0.0),
-			"indirect_floor": LIGHT_COMMON.FLICK_PANEL_EMISSION_MIN_LEVEL \
+			"indirect_floor": CANONICAL_LIGHTING.FLICK_PANEL_EMISSION_MIN_LEVEL \
 				if light == story_light else 0.0,
 			"range": _live_range,
-			"attenuation": LIGHT_COMMON.LAMP_ATTEN,
+			"attenuation": CANONICAL_LIGHTING.LAMP_ATTEN,
 			"blocks_chair": light == story_light,
 			"distance_squared": light.global_position.distance_squared_to(room_center),
 		})
@@ -2285,6 +2453,14 @@ func _build_entrance() -> void:
 
 
 func _spawn_player() -> void:
+	if embedded_mode:
+		_player_ref = embedded_player
+		if _player_ref != null:
+			_start_z = _player_ref.position.z
+			var cameras := _player_ref.find_children("*", "Camera3D", true, false)
+			if not cameras.is_empty():
+				_player_cam = cameras[0] as Camera3D
+		return
 	_player_ref = PLAYER_SCENE.instantiate() as CharacterBody3D
 	_player_ref.position = Vector3(0.0, 1.2, ENTRANCE_CAP_Z - CELL * 2.0)
 	_player_ref.rotation.y = 0.0
@@ -2775,6 +2951,40 @@ func _place_story_chair(room: Node3D, local_pos: Vector3) -> void:
 		var target := room.to_global(local_pos)
 		chair.global_position += target - Vector3(center.x, box.position.y, center.z)
 	_story_chair = chair
+	_assign_story_chair_fill_layer()
+	_create_story_chair_fill(room)
+
+
+func _create_story_chair_fill(room: Node3D) -> void:
+	if _story_chair == null or not is_instance_valid(_story_chair):
+		return
+	var chair_box := _node_world_aabb(_story_chair)
+	var chair_center := chair_box.get_center()
+	var main_light := _story_light_entry.get("light") as OmniLight3D
+	var away := Vector3(1.0, 0.0, 0.0)
+	if main_light != null and is_instance_valid(main_light):
+		away = chair_center - main_light.global_position
+		away.y = 0.0
+		if away.length_squared() > 0.0001:
+			away = away.normalized()
+	_story_chair_fill = OmniLight3D.new()
+	_story_chair_fill.name = "story_chair_fill"
+	_story_chair_fill.light_color = CANONICAL_ARCHITECTURE.AMBIENT_COLOR.lerp(Color.WHITE, 0.35)
+	_story_chair_fill.omni_range = CHAIR_FILL_RANGE
+	_story_chair_fill.omni_attenuation = 1.6
+	_story_chair_fill.shadow_enabled = false
+	_story_chair_fill.light_cull_mask = CHAIR_FILL_VISUAL_MASK
+	room.add_child(_story_chair_fill)
+	_story_chair_fill.global_position = chair_center + away * 1.35 + Vector3.UP * 0.55
+	_apply_story_chair_fill()
+
+
+func _apply_story_chair_fill() -> void:
+	var energy := _chair_fill_energy if _chair_fill_enabled else 0.0
+	if _story_chair_fill != null and is_instance_valid(_story_chair_fill):
+		_story_chair_fill.light_energy = energy
+	if _stop_sign_fill != null and is_instance_valid(_stop_sign_fill):
+		_stop_sign_fill.light_energy = energy
 
 
 func _update_story_pit(delta: float) -> void:
@@ -2801,7 +3011,7 @@ func _update_story_light_flicker(delta: float) -> void:
 	if light == null or not is_instance_valid(light):
 		return
 	var previous_flick_level := _story_flick_level
-	var pattern: Array = LIGHT_COMMON.FLICK_PATTERN
+	var pattern: Array = CANONICAL_LIGHTING.FLICK_PATTERN
 	var segment: Array = pattern[_story_flick_seg_i]
 	_story_flick_seg_t += delta
 	while _story_flick_seg_t >= float(segment[1]):
@@ -2817,18 +3027,18 @@ func _update_story_light_flicker(delta: float) -> void:
 		if _story_flick_stutter_t <= 0.0:
 			_story_flick_stutter_t = randf_range(0.03, 0.12)
 			var roll := randf()
-			if roll < LIGHT_COMMON.FLICK_STUTTER_FULL_CHANCE:
+			if roll < CANONICAL_LIGHTING.FLICK_STUTTER_FULL_CHANCE:
 				_story_flick_stutter_v = 1.0
-			elif roll < LIGHT_COMMON.FLICK_STUTTER_FULL_CHANCE + LIGHT_COMMON.FLICK_STUTTER_LOW_CHANCE:
-				_story_flick_stutter_v = LIGHT_COMMON.FLICK_STUTTER_LOW_LEVEL
+			elif roll < CANONICAL_LIGHTING.FLICK_STUTTER_FULL_CHANCE + CANONICAL_LIGHTING.FLICK_STUTTER_LOW_CHANCE:
+				_story_flick_stutter_v = CANONICAL_LIGHTING.FLICK_STUTTER_LOW_LEVEL
 			else:
 				_story_flick_stutter_v = randf_range(
-					LIGHT_COMMON.FLICK_STUTTER_LOW_LEVEL, LIGHT_COMMON.FLICK_STUTTER_DIM_MAX)
+					CANONICAL_LIGHTING.FLICK_STUTTER_LOW_LEVEL, CANONICAL_LIGHTING.FLICK_STUTTER_DIM_MAX)
 		_story_flick_level = _story_flick_stutter_v
 	if _story_flick_level < previous_flick_level - 0.001:
 		_play_story_flick_click()
 	var distance_level := clampf(float(_story_light_entry.get("level", 1.0)), 0.0, 1.0)
-	light.light_energy = LIGHT_COMMON.LAMP_ENERGY * _live_energy_mul * distance_level * _story_flick_level
+	light.light_energy = CANONICAL_LIGHTING.LAMP_ENERGY * _live_energy_mul * distance_level * _story_flick_level
 	if _lf_renderer != null:
 		_lf_renderer.set_lamp_multiplier(_lf_lamp_id(light), _story_flick_level)
 	if _lf2_renderer != null:
@@ -2840,9 +3050,9 @@ func _update_story_light_flicker(delta: float) -> void:
 	if panel != null and is_instance_valid(panel):
 		var material := panel.material_override as StandardMaterial3D
 		if material != null:
-			var panel_level := maxf(_story_flick_level, LIGHT_COMMON.FLICK_PANEL_MIN_LEVEL)
+			var panel_level := maxf(_story_flick_level, CANONICAL_LIGHTING.FLICK_PANEL_MIN_LEVEL)
 			var emission_level := maxf(
-				_story_flick_level, LIGHT_COMMON.FLICK_PANEL_EMISSION_MIN_LEVEL)
+				_story_flick_level, CANONICAL_LIGHTING.FLICK_PANEL_EMISSION_MIN_LEVEL)
 			material.albedo_color = Color(
 				distance_level * panel_level,
 				0.98 * distance_level * panel_level,
@@ -2884,7 +3094,43 @@ func _make_old_lamp_audio_player(volume_db: float) -> AudioStreamPlayer:
 
 
 func _start_story_flick_audio() -> void:
+	if embedded_mode and not _embedded_active:
+		return
 	_apply_lamp_audio_mode()
+
+
+func _setup_environment() -> void:
+	if embedded_mode:
+		_env = embedded_environment
+		return
+	super._setup_environment()
+
+
+func set_embedded_active(active: bool) -> void:
+	if not embedded_mode:
+		return
+	_embedded_active = active
+	visible = active
+	process_mode = Node.PROCESS_MODE_INHERIT if active else Node.PROCESS_MODE_DISABLED
+	if active:
+		_apply_common_light_profile()
+		_apply_lamp_audio_mode()
+	else:
+		_stop_embedded_audio()
+
+
+func embedded_story_swapped() -> bool:
+	return _story_swapped
+
+
+func _stop_embedded_audio() -> void:
+	for player in [
+			_story_hum_audio_player, _story_flick_audio_player,
+			_old_hum_audio_player, _old_flick_audio_player]:
+		if player != null:
+			(player as AudioStreamPlayer).stop()
+	_old_hum_audio_playback = null
+	_old_flick_audio_playback = null
 
 
 func _apply_lamp_audio_mode() -> void:
@@ -2924,14 +3170,14 @@ func _update_story_flick_audio(delta: float) -> void:
 	if _player_ref != null:
 		var player_pos := Vector2(_player_ref.global_position.x, _player_ref.global_position.z)
 		var density := 0.0
-		var sigma_squared := LIGHT_COMMON.HUM_SIGMA * LIGHT_COMMON.HUM_SIGMA
+		var sigma_squared := CANONICAL_AUDIO.HUM_SIGMA * CANONICAL_AUDIO.HUM_SIGMA
 		for entry: Dictionary in _corridor_lights:
 			var corridor_light := entry.get("light") as OmniLight3D
 			if corridor_light == null or not is_instance_valid(corridor_light):
 				continue
 			var lamp_pos := Vector2(corridor_light.global_position.x, corridor_light.global_position.z)
 			density += exp(-player_pos.distance_squared_to(lamp_pos) / sigma_squared)
-		hum_target = clampf(density / LIGHT_COMMON.HUM_FULL, 0.0, 1.0)
+		hum_target = clampf(density / CANONICAL_AUDIO.HUM_FULL, 0.0, 1.0)
 	_corridor_hum_audio_volume = _approach_story_audio(
 		_corridor_hum_audio_volume, hum_target, delta)
 
@@ -2978,7 +3224,7 @@ func _fill_old_hum_audio() -> void:
 func _fill_old_flick_audio() -> void:
 	if _old_flick_audio_playback == null:
 		return
-	var segment: Array = LIGHT_COMMON.FLICK_PATTERN[_story_flick_seg_i]
+	var segment: Array = CANONICAL_LIGHTING.FLICK_PATTERN[_story_flick_seg_i]
 	var flick_active := 0.0 if String(segment[0]) == "on" else 1.0
 	for _i in range(_old_flick_audio_playback.get_frames_available()):
 		var tone := (
@@ -3028,6 +3274,8 @@ func _do_story_swap() -> void:
 	_reveal_all_corridor_doors()
 	if _stop_sign != null and is_instance_valid(_stop_sign):
 		_stop_sign.visible = false
+	if _stop_sign_fill != null and is_instance_valid(_stop_sign_fill):
+		_stop_sign_fill.visible = false
 	_story_flash_t = STORY_FLASH_TIME
 	if _story_flash != null:
 		_story_flash.visible = true
@@ -3155,6 +3403,7 @@ func _deactivate_open_door(reschedule: bool) -> void:
 	_story_light_entry = {}
 	_story_room = null
 	_story_chair = null
+	_story_chair_fill = null
 	call_deferred("_lf_rebuild_corridor_field")
 
 

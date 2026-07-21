@@ -1,10 +1,22 @@
 # Areas
 
+> Область описывает occupancy/topology и локальные исключения. Стандартную
+> геометрию она не строит сама: сетку и shell создаёт
+> `modules/architecture_module.gd`, проёмы — `modules/opening_module.gd`, свет —
+> `modules/lighting_module.gd`, звук — `modules/audio_module.gd`, HUD —
+> `modules/hud_module.gd`, карту — `modules/map_module.gd`. Полный default
+> стандартной области собирает `modules/standard_area_module.gd`.
+
 `areas.png` is the current editable plan for area modules.
 
 ![Areas scheme](areas.png)
 
 ## Status
+
+> This document describes the active shared-world `15x15` occupancy approach.
+> The optional graph-of-local-spaces architecture, where arbitrary-size modules
+> are joined by paired occluded gateway rooms, is recorded separately in
+> `docs/portal_graph_alternative.md`. It is not active unless explicitly adopted.
 
 The scheme can be used as the current working source of truth for area
 planning, with one condition: it is still editable and may be corrected as
@@ -28,6 +40,20 @@ It matches the prototype direction already tested in `level_blueprint.gd`:
 - Outer wall thickness for the current base area family: 3 panels.
 - Test passage width between areas: 3 panels.
 - Test inter-area passages go to the ceiling.
+
+## Canonical Grid Phase
+
+- Cell boundaries are `WORLD_GRID_ORIGIN + n * CELL`; cell centers are
+  `WORLD_GRID_ORIGIN + (n + 0.5) * CELL` on both horizontal axes.
+- The interior bounds of every standard area start and end on cell boundaries.
+  Floor, ceiling, occupancy, openings, fixtures, and the ceiling-texture phase
+  must derive from that same origin.
+- A `15x15` area has an odd cell count, so its geometric center is a cell
+  center. It cannot also lie on a canonical cell boundary. When a standalone
+  or centered preview is attached to the shared world, translate the entire
+  module by `0.5 CELL` as required instead of leaving half tiles at its edges.
+- Do not repair a structural phase mismatch with a per-mesh UV offset: that
+  hides the error locally and breaks visual continuity at later connections.
 
 ## Area Definition
 

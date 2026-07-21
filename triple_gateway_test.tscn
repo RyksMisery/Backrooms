@@ -1,0 +1,6 @@
+[gd_scene format=3 uid="uid://or0021ajc7be"]
+
+[ext_resource type="Script" uid="uid://bxqn4248pgrww" path="res://triple_gateway_test.gd" id="1"]
+
+[node name="TripleGatewayTest" type="Node3D" unique_id=2075081653]
+script = ExtResource("1")

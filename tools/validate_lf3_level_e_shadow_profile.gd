@@ -43,6 +43,32 @@ func _run() -> void:
 	if not bool(level.get("_final_lamp_audio_enabled")) or not final_hum.playing:
 		_fail("final WAV audio profile did not restore")
 		return
+	if not level.has_method("level_e_set_model_fill") \
+			or not level.has_method("level_e_debug_model_fill"):
+		_fail("level_e model-fill debug API is missing")
+		return
+	var model_fill: Dictionary = level.call("level_e_debug_model_fill")
+	if not bool(model_fill.get("enabled", false)) \
+			or int(model_fill.get("receiver_count", 0)) < 5 \
+			or (model_fill.get("lights", []) as Array).size() < 3:
+		_fail("model-fill did not register boxes and pit signs")
+		return
+	for profile: Dictionary in model_fill.get("lights", []):
+		if int(profile.get("cull_mask", 0)) != 4 \
+				or bool(profile.get("shadow_enabled", true)):
+			_fail("model-fill light escaped its no-shadow model-only contract")
+			return
+	level.call("level_e_set_model_fill", false)
+	for _frame in range(2):
+		await process_frame
+	var model_fill_off: Dictionary = level.call("level_e_debug_model_fill")
+	for profile: Dictionary in model_fill_off.get("lights", []):
+		if not is_zero_approx(float(profile.get("energy", -1.0))):
+			_fail("model-fill OFF retained light energy")
+			return
+	level.call("level_e_set_model_fill", true)
+	for _frame in range(2):
+		await process_frame
 	var production_before: Dictionary = level.call("lf3_debug_shadow_state")
 	if String(production_before.get("mode", "")) != "lf3" \
 			or String(production_before.get("profile", "")) != "LF3-11F":

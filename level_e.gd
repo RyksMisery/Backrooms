@@ -1,5 +1,9 @@
 extends "res://level_d.gd"
 
+const CANONICAL_ARCHITECTURE := preload("res://modules/architecture_module.gd")
+const CANONICAL_LIGHTING := preload("res://modules/lighting_module.gd")
+const CANONICAL_AUDIO := preload("res://modules/audio_module.gd")
+
 # level_e — раздельная по областям геометрия + АВТО-стриминг (build/free блоков
 # по близости к игроку). База пакует уровень в слитые меши и одно тело коллизии;
 # level_e режет геометрию+коллизию по блокам PITCH×PITCH в узлы area_geo_x_y,
@@ -29,32 +33,44 @@ const SPLIT_TYPES := ["wall", "floor", "ceil", "base", "pit", "lamp"]
 const STREAM_BUILD_RADIUS := 2   # держать/строить блоки в этом радиусе от игрока
 const STREAM_FREE_RADIUS := 3    # освобождать за этим (гистерезис, чтобы не дёргалось)
 const LAZY_LOAD := true          # на загрузке строить только близкие блоки (иначе весь уровень)
-const AMBIENT_KEY_STEP := 0.005  # шаг регулировки амбиента на +/-
+const AMBIENT_KEY_STEP := 0.005  # UI-шаг, не параметр продуктового профиля
 const BOUNCE_ENERGY_KEY_STEP := 0.05  # шаг множителя энергии bounce-ламп на ,/.
-const LF3_SHADOW_CASTERS := 10
-const LF3_SHADOW_TRANSIENT_CASTERS := 11
-const LF3_SHADOW_OPACITY := 1.0
-const LF3_SHADOW_BLUR := 2.75
-const LF3_SHADOW_BIAS := 0.06
-const LF3_SHADOW_NORMAL_BIAS := 1.25
-const LF3_SHADOW_FULL_DISTANCE := 6.0
-const LF3_SHADOW_OFF_DISTANCE := 14.0
-const LF3_SHADOW_BOUNDARY_GAP := 2.0
-const LF3_OCCLUSION_PRIORITY_BONUS := 8.0
-const LF3_FRUSTUM_RECEIVER_DISTANCE := 20.0
-const LF3_FRUSTUM_RECEIVER_RAYS := 13
-const FINAL_LAMP_HUM_STREAM := preload("res://sounds/fluorescent_lamp_hum.wav")
-const FINAL_LAMP_FLICK_STREAM := preload("res://sounds/fluorescent_lamp_flick.wav")
-const FINAL_HUM_BASE_DB := -22.0
-const FINAL_FLICK_BASE_DB := -38.0
-const FINAL_AUDIO_SILENT_DB := -80.0
+const LF3_SHADOW_CASTERS := CANONICAL_LIGHTING.LF3_SHADOW_CASTERS
+const LF3_SHADOW_TRANSIENT_CASTERS := CANONICAL_LIGHTING.LF3_SHADOW_TRANSIENT_CASTERS
+const LF3_SHADOW_OPACITY := CANONICAL_LIGHTING.LF3_SHADOW_OPACITY
+const LF3_SHADOW_BLUR := CANONICAL_LIGHTING.LF3_SHADOW_BLUR
+const LF3_SHADOW_BIAS := CANONICAL_LIGHTING.LF3_SHADOW_BIAS
+const LF3_SHADOW_NORMAL_BIAS := CANONICAL_LIGHTING.LF3_SHADOW_NORMAL_BIAS
+const LF3_SHADOW_FULL_DISTANCE := CANONICAL_LIGHTING.LF3_SHADOW_FULL_DISTANCE
+const LF3_SHADOW_OFF_DISTANCE := CANONICAL_LIGHTING.LF3_SHADOW_OFF_DISTANCE
+const LF3_SHADOW_BOUNDARY_GAP := CANONICAL_LIGHTING.LF3_SHADOW_BOUNDARY_GAP
+const LF3_OCCLUSION_PRIORITY_BONUS := CANONICAL_LIGHTING.LF3_OCCLUSION_PRIORITY_BONUS
+const LF3_FRUSTUM_RECEIVER_DISTANCE := CANONICAL_LIGHTING.LF3_FRUSTUM_RECEIVER_DISTANCE
+const LF3_FRUSTUM_RECEIVER_RAYS := CANONICAL_LIGHTING.LF3_FRUSTUM_RECEIVER_RAYS
+const FINAL_LAMP_HUM_STREAM := CANONICAL_AUDIO.LAMP_HUM_STREAM
+const FINAL_LAMP_FLICK_STREAM := CANONICAL_AUDIO.LAMP_FLICK_STREAM
+const FINAL_HUM_BASE_DB := CANONICAL_AUDIO.HUM_BASE_DB
+const FINAL_FLICK_BASE_DB := CANONICAL_AUDIO.FLICK_BASE_DB
+const FINAL_AUDIO_SILENT_DB := CANONICAL_AUDIO.SILENT_DB
+const MODEL_FILL_VISUAL_LAYER := 1 << 2
+const MODEL_FILL_ENERGY_DEFAULT := 0.05
+const MODEL_FILL_ENERGY_STEP := 0.0125
+const MODEL_FILL_MIN_RANGE := 2.5
+const MODEL_FILL_MAX_RANGE := 5.0
+const INFINITE_ANOMALY_SCENE := preload("res://infinite_corridor_e.tscn")
+const INFINITE_CONNECTOR_AREA := Vector2i(2, 0)
+const INFINITE_CONNECTOR_LANE := Vector2i(5, 9)
+const INFINITE_CONNECTOR_DEPTH_CELLS := 2
+const INFINITE_WORLD_OFFSET := Vector3(10000.0, 0.0, 0.0)
+const INFINITE_ENTRY_LOCAL := Vector3(0.0, 1.2, 12.5)
+const INFINITE_PORTAL_COOLDOWN_MS := 350
 
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
 # видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
 const FLOOR_CLASSIC_ALBEDO := preload("res://textures/floor.png")
-const FLOOR_COMPARISON_ALBEDO := preload("res://textures/floor1.png")
+const FLOOR_COMPARISON_ALBEDO := CANONICAL_ARCHITECTURE.FLOOR_TEXTURE
 const FLOOR_CLASSIC_UV_SCALE := 0.2
-const FLOOR_COMPARISON_UV_SCALE := 0.222
+const FLOOR_COMPARISON_UV_SCALE := CANONICAL_ARCHITECTURE.FLOOR_UV_SCALE
 
 var _block_st: Dictionary = {}      # Vector2i -> { st_name: SurfaceTool }  (первичная сборка)
 var _block_holder: Dictionary = {}  # Vector2i -> Node3D (живой узел: меши + тело коллизии)
@@ -81,6 +97,22 @@ var _final_lamp_audio_enabled := true
 var _level_e_reference_audio_requested := false
 var _final_hum_audio_player: AudioStreamPlayer
 var _final_flick_audio_player: AudioStreamPlayer
+var _canonical_audio_module
+var _model_fill_enabled := true
+var _model_fill_energy := MODEL_FILL_ENERGY_DEFAULT
+var _model_fill_lights: Array[OmniLight3D] = []
+var _model_fill_receiver_count := 0
+var _infinite_connector_trigger: Area3D
+var _infinite_return_trigger: Area3D
+var _infinite_anomaly: Node3D
+var _infinite_transition_started := false
+var _infinite_anomaly_active := false
+var _infinite_portal_cooldown_until := 0
+var _infinite_saved_ambient_color := Color.WHITE
+var _infinite_saved_ambient_energy := 0.0
+var _infinite_saved_fog_enabled := false
+var _infinite_saved_hud_visible := true
+var _infinite_saved_map_visible := false
 
 
 func _ready() -> void:
@@ -96,14 +128,42 @@ func _ready() -> void:
 		randomize_maze_seed = false
 		maze_seed = 173205
 	super._ready()
+	if _level_e_main_layout_features_enabled():
+		_setup_infinite_connector_trigger()
+		_setup_model_fill_system()
 	_lf3_capture_reference_shadow_profiles()
 	lf3_set_shadow_mode(true)
+	if not _level_e_capture_runners_enabled():
+		return
 	if _lf3_level_e_capture_requested:
 		call_deferred("_lf3_level_e_capture_suite")
 	elif _lf3_box_capture_requested:
 		call_deferred("_lf3_box_shadow_capture_suite")
 	elif _lf3_smooth_capture_requested:
 		call_deferred("_lf3_box_shadow_smoothness_capture_suite")
+
+
+# Hooks отделяют единую runtime-базу level_e от её текущей живой раскладки.
+# Обычный уровень сохраняет прежнее поведение; тестовая база отключает только
+# системы, завязанные на конкретный occupancy-граф основного лабиринта.
+func _level_e_main_layout_features_enabled() -> bool:
+	return true
+
+
+func _level_e_streaming_enabled() -> bool:
+	return true
+
+
+func _level_e_capture_runners_enabled() -> bool:
+	return true
+
+
+func _level_e_process_content(_delta: float) -> void:
+	pass
+
+
+func _level_e_input_content(_event: InputEventKey) -> void:
+	pass
 
 
 func _begin() -> void:
@@ -114,29 +174,231 @@ func _begin() -> void:
 	_known_blocks.clear()
 	_stream_build_queue.clear()
 	_emit_ctx_active = false
+	_infinite_transition_started = false
+	_infinite_anomaly_active = false
+
+
+# Левый рукав у стрелки не соединяем с соседним `cor_n_w`.
+# Выбираем два ближних к `cor_n_e` слоя трёхклеточной общей стены,
+# а дальний слой оставляем глухим: получается ниша, а не ложная дыра
+# в физически соседнюю область.
+func _carve_passages() -> void:
+	super._carve_passages()
+	if preview_template != "" or not _area_by_cell.has(INFINITE_CONNECTOR_AREA):
+		return
+	var area: Dictionary = _area_by_cell[INFINITE_CONNECTOR_AREA]
+	var base := _area_base_cell(area)
+	for gx in range(base.x + WALL_CELLS - INFINITE_CONNECTOR_DEPTH_CELLS,
+			base.x + WALL_CELLS):
+		for gz in range(base.y + WALL_CELLS + INFINITE_CONNECTOR_LANE.x,
+				base.y + WALL_CELLS + INFINITE_CONNECTOR_LANE.y):
+			var cell := Vector2i(gx, gz)
+			_set_cell(cell, K_PASSAGE)
+			_area_id[cell] = String(area["id"])
+			_light_block.erase(cell)
+
+
+func _setup_infinite_connector_trigger() -> void:
+	if preview_template != "" or not _area_by_cell.has(INFINITE_CONNECTOR_AREA):
+		return
+	var area: Dictionary = _area_by_cell[INFINITE_CONNECTOR_AREA]
+	var base := _area_base_cell(area)
+	var trigger := Area3D.new()
+	trigger.name = "infinite_anomaly_transition"
+	trigger.collision_layer = 0
+	trigger.collision_mask = 1
+	trigger.monitoring = true
+	trigger.monitorable = false
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(CELL * 0.8, 2.4,
+		float(INFINITE_CONNECTOR_LANE.y - INFINITE_CONNECTOR_LANE.x - 1) * CELL)
+	collision.shape = shape
+	trigger.add_child(collision)
+	trigger.position = Vector3(
+		(float(base.x + WALL_CELLS - INFINITE_CONNECTOR_DEPTH_CELLS) + 0.5) * CELL,
+		1.2,
+		(float(base.y + WALL_CELLS) +
+			float(INFINITE_CONNECTOR_LANE.x + INFINITE_CONNECTOR_LANE.y) * 0.5) * CELL)
+	add_child(trigger)
+	trigger.body_entered.connect(_on_infinite_connector_body_entered)
+	_infinite_connector_trigger = trigger
+	_setup_embedded_infinite_anomaly()
+
+
+func _setup_embedded_infinite_anomaly() -> void:
+	var anomaly := INFINITE_ANOMALY_SCENE.instantiate() as Node3D
+	if anomaly == null:
+		push_error("Infinite anomaly scene could not be instantiated")
+		return
+	anomaly.name = "embedded_infinite_corridor_e"
+	anomaly.position = INFINITE_WORLD_OFFSET
+	anomaly.visible = false
+	anomaly.process_mode = Node.PROCESS_MODE_DISABLED
+	anomaly.set("embedded_mode", true)
+	anomaly.set("embedded_player", _player_ref)
+	anomaly.set("embedded_environment", _env)
+	add_child(anomaly)
+	_infinite_anomaly = anomaly
+	anomaly.call("set_embedded_active", false)
+
+	var trigger := Area3D.new()
+	trigger.name = "infinite_return_transition"
+	trigger.collision_layer = 0
+	trigger.collision_mask = 1
+	trigger.monitoring = true
+	trigger.monitorable = false
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(CELL * 3.0, 2.4, CELL * 0.8)
+	collision.shape = shape
+	trigger.add_child(collision)
+	trigger.position = INFINITE_ENTRY_LOCAL
+	anomaly.add_child(trigger)
+	trigger.body_entered.connect(_on_infinite_return_body_entered)
+	_infinite_return_trigger = trigger
+
+
+func _on_infinite_connector_body_entered(body: Node3D) -> void:
+	if _infinite_transition_started or _infinite_anomaly_active \
+			or body != _player_ref or Time.get_ticks_msec() < _infinite_portal_cooldown_until:
+		return
+	_infinite_transition_started = true
+	call_deferred("_enter_infinite_anomaly")
+
+
+func _enter_infinite_anomaly() -> void:
+	if _infinite_anomaly == null or not is_instance_valid(_infinite_anomaly):
+		_infinite_transition_started = false
+		return
+	_save_level_state_for_anomaly()
+	_infinite_anomaly_active = true
+	_infinite_portal_cooldown_until = Time.get_ticks_msec() + INFINITE_PORTAL_COOLDOWN_MS
+	_infinite_anomaly.call("set_embedded_active", true)
+	_transfer_player_between_portals(_level_infinite_portal_transform(),
+		_infinite_portal_transform())
+	_infinite_transition_started = false
+
+
+func _on_infinite_return_body_entered(body: Node3D) -> void:
+	if _infinite_transition_started or not _infinite_anomaly_active \
+			or body != _player_ref or Time.get_ticks_msec() < _infinite_portal_cooldown_until:
+		return
+	if bool(_infinite_anomaly.call("embedded_story_swapped")):
+		return
+	_infinite_transition_started = true
+	call_deferred("_leave_infinite_anomaly")
+
+
+func _leave_infinite_anomaly() -> void:
+	_infinite_portal_cooldown_until = Time.get_ticks_msec() + INFINITE_PORTAL_COOLDOWN_MS
+	_transfer_player_between_portals(_infinite_portal_transform(),
+		_level_infinite_portal_transform())
+	_infinite_anomaly_active = false
+	_infinite_anomaly.call("set_embedded_active", false)
+	_restore_level_state_after_anomaly()
+	_infinite_transition_started = false
+
+
+func _level_infinite_portal_transform() -> Transform3D:
+	return Transform3D(Basis(Vector3.UP, PI * 0.5),
+		_infinite_connector_trigger.global_position)
+
+
+func _infinite_portal_transform() -> Transform3D:
+	return Transform3D(Basis.IDENTITY, _infinite_return_trigger.global_position)
+
+
+func _transfer_player_between_portals(source: Transform3D, destination: Transform3D) -> void:
+	var local_transform := source.affine_inverse() * _player_ref.global_transform
+	var local_velocity := source.basis.inverse() * _player_ref.velocity
+	_player_ref.global_transform = destination * local_transform
+	_player_ref.velocity = destination.basis * local_velocity
+
+
+func _save_level_state_for_anomaly() -> void:
+	if _env != null:
+		_infinite_saved_ambient_color = _env.ambient_light_color
+		_infinite_saved_ambient_energy = _env.ambient_light_energy
+		_infinite_saved_fog_enabled = _env.fog_enabled
+	if _hud_label != null:
+		_infinite_saved_hud_visible = _hud_label.visible
+		_hud_label.visible = false
+	if _minimap != null:
+		_infinite_saved_map_visible = _minimap.visible
+		_minimap.visible = false
+	_stop_level_audio_for_anomaly()
+
+
+func _restore_level_state_after_anomaly() -> void:
+	if _env != null:
+		_env.ambient_light_color = _infinite_saved_ambient_color
+		_env.ambient_light_energy = _infinite_saved_ambient_energy
+		_env.fog_enabled = _infinite_saved_fog_enabled
+	if _hud_label != null:
+		_hud_label.visible = _infinite_saved_hud_visible
+	if _minimap != null:
+		_minimap.visible = _infinite_saved_map_visible
+	_apply_level_e_audio_profile()
+
+
+func _stop_level_audio_for_anomaly() -> void:
+	for player in [
+			_final_hum_audio_player, _final_flick_audio_player,
+			_hum_player, _flick_player]:
+		if player != null:
+			(player as AudioStreamPlayer).stop()
+	_hum_playback = null
+	_flick_playback = null
 
 
 func _process(delta: float) -> void:
+	if _infinite_anomaly_active:
+		return
 	super._process(delta)
-	_update_streaming()
+	if _level_e_streaming_enabled():
+		_update_streaming()
+	_level_e_process_content(delta)
 	if _hud_label != null:
-		_hud_label.text = "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d\nпол:%s (T)  свет:%s  звук:%s\nambient:%.3f (+/-)  bounce:%.1f ([ ])  bE:x%.2f (,.)" % [
-			LEVEL_NAME, _current_area_name(), Engine.get_frames_per_second(),
-			("ON" if _stream_on else "OFF"), _block_holder.size(),
-			("FLOOR1" if _comparison_floor_enabled else "CLASSIC"),
-			(_lf3_profile_label() if _lf3_shadow_mode else "REFERENCE TEST"),
-			("FINAL WAV" if _final_lamp_audio_enabled else "REFERENCE TEST"),
-			_amb_read(), _bounce_range, _bounce_energy_mul
-		]
+		_hud_label.text = _level_e_hud_text()
+
+
+func _level_e_hud_text() -> String:
+	return "%s\n%s\n%d fps\nстрим:%s (K)  M карта  блоков:%d\nпол:%s (T)  свет:%s  звук:%s\nmodel-fill:%s %.3f, %d props (4, 1/2)\nambient:%.3f (+/-)  bounce:%.1f ([ ])  bE:x%.2f (,.)" % [
+		LEVEL_NAME, _current_area_name(), Engine.get_frames_per_second(),
+		("ON" if _stream_on else "OFF"), _block_holder.size(),
+		("FLOOR1" if _comparison_floor_enabled else "CLASSIC"),
+		(_lf3_profile_label() if _lf3_shadow_mode else "REFERENCE TEST"),
+		("FINAL WAV" if _final_lamp_audio_enabled else "REFERENCE TEST"),
+		("ON" if _model_fill_enabled else "OFF"), _model_fill_energy,
+		_model_fill_receiver_count,
+		_amb_read(), _bounce_range, _bounce_energy_mul
+	]
 
 
 func _input(event: InputEvent) -> void:
+	if _infinite_anomaly_active:
+		return
 	if not (event is InputEventKey):
 		return
 	var ke := event as InputEventKey
 	if not ke.pressed or ke.echo:
 		return
-	if ke.keycode == KEY_EQUAL or ke.keycode == KEY_KP_ADD:
+	if not _level_e_main_layout_features_enabled():
+		if ke.keycode == KEY_M and _minimap != null:
+			_minimap.visible = not _minimap.visible
+		_level_e_input_content(ke)
+		return
+	if ke.keycode == KEY_4:
+		_model_fill_enabled = not _model_fill_enabled
+		_apply_model_fill_profile()
+	elif ke.keycode == KEY_1:
+		_model_fill_energy = maxf(0.0, _model_fill_energy - MODEL_FILL_ENERGY_STEP)
+		_apply_model_fill_profile()
+	elif ke.keycode == KEY_2:
+		_model_fill_energy += MODEL_FILL_ENERGY_STEP
+		_apply_model_fill_profile()
+	elif ke.keycode == KEY_EQUAL or ke.keycode == KEY_KP_ADD:
 		_amb_apply(_amb_read() + AMBIENT_KEY_STEP)
 	elif ke.keycode == KEY_MINUS or ke.keycode == KEY_KP_SUBTRACT:
 		_amb_apply(_amb_read() - AMBIENT_KEY_STEP)
@@ -165,29 +427,138 @@ func _input(event: InputEvent) -> void:
 		print("[level_e] стриминг: ", "ON" if _stream_on else "OFF", " блоков=", _block_holder.size())
 
 
+# ── Единый model-only fill: отдельный слой, общая энергия, локальные кластеры ──
+
+func _setup_model_fill_system() -> void:
+	for light: OmniLight3D in _model_fill_lights:
+		if light != null and is_instance_valid(light):
+			light.queue_free()
+	_model_fill_lights.clear()
+	_model_fill_receiver_count = 0
+	_register_model_fill_cluster("hall_boxes", [
+		"arrow_cardboard_box_01",
+		"arrow_cardboard_box_02",
+		"arrow_cardboard_box_03",
+	])
+	for sign_name in ["pit_entrance_sign", "pit_pocket_sign", "wet_floor_sign"]:
+		_register_model_fill_cluster(String(sign_name), [String(sign_name)])
+	_apply_model_fill_profile()
+
+
+func _register_model_fill_cluster(cluster_id: String, node_names: Array) -> void:
+	var receivers: Array[Node3D] = []
+	var bounds := AABB()
+	var has_bounds := false
+	for node_name in node_names:
+		var receiver := find_child(String(node_name), true, false) as Node3D
+		if receiver == null:
+			continue
+		receivers.append(receiver)
+		_assign_model_fill_layer(receiver)
+		var receiver_bounds := _node_world_aabb(receiver)
+		if receiver_bounds.size.length_squared() <= 0.0001:
+			continue
+		bounds = receiver_bounds if not has_bounds else bounds.merge(receiver_bounds)
+		has_bounds = true
+	if receivers.is_empty() or not has_bounds:
+		return
+	_model_fill_receiver_count += receivers.size()
+	var center := bounds.get_center()
+	var nearest_light: OmniLight3D
+	var nearest_distance := INF
+	for lamp: OmniLight3D in _lamps:
+		if lamp == null or not is_instance_valid(lamp):
+			continue
+		var distance_squared := lamp.global_position.distance_squared_to(center)
+		if distance_squared < nearest_distance:
+			nearest_distance = distance_squared
+			nearest_light = lamp
+	var away := Vector3(1.0, 0.0, -1.0).normalized()
+	if nearest_light != null:
+		away = center - nearest_light.global_position
+		away.y = 0.0
+		if away.length_squared() > 0.0001:
+			away = away.normalized()
+	var horizontal_size := maxf(bounds.size.x, bounds.size.z)
+	var fill := OmniLight3D.new()
+	fill.name = "model_fill_%s" % cluster_id
+	fill.light_color = TUNED_AMBIENT_COLOR.lerp(Color.WHITE, 0.35)
+	fill.omni_range = clampf(horizontal_size * 1.5 + 1.5,
+		MODEL_FILL_MIN_RANGE, MODEL_FILL_MAX_RANGE)
+	fill.omni_attenuation = 1.6
+	fill.shadow_enabled = false
+	fill.light_cull_mask = MODEL_FILL_VISUAL_LAYER
+	fill.set_meta("model_fill_cluster", cluster_id)
+	add_child(fill)
+	fill.global_position = center + away * maxf(1.0, horizontal_size * 0.65) \
+		+ Vector3.UP * (bounds.size.y * 0.35 + 0.4)
+	_model_fill_lights.append(fill)
+
+
+func _assign_model_fill_layer(root: Node3D) -> void:
+	if root is GeometryInstance3D:
+		(root as GeometryInstance3D).layers |= MODEL_FILL_VISUAL_LAYER
+	for child in root.find_children("*", "GeometryInstance3D", true, false):
+		var geometry := child as GeometryInstance3D
+		if geometry != null:
+			geometry.layers |= MODEL_FILL_VISUAL_LAYER
+
+
+func _apply_model_fill_profile() -> void:
+	var energy := _model_fill_energy if _model_fill_enabled else 0.0
+	for light: OmniLight3D in _model_fill_lights:
+		if light != null and is_instance_valid(light):
+			light.light_energy = energy
+
+
+func level_e_set_model_fill(enabled: bool) -> void:
+	_model_fill_enabled = enabled
+	_apply_model_fill_profile()
+
+
+func level_e_debug_model_fill() -> Dictionary:
+	var profiles := []
+	for light: OmniLight3D in _model_fill_lights:
+		if light == null or not is_instance_valid(light):
+			continue
+		profiles.append({
+			"cluster": String(light.get_meta("model_fill_cluster", "")),
+			"energy": light.light_energy,
+			"range": light.omni_range,
+			"cull_mask": light.light_cull_mask,
+			"shadow_enabled": light.shadow_enabled,
+		})
+	return {
+		"enabled": _model_fill_enabled,
+		"energy": _model_fill_energy,
+		"receiver_count": _model_fill_receiver_count,
+		"lights": profiles,
+	}
+
+
 # ── Финальный звук ламп; старый генератор остаётся тестовым профилем ──
 
 func _setup_audio() -> void:
 	_mix_rate = AudioServer.get_mix_rate()
-	_lamp_pts = PackedVector2Array()
-	for l: OmniLight3D in _lamps:
-		_lamp_pts.append(Vector2(l.position.x, l.position.z))
-	var hum_stream := FINAL_LAMP_HUM_STREAM.duplicate() as AudioStreamWAV
-	if hum_stream != null:
-		hum_stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
-		hum_stream.loop_begin = 0
-		hum_stream.loop_end = int(round(hum_stream.get_length() * hum_stream.mix_rate))
-	_final_hum_audio_player = AudioStreamPlayer.new()
-	_final_hum_audio_player.stream = hum_stream if hum_stream != null else FINAL_LAMP_HUM_STREAM
-	_final_hum_audio_player.volume_db = FINAL_AUDIO_SILENT_DB
-	add_child(_final_hum_audio_player)
-	_final_flick_audio_player = AudioStreamPlayer.new()
-	_final_flick_audio_player.stream = FINAL_LAMP_FLICK_STREAM
-	_final_flick_audio_player.volume_db = FINAL_AUDIO_SILENT_DB
-	add_child(_final_flick_audio_player)
+	_refresh_lamp_audio_points()
+	_canonical_audio_module = CANONICAL_AUDIO.new(self)
+	_canonical_audio_module.setup(_player_ref, _lamps)
+	if _has_flicker:
+		_canonical_audio_module.set_flicker_position(_flicker_pos)
+	_final_hum_audio_player = _canonical_audio_module.hum_player
+	_final_flick_audio_player = _canonical_audio_module.flick_player
 	_hum_player = _make_gen_player(FINAL_HUM_BASE_DB)
 	_flick_player = _make_gen_player(FINAL_FLICK_BASE_DB)
 	_start_level_e_audio.call_deferred()
+
+
+func _refresh_lamp_audio_points() -> void:
+	_lamp_pts = PackedVector2Array()
+	for light: OmniLight3D in _lamps:
+		if light != null and is_instance_valid(light):
+			_lamp_pts.append(Vector2(light.global_position.x, light.global_position.z))
+	if _canonical_audio_module != null:
+		_canonical_audio_module.refresh_lamps(_lamps)
 
 
 func _start_level_e_audio() -> void:
@@ -225,6 +596,12 @@ func _apply_level_e_audio_profile() -> void:
 func _update_audio(delta: float) -> void:
 	if _player_ref == null:
 		return
+	if _final_lamp_audio_enabled and _canonical_audio_module != null:
+		_canonical_audio_module.player = _player_ref
+		_canonical_audio_module.update(delta)
+		_hum_volume = _canonical_audio_module.hum_volume
+		_flick_volume = _canonical_audio_module.flick_volume
+		return
 	var player_pos := Vector2(_player_ref.position.x, _player_ref.position.z)
 	var sigma_squared := HUM_SIGMA * HUM_SIGMA
 	var density := 0.0
@@ -234,22 +611,17 @@ func _update_audio(delta: float) -> void:
 	if _has_flicker:
 		var distance := player_pos.distance_to(Vector2(_flicker_pos.x, _flicker_pos.z))
 		_flick_volume = _approach(_flick_volume, _falloff(distance, 7.0, 3.0), delta)
-	if _final_lamp_audio_enabled:
-		_set_final_audio_volume(_final_hum_audio_player, FINAL_HUM_BASE_DB, _hum_volume)
-		_set_final_audio_volume(_final_flick_audio_player, FINAL_FLICK_BASE_DB, _flick_volume)
-	else:
-		_fill_hum()
-		if _has_flicker:
-			_fill_flick()
+	_fill_hum()
+	if _has_flicker:
+		_fill_flick()
 
 
 func _update_pit_flicker(delta: float) -> void:
 	var previous_level := _flick_level
 	super._update_pit_flicker(delta)
 	if _final_lamp_audio_enabled and _flick_level < previous_level - 0.001 \
-			and _final_flick_audio_player != null:
-		_final_flick_audio_player.pitch_scale = randf_range(0.985, 1.015)
-		_final_flick_audio_player.play(0.0)
+			and _canonical_audio_module != null:
+		_canonical_audio_module.play_flick()
 
 
 func _set_final_audio_volume(player: AudioStreamPlayer, base_db: float, level: float) -> void:
@@ -913,8 +1285,35 @@ func _lf3_box_shadow_capture_suite() -> void:
 		"sequences": {},
 		"ab_pairs": {},
 		"directional_hysteresis": [],
+		"model_fill": {},
 	}
 	var image_sets := {}
+	var original_model_fill_enabled := _model_fill_enabled
+	_player_ref.global_position = near_pos
+	capture_camera.global_position = Vector3(near_pos.x, 1.65, near_pos.z)
+	capture_camera.look_at(target, Vector3.UP)
+	_lf3_apply_test_profile("lf3_11f")
+	var model_fill_images: Array[Image] = []
+	for fill_enabled in [false, true]:
+		level_e_set_model_fill(fill_enabled)
+		for _frame in range(12):
+			await get_tree().process_frame
+		await RenderingServer.frame_post_draw
+		var image := get_viewport().get_texture().get_image().duplicate()
+		var state_slug := "on" if fill_enabled else "off"
+		image.save_png(absolute_dir.path_join("model_fill_%s.png" % state_slug))
+		model_fill_images.append(image)
+	if model_fill_images.size() == 2:
+		_lf3_box_save_pair(model_fill_images[0], model_fill_images[1],
+			absolute_dir.path_join("model_fill_off_vs_on.png"))
+		report["model_fill"] = {
+			"energy": _model_fill_energy,
+			"rgb_mae": _lf3_box_image_mae(model_fill_images[0], model_fill_images[1]),
+			"off_roi_luma": _lf3_box_roi_luma(model_fill_images[0]),
+			"on_roi_luma": _lf3_box_roi_luma(model_fill_images[1]),
+			"debug": level_e_debug_model_fill(),
+		}
+	level_e_set_model_fill(original_model_fill_enabled)
 
 	for mode: Dictionary in [
 			{"name": "reference", "enabled": false},
@@ -1355,11 +1754,15 @@ func _lf3_box_save_contact_sheet(images: Array[Image], path: String) -> void:
 
 
 func _lf3_box_save_pair(a: Image, b: Image, path: String) -> void:
-	var size := a.get_size()
+	var left := a.duplicate() as Image
+	var right := b.duplicate() as Image
+	left.convert(Image.FORMAT_RGBA8)
+	right.convert(Image.FORMAT_RGBA8)
+	var size: Vector2i = left.get_size()
 	var sheet := Image.create(size.x * 2, size.y, false, Image.FORMAT_RGBA8)
 	sheet.fill(Color.BLACK)
-	sheet.blit_rect(a, Rect2i(Vector2i.ZERO, size), Vector2i.ZERO)
-	sheet.blit_rect(b, Rect2i(Vector2i.ZERO, size), Vector2i(size.x, 0))
+	sheet.blit_rect(left, Rect2i(Vector2i.ZERO, size), Vector2i.ZERO)
+	sheet.blit_rect(right, Rect2i(Vector2i.ZERO, size), Vector2i(size.x, 0))
 	sheet.save_png(path)
 
 
@@ -1514,8 +1917,8 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 		else:
 			_body.add_child(cs)
 	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05 and (force_base or _wall_base_allowed(size)):
-		var bs := Vector3(size.x + 0.05, 0.12, size.z + 0.05)
-		var bpos := Vector3(pos.x, 0.06, pos.z)
+		var bs := Vector3(size.x + BASEBOARD_PAD, BASEBOARD_H, size.z + BASEBOARD_PAD)
+		var bpos := Vector3(pos.x, BASEBOARD_H * 0.5, pos.z)
 		var bb := _emit_ctx if derived else _block_of(bpos)
 		_block_surface(bb, "base").append_from(_get_box(bs), 0, Transform3D(Basis(), bpos))
 		if not derived:
