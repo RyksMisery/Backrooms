@@ -1,0 +1,32 @@
+<svg width="680" height="620" viewBox="0 0 680 620" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Концепт игры Backrooms целиком — сценарий E</title>
+<desc>Схема полного прохождения: старт в центре хаба, кольцо хаба, виток 1 с гейтом, лабиринтом и провалом, виток 2 с аномалией бесконечного коридора, ложным выходом и секретками, финальный ноклип сквозь стены обратно в центр — выход там, где вошёл.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+text{font-family:system-ui,-apple-system,sans-serif;fill:#2C2C2A}
+.t{font-size:14px}.ts{font-size:12px;fill:#5F5E5A}.th{font-size:14px;font-weight:500}
+</style></defs>
+<rect x="0" y="0" width="680" height="620" fill="#FFFFFF"/>
+<text x="60" y="52" class="ts">Виток 2 · Акт 3 — пространство лжёт</text>
+<rect x="60" y="60" width="560" height="480" rx="8" fill="none" stroke="#888780" stroke-width="0.75" stroke-dasharray="5 5"/>
+<text x="140" y="122" class="ts">Виток 1 · Акт 1 — обучение правилам</text>
+<rect x="140" y="130" width="400" height="340" rx="8" fill="none" stroke="#888780" stroke-width="0.75" stroke-dasharray="5 5"/>
+<text x="240" y="202" class="ts">Кольцо хаба</text>
+<rect x="240" y="210" width="200" height="180" rx="8" fill="none" stroke="#888780" stroke-width="0.75" stroke-dasharray="5 5"/>
+<polyline points="340,250 340,155 510,155" fill="none" stroke="#1D9E75" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="515,155 515,445 165,445 165,200 90,200" fill="none" stroke="#1D9E75" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="85,200 85,85 590,85" fill="none" stroke="#1D9E75" stroke-width="2" marker-end="url(#arrow)"/>
+<polyline points="595,85 595,515 352,515" fill="none" stroke="#1D9E75" stroke-width="2" marker-end="url(#arrow)"/>
+<line x1="340" y1="509" x2="340" y2="351" stroke="#D85A30" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<g><rect x="290" y="255" width="100" height="90" rx="6" fill="#FAEEDA" stroke="#854F0B" stroke-width="1"/><text x="340" y="295" class="th" text-anchor="middle" fill="#633806">СТАРТ</text><text x="340" y="315" class="ts" text-anchor="middle" fill="#854F0B">= выход</text></g>
+<g><rect x="390" y="140" width="110" height="30" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/><text x="445" y="159" class="th" text-anchor="middle" fill="#085041">Гейт + лаз</text></g>
+<g><rect x="370" y="430" width="120" height="30" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/><text x="430" y="449" class="th" text-anchor="middle" fill="#085041">Мини-лабиринт</text></g>
+<g><rect x="205" y="430" width="90" height="30" rx="4" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/><text x="250" y="449" class="th" text-anchor="middle" fill="#712B13">Провал</text></g>
+<g><rect x="250" y="63" width="180" height="44" rx="4" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/><text x="340" y="81" class="th" text-anchor="middle" fill="#712B13">Бесконечный коридор</text><text x="340" y="99" class="ts" text-anchor="middle" fill="#993C1D">Акт 2 — аномалия</text></g>
+<g><rect x="415" y="500" width="110" height="30" rx="4" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/><text x="470" y="519" class="th" text-anchor="middle" fill="#712B13">Ложный EXIT</text></g>
+<g><rect x="145" y="500" width="110" height="30" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/><text x="200" y="519" class="th" text-anchor="middle" fill="#085041">Секретки ×3</text></g>
+<line x1="60" y1="578" x2="85" y2="578" stroke="#1D9E75" stroke-width="2"/><text x="92" y="582" class="ts">маршрут</text>
+<rect x="168" y="570" width="14" height="14" rx="3" fill="#FAEEDA" stroke="#854F0B" stroke-width="1"/><text x="190" y="582" class="ts">старт = выход</text>
+<rect x="298" y="570" width="14" height="14" rx="3" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/><text x="320" y="582" class="ts">опасность / аномалия</text>
+<line x1="470" y1="578" x2="495" y2="578" stroke="#D85A30" stroke-width="2" stroke-dasharray="6 5"/><text x="502" y="582" class="ts">финальный ноклип</text>
+</svg>
