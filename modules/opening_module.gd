@@ -38,7 +38,16 @@ const EXIT_SIGN_REFLEX_RANGE := 1.8
 const EXIT_SIGN_REFLEX_ATTEN := 1.2
 # Знак стоит почти вплотную к грани: смещение от ЛИНИИ перегородки `0.3 CELL`
 # минус её половина. Для стены любой толщины отсчёт ведётся от её грани.
-const EXIT_SIGN_FACE_OFFSET := (0.3 - PARTITION_T_CELLS * 0.5) * Architecture.CELL
+#
+# Это функция, а не const: арифметика по двум константам из ДРУГОГО скрипта
+# не считается константным выражением, и из-за неё переставал разбираться
+# весь блок констант, а следом и потребители (`SIGN_REFLEX_COLOR` в level_e).
+const EXIT_SIGN_LINE_OFFSET_CELLS := 0.3
+
+
+static func exit_sign_face_offset() -> float:
+	return (EXIT_SIGN_LINE_OFFSET_CELLS - PARTITION_T_CELLS * 0.5) \
+		* Architecture.CELL
 
 const OFFICE_FRAME_SCENE := preload("res://3d/white_door_comparison_clean.glb")
 const OFFICE_LEAF_SCENE := preload("res://3d/office_door_v2_leaf.tscn")

@@ -304,11 +304,6 @@ func _build_tile_lights(tile: Node3D) -> void:
 			var fixture: Dictionary = lighting.add_level_e_area_ceiling_fixture(
 				tile, local_position, Vector2i.ONE, RING_AREA_ID)
 			var visible_panel := fixture.get("visible_panel") as GeometryInstance3D
-			if visible_panel != null:
-				visible_panel.visibility_range_end = FADE_DARK_DISTANCE
-				visible_panel.visibility_range_end_margin = PANEL_FADE_MARGIN
-				visible_panel.visibility_range_fade_mode = \
-					GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 			var panel := fixture.get("panel") as Light3D
 			var bounce := fixture.get("bounce") as Light3D
 			var legacy := fixture.get("legacy") as Light3D
@@ -340,7 +335,7 @@ func _build_tile_lights(tile: Node3D) -> void:
 				"flick_stutter_v": 1.0,
 				"flick_level": 1.0,
 				"base_material": null,
-				"flick_material": null,
+				"own_material": null,
 			}
 			if visible_panel != null:
 				entry["base_material"] = visible_panel.material_override
@@ -377,7 +372,6 @@ func _apply_tile_outage(tile: Node3D) -> void:
 		var visible_panel = entry.get("visible_panel")
 		if visible_panel != null and is_instance_valid(visible_panel):
 			(visible_panel as Node3D).visible = not is_out
-		_sync_flicker_material(entry)
 
 
 static func _hash01(a: int, b: int) -> float:
@@ -474,7 +468,7 @@ func _build_open_side_wall(parent: Node3D, side: String) -> void:
 	# и получает такой же зеленоватый рефлекс.
 	var sign_position := Vector3(center,
 		(height + Architecture.CEIL_H) * 0.5,
-		inner_z + inward.z * Openings.EXIT_SIGN_FACE_OFFSET)
+		inner_z + inward.z * Openings.exit_sign_face_offset())
 	var sign_root := Openings.spawn_exit_sign(parent, sign_position, inward,
 		"infinite_pit_exit_sign_%s" % side)
 	var reflex := Openings.spawn_exit_sign_reflex(parent, sign_position,
@@ -484,14 +478,10 @@ func _build_open_side_wall(parent: Node3D, side: String) -> void:
 	# области: замер бота показывал постоянные E=0.15 на дистанциях 67..147 м.
 	parent.set_meta("door_reflex", reflex)
 	parent.set_meta("door_reflex_energy", reflex.light_energy)
-	if sign_root != null:
-		for mesh_value in sign_root.find_children("*", "GeometryInstance3D",
-				true, false):
-			var mesh := mesh_value as GeometryInstance3D
-			mesh.visibility_range_end = FADE_DARK_DISTANCE
-			mesh.visibility_range_end_margin = PANEL_FADE_MARGIN
-			mesh.visibility_range_fade_mode = \
-				GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+	# Знак виден только вместе со своим светом: дизеринг `visibility_range`
+	# дал бы то же мерцание, что и у панелей, поэтому просто прячем его,
+	# пока рефлекс погашен (см. _update_door_light_fade).
+	parent.set_meta("door_sign_root", sign_root)
 	# Куда ведёт этот проём — пока не решено: «просто проход в никуда»
 	# (слово автора). Триггера и назначения намеренно нет; здесь же потом
 	# появится вход в ряд ложных комнат.
@@ -554,11 +544,7 @@ func _update_caps(player: Node3D) -> void:
 func _update_light_fade(player: Node3D) -> void:
 	var span := maxf(0.001, FADE_DARK_DISTANCE - FADE_FULL_DISTANCE)
 	for entry: Dictionary in _light_entries:
-		# Гасится всё семейство целиком: area-панель, потолочный bounce и
-		# legacy Omni, если он замещает панель. Иначе за капом остался бы
-		# светить недогашенный член семейства.
-		# Точка отсчёта — САМА ПАНЕЛЬ и 3D-дистанция: ровно то, по чему Годот
-		# снимает её `visibility_range`.
+		# Точка отсчёта — САМА ПАНЕЛЬ и 3D-дистанция.
 		var reference = entry.get("visible_panel")
 		if reference == null or not is_instance_valid(reference):
 			reference = entry.get("panel")
@@ -568,15 +554,19 @@ func _update_light_fade(player: Node3D) -> void:
 			continue
 		var distance := (reference as Node3D).global_position.distance_to(
 			player.global_position)
-		var level := clampf(
+		var fade := clampf(
 			(FADE_DARK_DISTANCE - LIGHT_LEAD_DISTANCE - distance) / span,
 			0.0, 1.0)
-		level = smoothstep(0.0, 1.0, level)
+		fade = smoothstep(0.0, 1.0, fade)
 		if bool(entry["out"]):
-			level = 0.0
-		elif bool(entry["flicker"]):
-			level *= float(entry["flick_level"])
+			fade = 0.0
+		var flick := 1.0
+		if bool(entry["flicker"]):
+			flick = float(entry["flick_level"])
+		var level := fade * flick
 		var lit := level > 0.001
+		# Гасится всё семейство целиком: area-панель, потолочный bounce и
+		# legacy Omni, если он замещает панель.
 		_fade_family_light(entry.get("panel"),
 			float(entry["panel_energy"]), level, lit)
 		if bool(entry["bounce_active"]):
@@ -585,14 +575,68 @@ func _update_light_fade(player: Node3D) -> void:
 		if bool(entry["legacy_active"]):
 			_fade_family_light(entry.get("legacy"),
 				float(entry["legacy_energy"]), level, lit)
+		_apply_panel_level(entry, fade, flick)
+
+
+# Свечение панели следует ТОЙ ЖЕ кривой, что и её лампа.
+#
+# Раньше меш гасился `visibility_range`, а Годот делает это ДИЗЕРИНГОМ — шумом
+# по пикселям. Вблизи панель крупная, и шум читается как плавное появление;
+# вдали панель мелкая, и тот же шум выглядит как мерцание дальних ламп, после
+# которого «резко включается» световой пул. Поэтому диапазона видимости у
+# панелей больше нет: вместо него меняется собственное свечение материала.
+#
+# Материал общий на всё кольцо, поэтому личная копия выдаётся только на время
+# перехода. Полностью зажжённой панели возвращается общий материал, полностью
+# погашенная просто скрывается — лишних материалов не накапливается.
+func _apply_panel_level(entry: Dictionary, fade: float, flick: float) -> void:
+	var panel_value = entry.get("visible_panel")
+	if panel_value == null or not is_instance_valid(panel_value):
+		return
+	var panel := panel_value as GeometryInstance3D
+	if bool(entry["out"]) or fade <= 0.001:
+		panel.visible = false
+		_release_panel_material(entry, panel)
+		return
+	panel.visible = true
+	# Пороги мерцания канонические: панель тускнеет, но не гаснет в ноль.
+	# К расстоянию они не применяются — дальняя панель обязана погаснуть.
+	var albedo_level := fade * maxf(flick, Lighting.FLICK_PANEL_MIN_LEVEL)
+	var emission_level := fade \
+		* maxf(flick, Lighting.FLICK_PANEL_EMISSION_MIN_LEVEL)
+	if albedo_level >= 0.999 and emission_level >= 0.999:
+		_release_panel_material(entry, panel)
+		return
+	if entry.get("own_material") == null:
+		var base := entry.get("base_material") as BaseMaterial3D
+		if base == null:
+			return
+		var copy := base.duplicate() as BaseMaterial3D
+		entry["own_material"] = copy
+		entry["own_albedo"] = copy.albedo_color
+		entry["own_emission"] = copy.emission_energy_multiplier
+		panel.material_override = copy
+	var material := entry["own_material"] as BaseMaterial3D
+	var base_albedo: Color = entry["own_albedo"]
+	material.albedo_color = Color(
+		base_albedo.r * albedo_level,
+		base_albedo.g * albedo_level,
+		base_albedo.b * albedo_level,
+		base_albedo.a)
+	material.emission_energy_multiplier = \
+		float(entry["own_emission"]) * emission_level
+
+
+func _release_panel_material(entry: Dictionary, panel: GeometryInstance3D) -> void:
+	if entry.get("own_material") == null:
+		return
+	panel.material_override = entry.get("base_material")
+	entry["own_material"] = null
 
 
 # Мерцание — тот же принцип, что у панели перед провалом: канонический рисунок
-# сегментов `Lighting.FLICK_PATTERN` со стуттером внутри «dot»-сегмента. Своей
-# кривой кольцо не изобретает, константы общие.
-#
-# Состояние у каждой панели своё (стартовый сегмент — от хеша станции), иначе
-# все мигающие панели кольца мигали бы в унисон.
+# сегментов `Lighting.FLICK_PATTERN` со стуттером внутри «dot»-сегмента.
+# Состояние у каждой панели своё, иначе все мигали бы в унисон.
 func _update_ring_flicker(delta: float, player: Node3D) -> void:
 	_flick_triggered = false
 	_flicker_position = null
@@ -603,7 +647,6 @@ func _update_ring_flicker(delta: float, player: Node3D) -> void:
 			continue
 		var previous := float(entry["flick_level"])
 		_advance_flicker(entry, delta)
-		_apply_flicker_material(entry)
 		var reference = entry.get("panel")
 		if reference == null or not is_instance_valid(reference):
 			reference = entry.get("legacy")
@@ -614,53 +657,7 @@ func _update_ring_flicker(delta: float, player: Node3D) -> void:
 		if distance < nearest:
 			nearest = distance
 			_flicker_position = position
-			# Звук берёт ближайшую мигающую панель: модуль звука ведёт одну
-			# позицию мерцания, и она же даёт затухание по расстоянию.
 			_flick_triggered = float(entry["flick_level"]) < previous - 0.001
-
-
-# Мерцать должна и САМА ПАНЕЛЬ, а не только её лампы: в каноническом рисунке
-# уровня (`_level_e_base_update_pit_flicker`) вместе с энергией меняются
-# albedo и эмиссия материала. Материал панели общий на всё кольцо, поэтому
-# мигающей панели выдаётся личная копия, а когда она перестаёт мигать —
-# возвращается общий материал.
-func _sync_flicker_material(entry: Dictionary) -> void:
-	var panel_value = entry.get("visible_panel")
-	if panel_value == null or not is_instance_valid(panel_value):
-		return
-	var panel := panel_value as GeometryInstance3D
-	if bool(entry["flicker"]):
-		if entry.get("flick_material") == null:
-			var base := entry.get("base_material") as BaseMaterial3D
-			if base == null:
-				return
-			var copy := base.duplicate() as BaseMaterial3D
-			entry["flick_material"] = copy
-			entry["flick_albedo"] = copy.albedo_color
-			entry["flick_emission"] = copy.emission_energy_multiplier
-		panel.material_override = entry["flick_material"]
-	elif entry.get("flick_material") != null:
-		panel.material_override = entry.get("base_material")
-		entry["flick_material"] = null
-
-
-# Уровень свечения панели ограничен снизу теми же каноническими порогами, что
-# и у панели перед провалом: панель не гаснет в ноль, а лишь заметно тускнеет.
-func _apply_flicker_material(entry: Dictionary) -> void:
-	var material = entry.get("flick_material")
-	if material == null:
-		return
-	var level := float(entry["flick_level"])
-	var panel_level := maxf(level, Lighting.FLICK_PANEL_MIN_LEVEL)
-	var emission_level := maxf(level, Lighting.FLICK_PANEL_EMISSION_MIN_LEVEL)
-	var base_albedo: Color = entry["flick_albedo"]
-	(material as BaseMaterial3D).albedo_color = Color(
-		base_albedo.r * panel_level,
-		base_albedo.g * panel_level,
-		base_albedo.b * panel_level,
-		base_albedo.a)
-	(material as BaseMaterial3D).emission_energy_multiplier = \
-		float(entry["flick_emission"]) * emission_level
 
 
 func _advance_flicker(entry: Dictionary, delta: float) -> void:
@@ -722,6 +719,9 @@ func _update_door_light_fade(player: Node3D) -> void:
 	light.light_energy = float(_door_node.get_meta("door_reflex_energy",
 		light.light_energy)) * level
 	light.visible = level > 0.001
+	var sign_root = _door_node.get_meta("door_sign_root", null)
+	if sign_root != null and is_instance_valid(sign_root):
+		(sign_root as Node3D).visible = level > 0.001
 
 
 func _fade_family_light(light_value, base_energy: float, level: float,

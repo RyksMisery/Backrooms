@@ -183,6 +183,8 @@ func _capture(slug: String, note: String) -> void:
 		"flicker": _flicker_state(),
 		"active_areas": _active_area_count(),
 		"door": _door_state(),
+		"bands": _energy_bands(),
+		"recycled": _count_recycled(),
 	})
 
 
@@ -320,6 +322,53 @@ func _door_state() -> Dictionary:
 		"distance": absf(float(_ring.get("_door_world_x")) - eye.x),
 		"lights": lights,
 	}
+
+
+# Суммарная энергия ламп кольца по поясам дальности. Резкое «включение
+# светового пула» проявится скачком в одном поясе между соседними шагами.
+func _energy_bands() -> Dictionary:
+	var eye: Vector3 = _player.global_position
+	var bands := {"d00_20": 0.0, "d20_40": 0.0, "d40_60": 0.0, "d60_plus": 0.0}
+	var visible_far := 0
+	for entry_value in _ring.get("_light_entries"):
+		var entry: Dictionary = entry_value
+		var panel_value = entry.get("visible_panel")
+		if panel_value == null or not is_instance_valid(panel_value):
+			continue
+		var distance: float = (panel_value as Node3D).global_position \
+			.distance_to(eye)
+		var energy := _entry_energy(entry)
+		if energy <= 0.0:
+			continue
+		if distance < 20.0:
+			bands["d00_20"] += energy
+		elif distance < 40.0:
+			bands["d20_40"] += energy
+		elif distance < 60.0:
+			bands["d40_60"] += energy
+		else:
+			bands["d60_plus"] += energy
+			visible_far += 1
+	bands["lit_beyond_60m"] = visible_far
+	return bands
+
+
+# Сколько секций переставилось с прошлого замера: рециклинг — главный
+# подозреваемый на «включение целой области».
+var _last_tile_x: Array = []
+
+
+func _count_recycled() -> int:
+	var current: Array = []
+	for tile_value in _ring.get("_tiles"):
+		current.append((tile_value as Node3D).position.x)
+	var moved := 0
+	if _last_tile_x.size() == current.size():
+		for index in range(current.size()):
+			if absf(float(current[index]) - float(_last_tile_x[index])) > 1.0:
+				moved += 1
+	_last_tile_x = current
+	return moved
 
 
 func _entry_energy(entry: Dictionary) -> float:

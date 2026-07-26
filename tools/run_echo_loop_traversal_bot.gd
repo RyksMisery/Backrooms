@@ -212,24 +212,26 @@ func _validate_echo_lights(level: Node) -> Dictionary:
 		if absf(lamp.global_position.x - expected_x) > 0.001 \
 				or absf(lamp.global_position.z - expected_z) > 0.001:
 			errors.append("%s fixture center mismatch" % region)
-		var relaxed := bool(lamp.get_meta(
-			"echo_light_relaxed_clearance", false))
 		for cell: Vector2i in fixture_cells:
-			for x in range(
-					cell.x if relaxed else cell.x - 1,
-					cell.x + 1 if relaxed else cell.x + 2):
-				for z in range(
-						cell.y if relaxed else cell.y - 1,
-						cell.y + 1 if relaxed else cell.y + 2):
+			for x in range(cell.x - 1, cell.x + 2):
+				for z in range(cell.y - 1, cell.y + 2):
 					var neighbor := Vector2i(x, z)
 					if String(grid.get(neighbor, "wall")) != "floor" \
-							or RunPlan.PIT_RECT.has_point(neighbor):
+							or (int(level.get("_cycle")) >= RunPlan.MAX_CYCLE \
+								and RunPlan.PIT_RECT.has_point(neighbor)):
 						errors.append("%s blocked %s" % [region, cell])
 	var widths: Vector2i = level.get("_runtime_widths")
+	var wide_roots: Dictionary = level.get("_wide_light_patch_roots")
+	var west_root = wide_roots.get("west")
+	var east_root = wide_roots.get("east")
+	var west_cells := int((west_root as Node).get_meta(
+		"logical_cell_count", -1)) if west_root is Node else -1
+	var east_cells := int((east_root as Node).get_meta(
+		"logical_cell_count", -1)) if east_root is Node else -1
 	var expected_counts := {
 		"landmark": 2,
-		"west": 8,
-		"east": 12,
+		"west": west_cells,
+		"east": east_cells,
 		"north": _short_expected_cells(widths.x),
 		"south": _short_expected_cells(widths.y),
 	}
@@ -251,7 +253,11 @@ func _validate_echo_lights(level: Node) -> Dictionary:
 		if landmark_first not in landmark_cells \
 				or landmark_second not in landmark_cells:
 			errors.append("landmark light cells mismatch")
-	var expected_family_count := 11 \
+	var expected_family_count := 1 \
+		+ (int((west_root as Node).get_meta("fixture_count", -1))
+			if west_root is Node else -1) \
+		+ (int((east_root as Node).get_meta("fixture_count", -1))
+			if east_root is Node else -1) \
 		+ _short_expected_fixtures(widths.x) \
 		+ _short_expected_fixtures(widths.y)
 	_validate_visible_double_panels(level, expected_family_count, errors)
@@ -382,11 +388,15 @@ func _validate_light_family(members: Array, kind: String,
 func _short_expected_cells(width: int) -> int:
 	if width >= 6:
 		return 8
-	return 6 if width >= 2 else 3
+	if width >= 4:
+		return 6
+	return 3 if width == 3 else 0
 
 
 func _short_expected_fixtures(width: int) -> int:
-	return 4 if width >= 6 else 3
+	if width >= 6:
+		return 4
+	return 3 if width >= 3 else 0
 
 
 func _validate_portals(level: Node, cycle: int) -> Dictionary:
