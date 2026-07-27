@@ -211,3 +211,4 @@ Godot `4.7.stable`, Forward+, Radeon Pro 5500M:
 - `LF3_LEVEL_E_SHADOW_PROFILE_OK`;
 - integration `16-48-36`: `passed=true`, все состояния восстановлены,
   main commit mean/max `0.514/0.625 ms`.
+- ручной визуальный проход автора: расхождений не обнаружено, результат принят.
