@@ -17,7 +17,11 @@ func _run() -> void:
 	for _frame in range(12):
 		await process_frame
 	if not level.has_method("lf3_debug_shadow_state") \
-			or not level.has_method("lf3_set_shadow_mode"):
+			or not level.has_method("lf3_set_shadow_mode") \
+			or not level.has_method("lf3_set_receiver_priority") \
+			or not level.has_method("lf3_set_angular_visibility") \
+			or not level.has_method("lf3_set_guardian_view") \
+			or not level.has_method("lf3_toggle_guardian_test"):
 		_fail("level_e LF3 debug API is missing")
 		return
 	if not level.has_method("level_e_set_final_audio") \
@@ -74,6 +78,52 @@ func _run() -> void:
 			or String(production_before.get("profile", "")) != "LF3-11F":
 		_fail("level_e did not start in final LF3-11F")
 		return
+	level.call("lf3_toggle_guardian_test")
+	for _frame in range(4):
+		await process_frame
+	var manual_toggle_11g: Dictionary = level.call("lf3_debug_shadow_state")
+	if String(manual_toggle_11g.get("profile", "")) != "LF3-11G":
+		_fail("manual key-0 equivalent did not activate LF3-11G")
+		return
+	level.call("lf3_toggle_guardian_test")
+	for _frame in range(4):
+		await process_frame
+	var manual_toggle_11f: Dictionary = level.call("lf3_debug_shadow_state")
+	if String(manual_toggle_11f.get("profile", "")) != "LF3-11F":
+		_fail("manual key-0 equivalent did not restore LF3-11F")
+		return
+	level.call("lf3_set_receiver_priority", true)
+	for _frame in range(4):
+		await process_frame
+	var checkpoint_11r: Dictionary = level.call("lf3_debug_shadow_state")
+	if String(checkpoint_11r.get("profile", "")) != "LF3-11R":
+		_fail("receiver-first LF3-11R checkpoint did not activate")
+		return
+	level.call("lf3_set_receiver_priority", false)
+	for _frame in range(4):
+		await process_frame
+	level.call("lf3_set_angular_visibility", true)
+	for _frame in range(4):
+		await process_frame
+	var checkpoint_11a: Dictionary = level.call("lf3_debug_shadow_state")
+	if String(checkpoint_11a.get("profile", "")) != "LF3-11A" \
+			or int(checkpoint_11a.get("active_shadows", 0)) > 11:
+		_fail("angular LF3-11A checkpoint did not respect its profile")
+		return
+	level.call("lf3_set_angular_visibility", false)
+	for _frame in range(4):
+		await process_frame
+	level.call("lf3_set_guardian_view", true)
+	for _frame in range(4):
+		await process_frame
+	var checkpoint_11g: Dictionary = level.call("lf3_debug_shadow_state")
+	if String(checkpoint_11g.get("profile", "")) != "LF3-11G" \
+			or int(checkpoint_11g.get("active_shadows", 0)) > 11:
+		_fail("guardian/view LF3-11G checkpoint did not respect its profile")
+		return
+	level.call("lf3_set_guardian_view", false)
+	for _frame in range(4):
+		await process_frame
 	level.call("lf3_set_shadow_mode", false)
 	for _frame in range(4):
 		await process_frame
@@ -172,6 +222,11 @@ func _run() -> void:
 		return
 	print("LF3_LEVEL_E_SHADOW_PROFILE_OK: ", JSON.stringify({
 		"production_before": production_before,
+		"manual_toggle_11g": manual_toggle_11g,
+		"manual_toggle_11f": manual_toggle_11f,
+		"checkpoint_11r": checkpoint_11r,
+		"checkpoint_11a": checkpoint_11a,
+		"checkpoint_11g": checkpoint_11g,
 		"reference": reference_before,
 		"experiment": experiment,
 		"handoff": {

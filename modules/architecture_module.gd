@@ -139,12 +139,13 @@ static func apply_render_profile(viewport: Viewport) -> void:
 # для нечётных модулей 15×15 и при последующем перемещении parent-модуля.
 func add_box(parent: Node3D, node_name: String, size: Vector3,
 		local_position: Vector3, material_key: String, collide := true,
-		add_baseboard := false) -> MeshInstance3D:
+		add_baseboard := false,
+		omit_face_normal := Vector3.ZERO) -> MeshInstance3D:
 	var source := BoxMesh.new()
 	source.size = size
 	var surface := SurfaceTool.new()
 	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	surface.append_from(source, 0, Transform3D(Basis.IDENTITY, local_position))
+	_append_box_geometry(surface, source, local_position, omit_face_normal)
 	var instance := MeshInstance3D.new()
 	instance.name = node_name
 	instance.mesh = surface.commit()
@@ -166,14 +167,50 @@ func add_box(parent: Node3D, node_name: String, size: Vector3,
 		add_box(parent, "%s_baseboard" % node_name,
 			Vector3(size.x + BASEBOARD_PAD, BASEBOARD_H, size.z + BASEBOARD_PAD),
 			Vector3(local_position.x, BASEBOARD_H * 0.5, local_position.z),
-			"baseboard", false, false)
+			"baseboard", false, false, omit_face_normal)
 	return instance
+
+
+func _append_box_geometry(surface: SurfaceTool, source: BoxMesh,
+		local_position: Vector3, omit_face_normal: Vector3) -> void:
+	if omit_face_normal.is_zero_approx():
+		surface.append_from(source, 0,
+			Transform3D(Basis.IDENTITY, local_position))
+		return
+	var arrays := source.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var corner_count := indices.size() if not indices.is_empty() else vertices.size()
+	var omitted := omit_face_normal.normalized()
+	for triangle in range(0, corner_count, 3):
+		var vertex_indices: Array[int] = []
+		for corner in range(3):
+			vertex_indices.append(indices[triangle + corner] \
+				if not indices.is_empty() else triangle + corner)
+		var face_normal := Vector3.ZERO
+		for vertex_index in vertex_indices:
+			if not normals.is_empty():
+				face_normal += normals[vertex_index]
+		if face_normal.is_zero_approx():
+			face_normal = (vertices[vertex_indices[1]] - vertices[vertex_indices[0]]).cross(
+				vertices[vertex_indices[2]] - vertices[vertex_indices[0]])
+		if face_normal.normalized().dot(omitted) > 0.999:
+			continue
+		for vertex_index in vertex_indices:
+			if not normals.is_empty():
+				surface.set_normal(normals[vertex_index])
+			if not uvs.is_empty():
+				surface.set_uv(uvs[vertex_index])
+			surface.add_vertex(vertices[vertex_index] + local_position)
 
 
 # Стандартный зал: точный интерьер 15×15, трёхклеточная внешняя стена,
 # запечённые пол/потолок, плинтус и сеточные проёмы. Уровень сообщает только
 # стороны и якоря проёмов.
-func build_standard_hall(parent: Node3D, openings: Array = []) -> Dictionary:
+func build_standard_hall(parent: Node3D, openings: Array = [],
+		options: Dictionary = {}) -> Dictionary:
 	var room_size := float(ROOM_CELLS) * CELL
 	var room_center := room_size * 0.5
 	var outer_wall := float(WALL_CELLS) * CELL
@@ -186,20 +223,149 @@ func build_standard_hall(parent: Node3D, openings: Array = []) -> Dictionary:
 		var side := String(opening.get("side", ""))
 		if by_side.has(side):
 			by_side[side].append(opening)
+	var omit_outer_faces: Array = options.get("omit_outer_faces", [])
+	var threshold_outer_trim_m: Dictionary = options.get(
+		"threshold_outer_trim_m", {})
+	var west_recess := _portal_recess_spec(options, "west", room_size, outer_wall)
+	var east_recess := _portal_recess_spec(options, "east", room_size, outer_wall)
+	var north_recess := _portal_recess_spec(options, "north", room_size, outer_wall)
+	var south_recess := _portal_recess_spec(options, "south", room_size, outer_wall)
 	_build_hall_wall_x(parent, "west", -outer_wall * 0.5, -outer_wall,
-		room_size + outer_wall, outer_wall, by_side["west"])
+		room_size + outer_wall, outer_wall, by_side["west"],
+		Vector3.LEFT if "west" in omit_outer_faces else Vector3.ZERO,
+		float(threshold_outer_trim_m.get("west", 0.0)), west_recess)
 	_build_hall_wall_x(parent, "east", room_size + outer_wall * 0.5,
-		-outer_wall, room_size + outer_wall, outer_wall, by_side["east"])
+		-outer_wall, room_size + outer_wall, outer_wall, by_side["east"],
+		Vector3.RIGHT if "east" in omit_outer_faces else Vector3.ZERO,
+		float(threshold_outer_trim_m.get("east", 0.0)), east_recess)
 	_build_hall_wall_z(parent, "north", -outer_wall * 0.5,
-		0.0, room_size, outer_wall, by_side["north"])
+		0.0, room_size, outer_wall, by_side["north"],
+		Vector3.FORWARD if "north" in omit_outer_faces else Vector3.ZERO,
+		float(threshold_outer_trim_m.get("north", 0.0)), north_recess)
 	_build_hall_wall_z(parent, "south", room_size + outer_wall * 0.5,
-		0.0, room_size, outer_wall, by_side["south"])
+		0.0, room_size, outer_wall, by_side["south"],
+		Vector3.BACK if "south" in omit_outer_faces else Vector3.ZERO,
+		float(threshold_outer_trim_m.get("south", 0.0)), south_recess)
 	return {"room_size": room_size, "room_center": room_center,
 		"outer_wall": outer_wall}
 
 
+# Строит произвольную составную область напрямую из канонической occupancy-
+# сетки. Смежные клетки схлопываются в прямоугольники, поэтому маска остаётся
+# источником истины, но не создаёт отдельный меш и collision на каждую клетку.
+func build_occupancy_plan(parent: Node3D, grid: Dictionary,
+		gmin: Vector2i, gmax: Vector2i) -> Dictionary:
+	var floor_cells := {}
+	var wall_cells := {}
+	for x in range(gmin.x, gmax.x + 1):
+		for z in range(gmin.y, gmax.y + 1):
+			var cell := Vector2i(x, z)
+			if String(grid.get(cell, "wall")) in ["floor", "passage"]:
+				floor_cells[cell] = true
+			else:
+				wall_cells[cell] = true
+	var floor_rects := _merge_cell_rects(floor_cells, gmin, gmax)
+	var wall_rects := _merge_cell_rects(wall_cells, gmin, gmax)
+	for index in range(floor_rects.size()):
+		var rect: Rect2i = floor_rects[index]
+		var size := Vector3(rect.size.x * CELL, SLAB_T, rect.size.y * CELL)
+		var center := Vector3(
+			(rect.position.x + rect.size.x * 0.5) * CELL,
+			-SLAB_T * 0.5,
+			(rect.position.y + rect.size.y * 0.5) * CELL)
+		add_box(parent, "occupancy_floor_%03d" % index, size, center,
+			"floor", true)
+	var plan_size := Vector3(
+		(gmax.x - gmin.x + 1) * CELL,
+		SLAB_T,
+		(gmax.y - gmin.y + 1) * CELL)
+	var plan_center := Vector3(
+		(float(gmin.x + gmax.x + 1) * 0.5) * CELL,
+		CEIL_H + SLAB_T * 0.5,
+		(float(gmin.y + gmax.y + 1) * 0.5) * CELL)
+	add_box(parent, "occupancy_ceiling", plan_size, plan_center,
+		"ceiling", false)
+	for index in range(wall_rects.size()):
+		var rect: Rect2i = wall_rects[index]
+		add_box(parent, "occupancy_wall_%03d" % index,
+			Vector3(rect.size.x * CELL, CEIL_H, rect.size.y * CELL),
+			Vector3(
+				(rect.position.x + rect.size.x * 0.5) * CELL,
+				CEIL_H * 0.5,
+				(rect.position.y + rect.size.y * 0.5) * CELL),
+			"wall", true, true)
+	return {"floor_rects": floor_rects, "wall_rects": wall_rects}
+
+
+static func _merge_cell_rects(cells: Dictionary, gmin: Vector2i,
+		gmax: Vector2i) -> Array[Rect2i]:
+	var result: Array[Rect2i] = []
+	var used := {}
+	for z in range(gmin.y, gmax.y + 1):
+		for x in range(gmin.x, gmax.x + 1):
+			var start := Vector2i(x, z)
+			if not cells.has(start) or used.has(start):
+				continue
+			var width := 1
+			while x + width <= gmax.x:
+				var next := Vector2i(x + width, z)
+				if not cells.has(next) or used.has(next):
+					break
+				width += 1
+			var height := 1
+			while z + height <= gmax.y:
+				var complete_row := true
+				for offset_x in range(width):
+					var next := Vector2i(x + offset_x, z + height)
+					if not cells.has(next) or used.has(next):
+						complete_row = false
+						break
+				if not complete_row:
+					break
+				height += 1
+			for offset_z in range(height):
+				for offset_x in range(width):
+					used[Vector2i(x + offset_x, z + offset_z)] = true
+			result.append(Rect2i(start, Vector2i(width, height)))
+	return result
+
+
+func _portal_recess_spec(options: Dictionary, side: String, room_size: float,
+		wall_depth: float) -> Dictionary:
+	var config: Dictionary = options.get("portal_recess", {})
+	var sides: Array = config.get("sides", [])
+	if side not in sides:
+		return {}
+	var side_margin := maxf(0.0,
+		float(config.get("side_margin_cells", 1.0)) * CELL)
+	var top_margin := clampf(
+		float(config.get("top_margin_cells", 0.5)) * CELL, 0.0, CEIL_H)
+	var recess_depth := clampf(
+		float(config.get("depth_cells", 0.5)) * CELL, 0.0,
+		maxf(0.0, wall_depth - 0.001))
+	var divider_width := clampf(
+		float(config.get("center_divider_cells", 0.0)) * CELL, 0.0,
+		maxf(0.0, room_size - side_margin * 2.0))
+	if room_size - side_margin <= side_margin or recess_depth <= 0.001:
+		return {}
+	return {
+		"lo": side_margin,
+		"hi": room_size - side_margin,
+		"top": CEIL_H - top_margin,
+		"depth": recess_depth,
+		"divider_width": divider_width,
+	}
+
+
 func _build_hall_wall_x(parent: Node3D, side: String, wall_x: float,
-		span_lo: float, span_hi: float, depth: float, openings: Array) -> void:
+		span_lo: float, span_hi: float, depth: float, openings: Array,
+		omit_face_normal: Vector3, threshold_outer_trim: float,
+		portal_recess: Dictionary) -> void:
+	if not portal_recess.is_empty():
+		_build_portal_recess_wall_x(parent, side, wall_x, span_lo, span_hi,
+			depth, openings, omit_face_normal, threshold_outer_trim,
+			portal_recess)
+		return
 	var sorted := openings.duplicate()
 	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a.get("center_cells", 7.5)) < float(b.get("center_cells", 7.5)))
@@ -215,14 +381,19 @@ func _build_hall_wall_x(parent: Node3D, side: String, wall_x: float,
 			add_box(parent, "%s_wall_%d" % [side, index],
 				Vector3(depth, CEIL_H, lo - cursor),
 				Vector3(wall_x, CEIL_H * 0.5, (cursor + lo) * 0.5),
-				"wall", true, true)
+				"wall", true, true, omit_face_normal)
 		if height < CEIL_H:
 			add_box(parent, "%s_lintel_%d" % [side, index],
 				Vector3(depth, CEIL_H - height, width),
-				Vector3(wall_x, (height + CEIL_H) * 0.5, center), "wall", true)
-		add_box(parent, "%s_reveal_floor_%d" % [side, index],
-			Vector3(depth, SLAB_T, width),
-			Vector3(wall_x, -SLAB_T * 0.5, center), "floor", true)
+				Vector3(wall_x, (height + CEIL_H) * 0.5, center), "wall",
+				true, false, omit_face_normal)
+		var reveal_depth := maxf(0.0, depth - threshold_outer_trim)
+		if reveal_depth > 0.001:
+			var outward_x := -1.0 if side == "west" else 1.0
+			add_box(parent, "%s_reveal_floor_%d" % [side, index],
+				Vector3(reveal_depth, SLAB_T, width),
+				Vector3(wall_x - outward_x * threshold_outer_trim * 0.5,
+					-SLAB_T * 0.5, center), "floor", true)
 		add_box(parent, "%s_reveal_ceiling_%d" % [side, index],
 			Vector3(depth, SLAB_T, width),
 			Vector3(wall_x, CEIL_H + SLAB_T * 0.5, center), "ceiling", false)
@@ -231,11 +402,18 @@ func _build_hall_wall_x(parent: Node3D, side: String, wall_x: float,
 		add_box(parent, "%s_wall_end" % side,
 			Vector3(depth, CEIL_H, span_hi - cursor),
 			Vector3(wall_x, CEIL_H * 0.5, (cursor + span_hi) * 0.5),
-			"wall", true, true)
+			"wall", true, true, omit_face_normal)
 
 
 func _build_hall_wall_z(parent: Node3D, side: String, wall_z: float,
-		span_lo: float, span_hi: float, depth: float, openings: Array) -> void:
+		span_lo: float, span_hi: float, depth: float, openings: Array,
+		omit_face_normal: Vector3, threshold_outer_trim: float,
+		portal_recess: Dictionary) -> void:
+	if not portal_recess.is_empty():
+		_build_portal_recess_wall_z(parent, side, wall_z, span_lo, span_hi,
+			depth, openings, omit_face_normal, threshold_outer_trim,
+			portal_recess)
+		return
 	var sorted := openings.duplicate()
 	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return float(a.get("center_cells", 7.5)) < float(b.get("center_cells", 7.5)))
@@ -251,14 +429,20 @@ func _build_hall_wall_z(parent: Node3D, side: String, wall_z: float,
 			add_box(parent, "%s_wall_%d" % [side, index],
 				Vector3(lo - cursor, CEIL_H, depth),
 				Vector3((cursor + lo) * 0.5, CEIL_H * 0.5, wall_z),
-				"wall", true, true)
+				"wall", true, true, omit_face_normal)
 		if height < CEIL_H:
 			add_box(parent, "%s_lintel_%d" % [side, index],
 				Vector3(width, CEIL_H - height, depth),
-				Vector3(center, (height + CEIL_H) * 0.5, wall_z), "wall", true)
-		add_box(parent, "%s_reveal_floor_%d" % [side, index],
-			Vector3(width, SLAB_T, depth),
-			Vector3(center, -SLAB_T * 0.5, wall_z), "floor", true)
+				Vector3(center, (height + CEIL_H) * 0.5, wall_z), "wall",
+				true, false, omit_face_normal)
+		var reveal_depth := maxf(0.0, depth - threshold_outer_trim)
+		if reveal_depth > 0.001:
+			var outward_z := -1.0 if side == "north" else 1.0
+			add_box(parent, "%s_reveal_floor_%d" % [side, index],
+				Vector3(width, SLAB_T, reveal_depth),
+				Vector3(center, -SLAB_T * 0.5,
+					wall_z - outward_z * threshold_outer_trim * 0.5),
+				"floor", true)
 		add_box(parent, "%s_reveal_ceiling_%d" % [side, index],
 			Vector3(width, SLAB_T, depth),
 			Vector3(center, CEIL_H + SLAB_T * 0.5, wall_z), "ceiling", false)
@@ -267,7 +451,162 @@ func _build_hall_wall_z(parent: Node3D, side: String, wall_z: float,
 		add_box(parent, "%s_wall_end" % side,
 			Vector3(span_hi - cursor, CEIL_H, depth),
 			Vector3((cursor + span_hi) * 0.5, CEIL_H * 0.5, wall_z),
-			"wall", true, true)
+			"wall", true, true, omit_face_normal)
+
+
+func _build_portal_recess_wall_x(parent: Node3D, side: String, wall_x: float,
+		span_lo: float, span_hi: float, depth: float, openings: Array,
+		omit_face_normal: Vector3, threshold_outer_trim: float,
+		recess: Dictionary) -> void:
+	var recess_lo := float(recess["lo"])
+	var recess_hi := float(recess["hi"])
+	var recess_top := float(recess["top"])
+	var recess_depth := float(recess["depth"])
+	var outward_x := -1.0 if side == "west" else 1.0
+	var back_depth := depth - recess_depth
+	var back_x := wall_x + outward_x * recess_depth * 0.5
+	add_box(parent, "%s_portal_side_a" % side,
+		Vector3(depth, CEIL_H, recess_lo - span_lo),
+		Vector3(wall_x, CEIL_H * 0.5, (span_lo + recess_lo) * 0.5),
+		"wall", true, true, omit_face_normal)
+	add_box(parent, "%s_portal_side_b" % side,
+		Vector3(depth, CEIL_H, span_hi - recess_hi),
+		Vector3(wall_x, CEIL_H * 0.5, (recess_hi + span_hi) * 0.5),
+		"wall", true, true, omit_face_normal)
+	if recess_top < CEIL_H:
+		add_box(parent, "%s_portal_top" % side,
+			Vector3(depth, CEIL_H - recess_top, recess_hi - recess_lo),
+			Vector3(wall_x, (recess_top + CEIL_H) * 0.5,
+				(recess_lo + recess_hi) * 0.5), "wall", true, false,
+			omit_face_normal)
+	var inner_x := wall_x - outward_x * depth * 0.5
+	add_box(parent, "%s_portal_floor" % side,
+		Vector3(recess_depth, SLAB_T, recess_hi - recess_lo),
+		Vector3(inner_x + outward_x * recess_depth * 0.5,
+			-SLAB_T * 0.5, (recess_lo + recess_hi) * 0.5), "floor", true)
+	var divider_width := float(recess.get("divider_width", 0.0))
+	if divider_width > 0.001:
+		add_box(parent, "%s_portal_center_divider" % side,
+			Vector3(recess_depth, recess_top, divider_width),
+			Vector3(inner_x + outward_x * recess_depth * 0.5,
+				recess_top * 0.5, (recess_lo + recess_hi) * 0.5),
+			"wall", true, true, Vector3(outward_x, 0.0, 0.0))
+	var sorted := openings.duplicate()
+	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("center_cells", 7.5)) \
+			< float(b.get("center_cells", 7.5)))
+	var cursor := recess_lo
+	for index in range(sorted.size()):
+		var opening: Dictionary = sorted[index]
+		var center := opening_anchor(float(opening.get("center_cells", 7.5))) * CELL
+		var width := float(opening.get("width_m", CELL))
+		var height := float(opening.get("height_m", CEIL_H))
+		var lo := center - width * 0.5
+		var hi := center + width * 0.5
+		if lo > cursor:
+			add_box(parent, "%s_portal_back_%d" % [side, index],
+				Vector3(back_depth, recess_top, lo - cursor),
+				Vector3(back_x, recess_top * 0.5, (cursor + lo) * 0.5),
+				"wall", true, true, omit_face_normal)
+		if height < recess_top:
+			add_box(parent, "%s_portal_lintel_%d" % [side, index],
+				Vector3(back_depth, recess_top - height, width),
+				Vector3(back_x, (height + recess_top) * 0.5, center),
+				"wall", true, false, omit_face_normal)
+		var reveal_depth := maxf(0.0, back_depth - threshold_outer_trim)
+		if reveal_depth > 0.001:
+			add_box(parent, "%s_reveal_floor_%d" % [side, index],
+				Vector3(reveal_depth, SLAB_T, width),
+				Vector3(back_x - outward_x * threshold_outer_trim * 0.5,
+					-SLAB_T * 0.5, center), "floor", true)
+		add_box(parent, "%s_reveal_ceiling_%d" % [side, index],
+			Vector3(back_depth, SLAB_T, width),
+			Vector3(back_x, CEIL_H + SLAB_T * 0.5, center),
+			"ceiling", false)
+		cursor = hi
+	if cursor < recess_hi:
+		add_box(parent, "%s_portal_back_end" % side,
+			Vector3(back_depth, recess_top, recess_hi - cursor),
+			Vector3(back_x, recess_top * 0.5, (cursor + recess_hi) * 0.5),
+			"wall", true, true, omit_face_normal)
+
+
+func _build_portal_recess_wall_z(parent: Node3D, side: String, wall_z: float,
+		span_lo: float, span_hi: float, depth: float, openings: Array,
+		omit_face_normal: Vector3, threshold_outer_trim: float,
+		recess: Dictionary) -> void:
+	var recess_lo := float(recess["lo"])
+	var recess_hi := float(recess["hi"])
+	var recess_top := float(recess["top"])
+	var recess_depth := float(recess["depth"])
+	var outward_z := -1.0 if side == "north" else 1.0
+	var back_depth := depth - recess_depth
+	var back_z := wall_z + outward_z * recess_depth * 0.5
+	add_box(parent, "%s_portal_side_a" % side,
+		Vector3(recess_lo - span_lo, CEIL_H, depth),
+		Vector3((span_lo + recess_lo) * 0.5, CEIL_H * 0.5, wall_z),
+		"wall", true, true, omit_face_normal)
+	add_box(parent, "%s_portal_side_b" % side,
+		Vector3(span_hi - recess_hi, CEIL_H, depth),
+		Vector3((recess_hi + span_hi) * 0.5, CEIL_H * 0.5, wall_z),
+		"wall", true, true, omit_face_normal)
+	if recess_top < CEIL_H:
+		add_box(parent, "%s_portal_top" % side,
+			Vector3(recess_hi - recess_lo, CEIL_H - recess_top, depth),
+			Vector3((recess_lo + recess_hi) * 0.5,
+				(recess_top + CEIL_H) * 0.5, wall_z), "wall", true, false,
+			omit_face_normal)
+	var inner_z := wall_z - outward_z * depth * 0.5
+	add_box(parent, "%s_portal_floor" % side,
+		Vector3(recess_hi - recess_lo, SLAB_T, recess_depth),
+		Vector3((recess_lo + recess_hi) * 0.5, -SLAB_T * 0.5,
+			inner_z + outward_z * recess_depth * 0.5), "floor", true)
+	var divider_width := float(recess.get("divider_width", 0.0))
+	if divider_width > 0.001:
+		add_box(parent, "%s_portal_center_divider" % side,
+			Vector3(divider_width, recess_top, recess_depth),
+			Vector3((recess_lo + recess_hi) * 0.5, recess_top * 0.5,
+				inner_z + outward_z * recess_depth * 0.5),
+			"wall", true, true, Vector3(0.0, 0.0, outward_z))
+	var sorted := openings.duplicate()
+	sorted.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a.get("center_cells", 7.5)) \
+			< float(b.get("center_cells", 7.5)))
+	var cursor := recess_lo
+	for index in range(sorted.size()):
+		var opening: Dictionary = sorted[index]
+		var center := opening_anchor(float(opening.get("center_cells", 7.5))) * CELL
+		var width := float(opening.get("width_m", CELL))
+		var height := float(opening.get("height_m", CEIL_H))
+		var lo := center - width * 0.5
+		var hi := center + width * 0.5
+		if lo > cursor:
+			add_box(parent, "%s_portal_back_%d" % [side, index],
+				Vector3(lo - cursor, recess_top, back_depth),
+				Vector3((cursor + lo) * 0.5, recess_top * 0.5, back_z),
+				"wall", true, true, omit_face_normal)
+		if height < recess_top:
+			add_box(parent, "%s_portal_lintel_%d" % [side, index],
+				Vector3(width, recess_top - height, back_depth),
+				Vector3(center, (height + recess_top) * 0.5, back_z),
+				"wall", true, false, omit_face_normal)
+		var reveal_depth := maxf(0.0, back_depth - threshold_outer_trim)
+		if reveal_depth > 0.001:
+			add_box(parent, "%s_reveal_floor_%d" % [side, index],
+				Vector3(width, SLAB_T, reveal_depth),
+				Vector3(center, -SLAB_T * 0.5,
+					back_z - outward_z * threshold_outer_trim * 0.5),
+				"floor", true)
+		add_box(parent, "%s_reveal_ceiling_%d" % [side, index],
+			Vector3(width, SLAB_T, back_depth),
+			Vector3(center, CEIL_H + SLAB_T * 0.5, back_z),
+			"ceiling", false)
+		cursor = hi
+	if cursor < recess_hi:
+		add_box(parent, "%s_portal_back_end" % side,
+			Vector3(recess_hi - cursor, recess_top, back_depth),
+			Vector3((cursor + recess_hi) * 0.5, recess_top * 0.5, back_z),
+			"wall", true, true, omit_face_normal)
 
 
 static func cell_center(cell: Vector2i, y := 0.0) -> Vector3:

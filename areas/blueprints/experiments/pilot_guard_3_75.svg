@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1122" height="1272" viewBox="0 0 1122 1272">
+<rect width="100%%" height="100%%" fill="#f4f1e8"/>
+<style>text{font-family:Arial,sans-serif;fill:#222}.small{font-size:13px}.id{font-size:12px;font-weight:700}.title{font-size:25px;font-weight:700}.legend{font-size:14px}</style>
+<text x="120.0" y="42" class="title">Пилотный зал смешанного веса</text>
+<text x="120.0" y="68" class="legend">AreaSpec v1 · интерьер 15×15 · панель 1.25 м</text>
+<rect x="120.0" y="120.0" width="882.0" height="882.0" fill="#202329" stroke="#111" stroke-width="2.0" rx="0.0"/>
+<rect x="246.0" y="246.0" width="630.0" height="630.0" fill="#fffdf6" stroke="#111" stroke-width="2.0" rx="0.0"/>
+<rect x="330.0" y="120.0" width="126.0" height="126.0" fill="#fffdf6" stroke="#ef5c45" stroke-width="2.0" rx="0.0"/><text x="393.0" y="183.0" text-anchor="middle" dominant-baseline="middle" class="id">north_entry</text>
+<rect x="666.0" y="876.0" width="126.0" height="126.0" fill="#fffdf6" stroke="#ef5c45" stroke-width="2.0" rx="0.0"/><text x="729.0" y="939.0" text-anchor="middle" dominant-baseline="middle" class="id">south_exit</text>
+<line x1="120.0" y1="120.0" x2="120.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="120.0" x2="1002.0" y2="120.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="162.0" y1="120.0" x2="162.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="162.0" x2="1002.0" y2="162.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="204.0" y1="120.0" x2="204.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="204.0" x2="1002.0" y2="204.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="246.0" y1="120.0" x2="246.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="246.0" x2="1002.0" y2="246.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="288.0" y1="120.0" x2="288.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="288.0" x2="1002.0" y2="288.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="330.0" y1="120.0" x2="330.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="330.0" x2="1002.0" y2="330.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="372.0" y1="120.0" x2="372.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="372.0" x2="1002.0" y2="372.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="414.0" y1="120.0" x2="414.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="414.0" x2="1002.0" y2="414.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="456.0" y1="120.0" x2="456.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="456.0" x2="1002.0" y2="456.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="498.0" y1="120.0" x2="498.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="498.0" x2="1002.0" y2="498.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="540.0" y1="120.0" x2="540.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="540.0" x2="1002.0" y2="540.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="582.0" y1="120.0" x2="582.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="582.0" x2="1002.0" y2="582.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="624.0" y1="120.0" x2="624.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="624.0" x2="1002.0" y2="624.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="666.0" y1="120.0" x2="666.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="666.0" x2="1002.0" y2="666.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="708.0" y1="120.0" x2="708.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="708.0" x2="1002.0" y2="708.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="750.0" y1="120.0" x2="750.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="750.0" x2="1002.0" y2="750.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="792.0" y1="120.0" x2="792.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="792.0" x2="1002.0" y2="792.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="834.0" y1="120.0" x2="834.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="834.0" x2="1002.0" y2="834.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="876.0" y1="120.0" x2="876.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="876.0" x2="1002.0" y2="876.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="918.0" y1="120.0" x2="918.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="918.0" x2="1002.0" y2="918.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="960.0" y1="120.0" x2="960.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="960.0" x2="1002.0" y2="960.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="1002.0" y1="120.0" x2="1002.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<line x1="120.0" y1="1002.0" x2="1002.0" y2="1002.0" stroke="#687078" stroke-opacity="0.28" stroke-width="1"/>
+<rect x="296.0" y="296.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="296.0" y="464.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="296.0" y="800.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="464.0" y="800.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="632.0" y="800.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="800.0" y="296.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="800.0" y="464.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="800.0" y="800.0" width="26.0" height="26.0" fill="#ffe36a" stroke="#b59000" stroke-width="1.5" rx="5.0"/>
+<rect x="445.5" y="330.0" width="21.0" height="336.0" fill="#34383d" stroke="#111" stroke-width="1.0" rx="0.0"/><rect x="445.5" y="496.0" width="21.0" height="46.0" fill="#fffdf6" stroke="#ef5c45" stroke-width="1.5" rx="0.0"/><text x="461.0" y="323.0" class="id">west_floating_divider · 0.50</text>
+<rect x="582.0" y="634.5" width="252.0" height="21.0" fill="#34383d" stroke="#111" stroke-width="1.0" rx="0.0"/><text x="587.0" y="638.0" class="id">east_floating_divider · 0.50</text>
+<rect x="645.0" y="330.0" width="42.0" height="126.0" fill="#34383d" stroke="#111" stroke-width="1.0" rx="0.0"/><text x="671.0" y="323.0" class="id">short_heavy_stub · 1.00</text>
+<rect x="288.0" y="645.0" width="84.0" height="84.0" fill="#756456" stroke="#2d241d" stroke-width="2.0" rx="0.0"/><text x="330.0" y="687.0" text-anchor="middle" dominant-baseline="middle" class="id" fill="#fff">column_northwest</text>
+<rect x="708.0" y="708.0" width="42.0" height="84.0" fill="#756456" stroke="#2d241d" stroke-width="2.0" rx="0.0"/><text x="729.0" y="750.0" text-anchor="middle" dominant-baseline="middle" class="id" fill="#fff">column_southeast</text>
+<polyline points="393.0,267.0 435.0,267.0 477.0,267.0 519.0,267.0 561.0,267.0 561.0,309.0 561.0,351.0 561.0,393.0 561.0,435.0 561.0,477.0 561.0,519.0 561.0,561.0 561.0,603.0 561.0,645.0 561.0,687.0 603.0,687.0 645.0,687.0 687.0,687.0 687.0,729.0 687.0,771.0 687.0,813.0 729.0,813.0 729.0,855.0" fill="none" stroke="#00a7b7" stroke-width="6" stroke-opacity="0.62" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="393.0" cy="351.0" r="10" fill="#5ee56b" stroke="#14551b" stroke-width="3"/>
+<text x="407.0" y="339.0" class="id">SPAWN</text>
+<text x="246.0" y="236.0" text-anchor="middle" class="small">0</text>
+<text x="236.0" y="246.0" text-anchor="end" dominant-baseline="middle" class="small">0</text>
+<text x="288.0" y="236.0" text-anchor="middle" class="small">1</text>
+<text x="236.0" y="288.0" text-anchor="end" dominant-baseline="middle" class="small">1</text>
+<text x="330.0" y="236.0" text-anchor="middle" class="small">2</text>
+<text x="236.0" y="330.0" text-anchor="end" dominant-baseline="middle" class="small">2</text>
+<text x="372.0" y="236.0" text-anchor="middle" class="small">3</text>
+<text x="236.0" y="372.0" text-anchor="end" dominant-baseline="middle" class="small">3</text>
+<text x="414.0" y="236.0" text-anchor="middle" class="small">4</text>
+<text x="236.0" y="414.0" text-anchor="end" dominant-baseline="middle" class="small">4</text>
+<text x="456.0" y="236.0" text-anchor="middle" class="small">5</text>
+<text x="236.0" y="456.0" text-anchor="end" dominant-baseline="middle" class="small">5</text>
+<text x="498.0" y="236.0" text-anchor="middle" class="small">6</text>
+<text x="236.0" y="498.0" text-anchor="end" dominant-baseline="middle" class="small">6</text>
+<text x="540.0" y="236.0" text-anchor="middle" class="small">7</text>
+<text x="236.0" y="540.0" text-anchor="end" dominant-baseline="middle" class="small">7</text>
+<text x="582.0" y="236.0" text-anchor="middle" class="small">8</text>
+<text x="236.0" y="582.0" text-anchor="end" dominant-baseline="middle" class="small">8</text>
+<text x="624.0" y="236.0" text-anchor="middle" class="small">9</text>
+<text x="236.0" y="624.0" text-anchor="end" dominant-baseline="middle" class="small">9</text>
+<text x="666.0" y="236.0" text-anchor="middle" class="small">10</text>
+<text x="236.0" y="666.0" text-anchor="end" dominant-baseline="middle" class="small">10</text>
+<text x="708.0" y="236.0" text-anchor="middle" class="small">11</text>
+<text x="236.0" y="708.0" text-anchor="end" dominant-baseline="middle" class="small">11</text>
+<text x="750.0" y="236.0" text-anchor="middle" class="small">12</text>
+<text x="236.0" y="750.0" text-anchor="end" dominant-baseline="middle" class="small">12</text>
+<text x="792.0" y="236.0" text-anchor="middle" class="small">13</text>
+<text x="236.0" y="792.0" text-anchor="end" dominant-baseline="middle" class="small">13</text>
+<text x="834.0" y="236.0" text-anchor="middle" class="small">14</text>
+<text x="236.0" y="834.0" text-anchor="end" dominant-baseline="middle" class="small">14</text>
+<text x="876.0" y="236.0" text-anchor="middle" class="small">15</text>
+<text x="236.0" y="876.0" text-anchor="end" dominant-baseline="middle" class="small">15</text>
+<text x="120.0" y="1044.0" class="legend">■ shell 3 CELL　■ перегородка　■ колонна　■ свет　☒ отклонённый свет (risk)　● spawn　— маршрут</text>
+<text x="120.0" y="1074.0" class="legend" fill="#165b24">VALID: спецификация прошла проверки v1</text>
+</svg>

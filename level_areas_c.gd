@@ -402,6 +402,7 @@ var _hud_label: Label
 var _minimap: Control
 var _hud_module
 var _map_module
+var _template_lighting
 var _env: Environment                   # для переключения ambient в рантайме
 var _ambient_energy := AMBIENT_ENERGY   # рантайм-регулятор амбиента (клавиши -/+)
 var _light_new := true                  # режим света: ON=новый, OFF=старый (G)
@@ -477,6 +478,8 @@ func _initialize_level_runtime() -> void:
 	_area_lights_supported = ClassDB.class_exists("AreaLight3D") and not (AREA_LIGHT_DISABLE_ON_ANDROID and OS.has_feature("android"))
 	if not _area_lights_supported:
 		_area_light_mode = false
+	if _uses_canonical_template_lighting():
+		_area_light_mode = _area_lights_supported
 	if OS.has_feature("android") and _area_lights_supported:
 		_area_panel_range_mode = AREA_LIGHT_PANEL_RANGE_ON_ANDROID
 	if OS.has_feature("android"):
@@ -501,6 +504,7 @@ func _build_level_content() -> void:
 	_derive_geometry()              # сетка -> меш + коллизия
 	_add_lights()                   # панели-меши в поток ДО запекания + источники
 	_normalize_lamp_energy()        # яркость по плотности (новый режим): без пересвета залов
+	_configure_canonical_template_lighting()
 	_commit()
 	_apply_area_light_mode()
 	_place_all_office_doors()       # модели дверей/рам офиса (после запекания)
@@ -527,6 +531,10 @@ func _input(event: InputEvent) -> void:
 		return
 	var ke := event as InputEventKey
 	if not ke.pressed or ke.echo:
+		return
+	# hall_2x2 подключён к продуктовому профилю; legacy A/B-переключатели
+	# compatibility-харнесса не должны перезаписывать параметры модуля.
+	if _uses_canonical_template_lighting() and ke.keycode in [KEY_G, KEY_2, KEY_0, KEY_9, KEY_8]:
 		return
 	# Тогглы по событию (не теряются при низком FPS, в отличие от поллинга).
 	if ke.keycode == KEY_M and _minimap != null:
@@ -595,6 +603,33 @@ func _process(delta: float) -> void:
 		_map_module.update()
 	_update_pit_flicker(delta)
 	_update_audio(delta)
+
+
+func _uses_canonical_template_lighting() -> bool:
+	return preview_template == "hall_2x2"
+
+
+func _configure_canonical_template_lighting() -> void:
+	if not _uses_canonical_template_lighting():
+		return
+	_template_lighting = LIGHTING.new(self, null)
+	_template_lighting.configure_lf3_runtime(
+		_template_lf3_cell_blocks_light, _template_active_camera, CELL)
+	_template_lighting.lamps = _area_bounce_lamps
+	for lamp: OmniLight3D in _lamps:
+		# Direct Omni — резервная семья level_e: wide и тот же дополнительный
+		# вертикальный source-drop. В штатном AreaLight-режиме она скрыта.
+		LIGHTING.configure_wide_lamp(lamp)
+		lamp.position.y -= LIGHTING.SOURCE_LEVEL_DROP
+		lamp.set_meta("norm_e", LIGHTING.LAMP_ENERGY)
+
+
+func _template_active_camera() -> Camera3D:
+	return get_viewport().get_camera_3d()
+
+
+func _template_lf3_cell_blocks_light(cell: Vector2i) -> bool:
+	return int(_grid.get(cell, K_SOLID)) in [K_SOLID, K_WALL, K_PARTITION, K_COLUMN]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -4434,17 +4469,10 @@ func _spawn_seam_lamp(gx: float, gz: float) -> void:
 	_set_last_lamp_bounce_shadow_allowed(false)
 
 
-# Зал 2×2 — ВРЕМЕННЫЙ свет-заглушка (спека: свет TBD после колонн). Лампа в
-# центре каждого пролёта между линиями колонн (4×4), чтобы зал не был чёрным.
+# Зал 2×2 — исходная шахматная раскладка из 24 светильников.
 func _add_hall_2x2_lights(_area: Dictionary) -> void:
-	# По одному ТЕНЕВОМУ светильнику в каждом центре между колоннами. Центры —
-	# узлы шахматки «линия × середина» (каждый окружён 4 колоннами; у стен — 2-3
-	# + стена), это пустые клетки между колонными узлами. Эмиссия как в зале
-	# level_d: панель + tight-источник; мягкие тени даёт bounce-shadow-пул
-	# (включён по умолчанию, area-режим). area_id всех ламп = primary ("preview"),
-	# чтобы пул света не гасил лампы на карвленых швах без своего area_id.
-	# Только внутренние центры: линия-координата не крайняя (без пристеночного
-	# ряда) — у стен свет не вешаем. inner = HALL2_LINES без первой/последней.
+	# Исходные 24 узла шахматки «линия × середина», без пристеночного ряда.
+	# Все источники получают wide + LF3 из lighting_module и area_id preview.
 	var inner: Array = HALL2_LINES.slice(1, HALL2_LINES.size() - 1)   # [11.5, 19.5, 27.5]
 	for hx: float in inner:
 		for hz: float in HALL2_MIDS:
@@ -4457,7 +4485,7 @@ func _add_hall_2x2_lights(_area: Dictionary) -> void:
 func _emit_hall_light(hx: float, hz: float) -> void:
 	var pos := Vector3(hx * CELL, CEIL_H + 0.02, hz * CELL)   # hx/hz — центры клеток (x.5)
 	_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
-	_spawn_lamp_source(pos, true)          # tight — чёткие лужи/тени, как в зале level_d
+	_spawn_lamp_source(pos, false)         # профиль wide окончательно задаёт lighting_module
 	_set_last_lamp_area_id("preview")      # весь зал — одна area-группа
 
 
@@ -5045,6 +5073,11 @@ func _light_blocked(cell: Vector2i) -> bool:
 
 
 func _update_shadow_pool() -> void:
+	if _template_lighting != null and _player_ref != null:
+		if not _area_lights_active():
+			_template_lighting.lamps = _lamps
+			_template_lighting.update(_player_ref)
+		return
 	# Гистерезис: лампа-кастер остаётся включённой, пока другая не станет
 	# заметно ближе (margin). Убирает поппинг при ходьбе.
 	if _area_lights_active() or SHADOW_CASTERS <= 0 or _player_ref == null or _lamps.is_empty():
@@ -5259,6 +5292,10 @@ func _light_area_ids_by_depth(player_ids: Array, max_hops: int) -> Dictionary:
 
 
 func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
+	if _template_lighting != null and _area_lights_active():
+		_template_lighting.lamps = _area_bounce_lamps
+		_template_lighting.apply_lf3_shadow_pool(_area_bounce_lamps, player_pos)
+		return
 	var shadow_system_on := _area_bounce_shadows_enabled() and _area_bounce_mode and _area_lights_active() and AREA_LIGHT_BOUNCE_SHADOW_CASTERS > 0
 	if not shadow_system_on:
 		for l: OmniLight3D in _area_bounce_lamps:

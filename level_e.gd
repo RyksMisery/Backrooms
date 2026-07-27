@@ -3,6 +3,7 @@ extends "res://level_d.gd"
 const CANONICAL_ARCHITECTURE := preload("res://modules/architecture_module.gd")
 const CANONICAL_LIGHTING := preload("res://modules/lighting_module.gd")
 const CANONICAL_AUDIO := preload("res://modules/audio_module.gd")
+const STREAM_BLOCK_PLANNER := preload("res://modules/stream_block_plan_module.gd")
 
 # level_e — раздельная по областям геометрия + АВТО-стриминг (build/free блоков
 # по близости к игроку). База пакует уровень в слитые меши и одно тело коллизии;
@@ -45,6 +46,12 @@ const LF3_SHADOW_FULL_DISTANCE := CANONICAL_LIGHTING.LF3_SHADOW_FULL_DISTANCE
 const LF3_SHADOW_OFF_DISTANCE := CANONICAL_LIGHTING.LF3_SHADOW_OFF_DISTANCE
 const LF3_SHADOW_BOUNDARY_GAP := CANONICAL_LIGHTING.LF3_SHADOW_BOUNDARY_GAP
 const LF3_OCCLUSION_PRIORITY_BONUS := CANONICAL_LIGHTING.LF3_OCCLUSION_PRIORITY_BONUS
+const LF3_VISIBLE_RECEIVER_PRIORITY_BONUS := \
+	CANONICAL_LIGHTING.LF3_VISIBLE_RECEIVER_PRIORITY_BONUS
+const LF3_ANGULAR_NEAR_DISTANCE := CANONICAL_LIGHTING.LF3_ANGULAR_NEAR_DISTANCE
+const LF3_ANGULAR_FULL_MARGIN_DEG := CANONICAL_LIGHTING.LF3_ANGULAR_FULL_MARGIN_DEG
+const LF3_ANGULAR_FADE_WIDTH_DEG := CANONICAL_LIGHTING.LF3_ANGULAR_FADE_WIDTH_DEG
+const LF3_ANGULAR_RANK_PENALTY := CANONICAL_LIGHTING.LF3_ANGULAR_RANK_PENALTY
 const LF3_FRUSTUM_RECEIVER_DISTANCE := CANONICAL_LIGHTING.LF3_FRUSTUM_RECEIVER_DISTANCE
 const LF3_FRUSTUM_RECEIVER_RAYS := CANONICAL_LIGHTING.LF3_FRUSTUM_RECEIVER_RAYS
 const FINAL_LAMP_HUM_STREAM := CANONICAL_AUDIO.LAMP_HUM_STREAM
@@ -82,17 +89,40 @@ var _load_center := Vector2i.ZERO   # блок-центр ленивой заг�
 var _stream_on := true
 var _last_pb := Vector2i(2147483647, 2147483647)
 var _stream_build_queue: Array[Vector2i] = []
+var _stream_block_cells: Dictionary = {}
+var _stream_unit_box_arrays: Array = []
+var _stream_background_enabled := false
+var _stream_ab_requested := false
+var _stream_background_stress_requested := false
+var _stream_plan_thread: Thread
+var _stream_plan_block := Vector2i(2147483647, 2147483647)
+var _stream_plan_started_usec := 0
+var _stream_background_worker_ms: Array[float] = []
+var _stream_background_commit_ms: Array[float] = []
 var _bounce_range := AREA_LIGHT_BOUNCE_RANGE   # живой радиус bounce-omni ([ / ])
 var _bounce_energy_mul := 1.0   # живой множитель энергии bounce-ламп (, / .)
 var _comparison_floor_enabled := true   # T: true=floor1 (дефолт), false=classic floor.png
 var _lf3_shadow_mode := true   # продуктовый default; REFERENCE доступен только ботам
 var _lf3_occlusion_priority_enabled := true   # preserved 11X/11P checkpoint state
 var _lf3_far_frustum_enabled := true   # current 11F; 11P remains checkpoint
+var _lf3_receiver_priority_enabled := false  # 11R остаётся A/B; продуктовый default — 11F
+var _lf3_angular_visibility_enabled := false  # 11A: безопасный spatial angular fade
+var _lf3_guardian_view_enabled := false  # 11G: cached guardian + cheap camera-dot view
 var _lf3_sharp_checkpoint_enabled := false   # 0: current LF3 ↔ historical 10J
 var _lf3_level_e_capture_requested := false
 var _lf3_level_e_capture_running := false
 var _lf3_box_capture_requested := false
 var _lf3_smooth_capture_requested := false
+var _lf3_stability_lab_requested := false
+var _lf3_stability_focus_requested := false
+var _lf3_stability_final_requested := false
+var _lf3_stability_maze_requested := false
+var _lf3_stability_maze_reverse_requested := false
+var _lf3_angular_test_requested := false
+var _lf3_guardian_test_requested := false
+var _lf3_guardian_segment_cache := {}
+var _lf3_test_shadow_pool_frozen := false
+var _lf3_test_shadow_blur_override := -1.0
 var _final_lamp_audio_enabled := true
 var _level_e_reference_audio_requested := false
 var _final_hum_audio_player: AudioStreamPlayer
@@ -116,6 +146,12 @@ var _infinite_saved_map_visible := false
 
 
 func _ready() -> void:
+	_stream_background_stress_requested = \
+		"--level-e-streaming-background-stress" in OS.get_cmdline_user_args()
+	_stream_background_enabled = \
+		"--level-e-streaming-background" in OS.get_cmdline_user_args() \
+		or _stream_background_stress_requested
+	_stream_ab_requested = "--level-e-streaming-ab" in OS.get_cmdline_user_args()
 	_level_e_reference_audio_requested = \
 		"--level-e-reference-audio" in OS.get_cmdline_user_args()
 	_final_lamp_audio_enabled = not _level_e_reference_audio_requested
@@ -123,8 +159,31 @@ func _ready() -> void:
 	_lf3_box_capture_requested = "--lf3-level-e-box-shadow-capture" in OS.get_cmdline_user_args()
 	_lf3_smooth_capture_requested = \
 		"--lf3-level-e-box-shadow-smoothness-capture" in OS.get_cmdline_user_args()
+	_lf3_stability_lab_requested = \
+		"--lf3-level-e-shadow-stability-lab" in OS.get_cmdline_user_args()
+	_lf3_stability_focus_requested = \
+		"--lf3-level-e-shadow-stability-focus" in OS.get_cmdline_user_args()
+	_lf3_stability_final_requested = \
+		"--lf3-level-e-shadow-stability-final" in OS.get_cmdline_user_args()
+	_lf3_stability_maze_requested = \
+		"--lf3-level-e-shadow-stability-maze" in OS.get_cmdline_user_args()
+	_lf3_stability_maze_reverse_requested = \
+		"--lf3-level-e-shadow-stability-maze-reverse" in OS.get_cmdline_user_args()
+	_lf3_stability_maze_requested = _lf3_stability_maze_requested \
+		or _lf3_stability_maze_reverse_requested
+	_lf3_stability_lab_requested = _lf3_stability_lab_requested \
+		or _lf3_stability_focus_requested or _lf3_stability_final_requested
+	_lf3_level_e_capture_requested = _lf3_level_e_capture_requested \
+		or _lf3_stability_maze_requested
+	_lf3_angular_test_requested = "--lf3-angular-shadow-test" \
+		in OS.get_cmdline_user_args()
+	_lf3_guardian_test_requested = "--lf3-guardian-shadow-test" \
+		in OS.get_cmdline_user_args()
+	if _stream_ab_requested or _stream_background_stress_requested:
+		randomize_maze_seed = false
+		maze_seed = 173205
 	if _lf3_level_e_capture_requested or _lf3_box_capture_requested \
-			or _lf3_smooth_capture_requested:
+			or _lf3_smooth_capture_requested or _lf3_stability_lab_requested:
 		randomize_maze_seed = false
 		maze_seed = 173205
 	super._ready()
@@ -133,6 +192,10 @@ func _ready() -> void:
 		_setup_model_fill_system()
 	_lf3_capture_reference_shadow_profiles()
 	lf3_set_shadow_mode(true)
+	if _lf3_angular_test_requested and not _lf3_smooth_capture_requested:
+		lf3_set_angular_visibility(true)
+	elif _lf3_guardian_test_requested and not _lf3_smooth_capture_requested:
+		lf3_set_guardian_view(true)
 	if not _level_e_capture_runners_enabled():
 		return
 	if _lf3_level_e_capture_requested:
@@ -141,6 +204,12 @@ func _ready() -> void:
 		call_deferred("_lf3_box_shadow_capture_suite")
 	elif _lf3_smooth_capture_requested:
 		call_deferred("_lf3_box_shadow_smoothness_capture_suite")
+	elif _lf3_stability_lab_requested:
+		call_deferred("_lf3_shadow_stability_lab_suite")
+	elif _stream_ab_requested:
+		call_deferred("_streaming_background_ab_suite")
+	elif _stream_background_stress_requested:
+		call_deferred("_streaming_background_stress_suite")
 
 
 # Hooks отделяют единую runtime-базу level_e от её текущей живой раскладки.
@@ -167,11 +236,13 @@ func _level_e_input_content(_event: InputEventKey) -> void:
 
 
 func _begin() -> void:
+	_finish_stream_plan_thread()
 	super._begin()
 	_block_st.clear()
 	_block_holder.clear()
 	_block_rec.clear()
 	_known_blocks.clear()
+	_stream_block_cells.clear()
 	_stream_build_queue.clear()
 	_emit_ctx_active = false
 	_infinite_transition_started = false
@@ -392,6 +463,8 @@ func _input(event: InputEvent) -> void:
 	if ke.keycode == KEY_4:
 		_model_fill_enabled = not _model_fill_enabled
 		_apply_model_fill_profile()
+	elif ke.keycode == KEY_0:
+		lf3_toggle_guardian_test()
 	elif ke.keycode == KEY_1:
 		_model_fill_energy = maxf(0.0, _model_fill_energy - MODEL_FILL_ENERGY_STEP)
 		_apply_model_fill_profile()
@@ -659,6 +732,45 @@ func lf3_set_far_frustum(enabled: bool) -> void:
 	print("[level_e] дальние receiver: ", "ON" if enabled else "OFF")
 
 
+func lf3_set_receiver_priority(enabled: bool) -> void:
+	_lf3_receiver_priority_enabled = enabled
+	if _lf3_shadow_mode and _player_ref != null:
+		_update_shadow_pool()
+		_update_bounce_shadow_pool(_player_ref.position)
+	print("[level_e] visible receiver priority: ", "ON" if enabled else "OFF")
+
+
+func lf3_set_angular_visibility(enabled: bool) -> void:
+	_lf3_angular_visibility_enabled = enabled
+	if _lf3_shadow_mode and _player_ref != null:
+		_update_shadow_pool()
+		_update_bounce_shadow_pool(_player_ref.position)
+	print("[level_e] angular shadow visibility: ", "ON" if enabled else "OFF")
+
+
+func lf3_set_guardian_view(enabled: bool) -> void:
+	_lf3_guardian_view_enabled = enabled
+	_lf3_guardian_segment_cache.clear()
+	if _lf3_shadow_mode and _player_ref != null:
+		_update_shadow_pool()
+		_update_bounce_shadow_pool(_player_ref.position)
+	print("[level_e] guardian/view shadow pool: ", "ON" if enabled else "OFF")
+
+
+func lf3_toggle_guardian_test() -> void:
+	_lf3_angular_visibility_enabled = false
+	_lf3_receiver_priority_enabled = false
+	_lf3_sharp_checkpoint_enabled = false
+	_lf3_occlusion_priority_enabled = true
+	_lf3_far_frustum_enabled = true
+	lf3_set_shadow_mode(true)
+	lf3_set_guardian_view(not _lf3_guardian_view_enabled)
+
+
+func lf3_invalidate_guardian_cache() -> void:
+	_lf3_guardian_segment_cache.clear()
+
+
 func lf3_set_sharp_checkpoint(enabled: bool) -> void:
 	_lf3_sharp_checkpoint_enabled = enabled
 	if _lf3_shadow_mode and _player_ref != null:
@@ -671,7 +783,11 @@ func _lf3_profile_label() -> String:
 	if _lf3_sharp_checkpoint_enabled:
 		return "LF3-10J"
 	if _lf3_occlusion_priority_enabled and _lf3_far_frustum_enabled:
-		return "LF3-11F"
+		if _lf3_guardian_view_enabled:
+			return "LF3-11G"
+		if _lf3_angular_visibility_enabled:
+			return "LF3-11A"
+		return "LF3-11R" if _lf3_receiver_priority_enabled else "LF3-11F"
 	return "LF3-11P" if _lf3_occlusion_priority_enabled else "LF3-11X"
 
 
@@ -711,6 +827,8 @@ func _lf3_restore_reference_shadow_profile(l: OmniLight3D) -> void:
 
 
 func _update_shadow_pool() -> void:
+	if _lf3_test_shadow_pool_frozen:
+		return
 	# В AreaLight-режиме direct даёт AreaLight, а архитектурная мягкая заливка —
 	# bounce Omni; её пул обрабатывается отдельным override ниже.
 	if _area_lights_active():
@@ -725,6 +843,8 @@ func _update_shadow_pool() -> void:
 
 
 func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
+	if _lf3_test_shadow_pool_frozen:
+		return
 	if not _lf3_shadow_mode:
 		for l: OmniLight3D in _area_bounce_lamps:
 			_lf3_restore_reference_shadow_profile(l)
@@ -741,10 +861,12 @@ func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
 func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
 		player_pos: Vector3, bounce_family: bool) -> void:
 	var candidates: Array[Dictionary] = []
+	var camera := get_viewport().get_camera_3d()
 	var receiver_data := _lf3_receiver_probe_data(player_pos,
 		_lf3_far_frustum_enabled and not _lf3_sharp_checkpoint_enabled)
 	var receiver_probes: Array = receiver_data["probes"]
 	var far_receiver_probes: Array = receiver_data["far_probes"]
+	var visible_receiver_probes: Array = receiver_data["visible_probes"]
 	for l: OmniLight3D in lights:
 		_lf3_capture_reference_shadow_profile(l)
 		var allowed := bool(l.get_meta("bounce_shadow_allowed", true))
@@ -753,23 +875,67 @@ func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
 		if not pool_on or not allowed or far:
 			l.set_meta("lf3_occlusion_risk", 0.0)
 			l.set_meta("lf3_far_occlusion_risk", 0.0)
+			l.set_meta("lf3_receiver_affinity", 0.0)
+			l.set_meta("lf3_receiver_distance", -1.0)
+			l.set_meta("lf3_angular_weight", 0.0)
 			_lf3_set_shadow(l, false)
 			continue
 		var distance := l.global_position.distance_to(player_pos)
-		var occlusion_risk := _lf3_light_occlusion_risk(l, receiver_probes) \
-			if _lf3_occlusion_priority_enabled and not _lf3_sharp_checkpoint_enabled \
-			else 0.0
-		var far_occlusion_risk := _lf3_light_occlusion_risk(l, far_receiver_probes) \
-			if _lf3_far_frustum_enabled and not _lf3_sharp_checkpoint_enabled \
-			else 0.0
+		var occlusion_risk := _lf3_light_occlusion_risk_cached(l,
+			receiver_probes) if _lf3_guardian_view_enabled else (_lf3_light_occlusion_risk(
+				l, receiver_probes) if _lf3_occlusion_priority_enabled \
+				and not _lf3_sharp_checkpoint_enabled else 0.0)
+		var far_occlusion_risk := _lf3_light_occlusion_risk_cached(l,
+			far_receiver_probes) if _lf3_guardian_view_enabled else (_lf3_light_occlusion_risk(
+				l, far_receiver_probes) if _lf3_far_frustum_enabled \
+				and not _lf3_sharp_checkpoint_enabled else 0.0)
+		var receiver_affinity_data := {"affinity": 0.0, "distance": -1.0}
+		var angular_weight := 1.0
+		if not _lf3_sharp_checkpoint_enabled:
+			if _lf3_guardian_view_enabled:
+				angular_weight = _lf3_light_guardian_view_weight(
+					l, player_pos, camera, occlusion_risk)
+			elif _lf3_receiver_priority_enabled and occlusion_risk <= 0.001:
+				receiver_affinity_data = _lf3_light_receiver_affinity(
+					l, visible_receiver_probes, false)
+			elif _lf3_angular_visibility_enabled:
+				angular_weight = _lf3_light_angular_weight(
+					l, player_pos, camera, 0.0, occlusion_risk)
+				# Не считаем receiver affinity для света, который и без неё
+				# остаётся полностью внутри безопасного углового сектора.
+				if angular_weight < 0.999 and occlusion_risk <= 0.001:
+					receiver_affinity_data = _lf3_light_receiver_affinity(
+						l, visible_receiver_probes, false)
+		var receiver_affinity := float(receiver_affinity_data["affinity"])
+		var receiver_distance := float(receiver_affinity_data["distance"])
 		l.set_meta("lf3_occlusion_risk", occlusion_risk)
 		l.set_meta("lf3_far_occlusion_risk", far_occlusion_risk)
+		l.set_meta("lf3_receiver_affinity", receiver_affinity)
+		l.set_meta("lf3_receiver_distance", receiver_distance)
+		if _lf3_angular_visibility_enabled and not _lf3_sharp_checkpoint_enabled \
+				and angular_weight < 0.999:
+			angular_weight = _lf3_light_angular_weight(l, player_pos, camera,
+				receiver_affinity, occlusion_risk)
+		l.set_meta("lf3_angular_weight", angular_weight)
+		if angular_weight <= 0.001:
+			_lf3_set_shadow(l, false)
+			continue
+		var rank_score := distance \
+			- occlusion_risk * LF3_OCCLUSION_PRIORITY_BONUS \
+			- (receiver_affinity * LF3_VISIBLE_RECEIVER_PRIORITY_BONUS \
+				if _lf3_receiver_priority_enabled else 0.0) \
+			+ ((1.0 - angular_weight) * LF3_ANGULAR_RANK_PENALTY \
+				if _lf3_angular_visibility_enabled or _lf3_guardian_view_enabled else 0.0)
+		l.set_meta("lf3_rank_score", rank_score)
 		candidates.append({
 			"lamp": l,
 			"distance": distance,
 			"occlusion_risk": occlusion_risk,
 			"far_occlusion_risk": far_occlusion_risk,
-			"rank_score": distance - occlusion_risk * LF3_OCCLUSION_PRIORITY_BONUS,
+			"receiver_affinity": receiver_affinity,
+			"receiver_distance": receiver_distance,
+			"angular_weight": angular_weight,
+			"rank_score": rank_score,
 			"id": l.get_instance_id(),
 		})
 	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -809,6 +975,7 @@ func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
 		var opacity := (1.0 - smoothstep(
 			LF3_SHADOW_FULL_DISTANCE, shadow_off_distance, distance)) \
 			* LF3_SHADOW_OPACITY
+		opacity *= float(candidate["angular_weight"])
 		if index == LF3_SHADOW_CASTERS - 1:
 			opacity *= boundary_near_weight
 		elif index == LF3_SHADOW_CASTERS:
@@ -826,9 +993,11 @@ func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
 
 func _lf3_receiver_probe_data(player_pos: Vector3, include_far: bool) -> Dictionary:
 	var camera := get_viewport().get_camera_3d()
+	var view_origin := player_pos
 	var forward := Vector3(0.0, 0.0, -1.0)
 	var right := Vector3(1.0, 0.0, 0.0)
 	if camera != null:
+		view_origin = camera.global_position
 		forward = -camera.global_basis.z
 		forward.y = 0.0
 		if forward.length_squared() > 0.0001:
@@ -837,15 +1006,23 @@ func _lf3_receiver_probe_data(player_pos: Vector3, include_far: bool) -> Diction
 		right.y = 0.0
 		if right.length_squared() > 0.0001:
 			right = right.normalized()
-	var local_probes: Array[Vector3] = [
-		player_pos,
-		player_pos + forward * 3.0,
-		player_pos + forward * 6.0,
-		player_pos + right * 2.5,
-		player_pos - right * 2.5,
-		player_pos + forward * 4.0 + right * 2.5,
-		player_pos + forward * 4.0 - right * 2.5,
+	return _lf3_receiver_probe_data_for_view(
+		player_pos, view_origin, forward, right, include_far)
+
+
+func _lf3_receiver_probe_data_for_view(player_pos: Vector3, view_origin: Vector3,
+		forward: Vector3, right: Vector3, include_far: bool) -> Dictionary:
+	var visible_probes: Array[Vector3] = [
+		view_origin + forward * 3.0,
+		view_origin + forward * 6.0,
+		view_origin + forward * 9.0,
+		view_origin + forward * 4.0 + right * 2.5,
+		view_origin + forward * 4.0 - right * 2.5,
+		view_origin + forward * 7.0 + right * 3.5,
+		view_origin + forward * 7.0 - right * 3.5,
 	]
+	var local_probes: Array[Vector3] = [player_pos]
+	local_probes.append_array(visible_probes)
 	var far_probes: Array[Vector3] = []
 	if include_far:
 		var half_angle := deg_to_rad(60.0)
@@ -853,18 +1030,85 @@ func _lf3_receiver_probe_data(player_pos: Vector3, include_far: bool) -> Diction
 			var fraction := float(ray_index) / float(maxi(LF3_FRUSTUM_RECEIVER_RAYS - 1, 1))
 			var angle := lerpf(-half_angle, half_angle, fraction)
 			var direction := forward.rotated(Vector3.UP, angle).normalized()
-			var receiver := _lf3_first_occupancy_receiver(player_pos, direction)
-			if receiver != Vector3.INF and receiver.distance_to(player_pos) >= 6.0:
+			var receiver := _lf3_first_occupancy_receiver(view_origin, direction)
+			if receiver != Vector3.INF and receiver.distance_to(view_origin) >= 6.0:
 				far_probes.append(receiver)
 	var probes: Array[Vector3] = local_probes.duplicate()
 	probes.append_array(far_probes)
 	return {
 		"probes": probes,
 		"local_probes": local_probes,
+		"visible_probes": visible_probes,
 		"far_probes": far_probes,
 		"local_count": local_probes.size(),
 		"far_count": far_probes.size(),
 	}
+
+
+func _lf3_light_receiver_affinity(light: OmniLight3D,
+		visible_probes: Array, verify_occupancy := true) -> Dictionary:
+	var strongest := 0.0
+	var nearest := INF
+	var light_range := maxf(light.omni_range, 0.001)
+	for probe: Vector3 in visible_probes:
+		var distance := Vector2(light.global_position.x,
+			light.global_position.z).distance_to(Vector2(probe.x, probe.z))
+		if distance >= light_range:
+			continue
+		if verify_occupancy \
+				and _lf3_occupancy_blocks_segment(light.global_position, probe):
+			continue
+		nearest = minf(nearest, distance)
+		strongest = maxf(strongest,
+			1.0 - smoothstep(0.0, light_range, distance))
+	return {
+		"affinity": strongest,
+		"distance": nearest if nearest < INF else -1.0,
+	}
+
+
+func _lf3_light_angular_weight(light: OmniLight3D, player_pos: Vector3,
+		camera: Camera3D, receiver_affinity: float, occlusion_risk: float) -> float:
+	if light.global_position.distance_to(player_pos) <= LF3_ANGULAR_NEAR_DISTANCE \
+			or occlusion_risk > 0.001 or camera == null:
+		return 1.0
+	var to_light := light.global_position - player_pos
+	to_light.y = 0.0
+	var forward := -camera.global_basis.z
+	forward.y = 0.0
+	if to_light.length_squared() <= 0.0001 or forward.length_squared() <= 0.0001:
+		return 1.0
+	to_light = to_light.normalized()
+	forward = forward.normalized()
+	var angle := acos(clampf(forward.dot(to_light), -1.0, 1.0))
+	var viewport_size := get_viewport().get_visible_rect().size
+	var aspect := viewport_size.x / maxf(viewport_size.y, 1.0)
+	var horizontal_half_fov := atan(tan(deg_to_rad(camera.fov * 0.5)) * aspect)
+	var full_angle := horizontal_half_fov + deg_to_rad(LF3_ANGULAR_FULL_MARGIN_DEG)
+	var off_angle := full_angle + deg_to_rad(LF3_ANGULAR_FADE_WIDTH_DEG)
+	var angle_weight := 1.0 - smoothstep(full_angle, off_angle, angle)
+	var receiver_weight := smoothstep(0.35, 0.85, receiver_affinity)
+	return clampf(maxf(angle_weight, receiver_weight), 0.0, 1.0)
+
+
+func _lf3_light_guardian_view_weight(light: OmniLight3D, player_pos: Vector3,
+		camera: Camera3D, occlusion_risk: float) -> float:
+	if light.global_position.distance_to(player_pos) <= LF3_ANGULAR_NEAR_DISTANCE \
+			or occlusion_risk > 0.001 or camera == null:
+		return 1.0
+	var to_light := light.global_position - player_pos
+	to_light.y = 0.0
+	var forward := -camera.global_basis.z
+	forward.y = 0.0
+	if to_light.length_squared() <= 0.0001 or forward.length_squared() <= 0.0001:
+		return 1.0
+	var viewport_size := get_viewport().get_visible_rect().size
+	var aspect := viewport_size.x / maxf(viewport_size.y, 1.0)
+	var horizontal_half_fov := atan(tan(deg_to_rad(camera.fov * 0.5)) * aspect)
+	var full_angle := horizontal_half_fov + deg_to_rad(LF3_ANGULAR_FULL_MARGIN_DEG)
+	var off_angle := full_angle + deg_to_rad(LF3_ANGULAR_FADE_WIDTH_DEG)
+	var direction_dot := forward.normalized().dot(to_light.normalized())
+	return smoothstep(cos(off_angle), cos(full_angle), direction_dot)
 
 
 func _lf3_first_occupancy_receiver(origin: Vector3, direction: Vector3) -> Vector3:
@@ -901,6 +1145,44 @@ func _lf3_light_occlusion_risk(light: OmniLight3D, probes: Array) -> float:
 	return clampf(strongest + 0.08 * float(blocked_count - 1), 0.0, 1.0)
 
 
+func _lf3_light_occlusion_risk_cached(light: OmniLight3D, probes: Array) -> float:
+	var strongest := 0.0
+	var blocked_count := 0
+	var light_range := maxf(light.omni_range, 0.001)
+	var light_id := light.get_instance_id()
+	var light_cache: Dictionary = _lf3_guardian_segment_cache.get(light_id, {})
+	for probe: Vector3 in probes:
+		var distance := Vector2(light.global_position.x,
+			light.global_position.z).distance_to(Vector2(probe.x, probe.z))
+		if distance >= light_range:
+			continue
+		var receiver_cell := Vector2i(
+			int(floor(probe.x / CELL)), int(floor(probe.z / CELL)))
+		if not light_cache.has(receiver_cell):
+			var center := Vector3(
+				(float(receiver_cell.x) + 0.5) * CELL,
+				probe.y,
+				(float(receiver_cell.y) + 0.5) * CELL)
+			var offset := CELL * 0.4
+			var blocked := false
+			for delta in [Vector3.ZERO, Vector3(offset, 0.0, offset),
+					Vector3(offset, 0.0, -offset), Vector3(-offset, 0.0, offset),
+					Vector3(-offset, 0.0, -offset)]:
+				if _lf3_occupancy_blocks_segment(light.global_position, center + delta):
+					blocked = true
+					break
+			light_cache[receiver_cell] = blocked
+		if not bool(light_cache[receiver_cell]):
+			continue
+		blocked_count += 1
+		strongest = maxf(strongest,
+			1.0 - smoothstep(0.0, light_range, distance))
+	_lf3_guardian_segment_cache[light_id] = light_cache
+	if blocked_count <= 0:
+		return 0.0
+	return clampf(strongest + 0.08 * float(blocked_count - 1), 0.0, 1.0)
+
+
 func _lf3_occupancy_blocks_segment(from_world: Vector3, to_world: Vector3) -> bool:
 	var a := Vector2(from_world.x, from_world.z)
 	var b := Vector2(to_world.x, to_world.z)
@@ -924,7 +1206,7 @@ func _lf3_set_shadow(l: OmniLight3D, enabled: bool) -> void:
 		return
 	l.shadow_enabled = enabled
 	l.shadow_opacity = LF3_SHADOW_OPACITY if enabled else 0.0
-	l.shadow_blur = LF3_SHADOW_BLUR
+	l.shadow_blur = _lf3_effective_shadow_blur()
 	l.shadow_bias = LF3_SHADOW_BIAS
 	l.shadow_normal_bias = LF3_SHADOW_NORMAL_BIAS
 
@@ -934,9 +1216,23 @@ func _lf3_set_shadow_opacity(l: OmniLight3D, opacity: float) -> void:
 		return
 	l.shadow_enabled = opacity > 0.001
 	l.shadow_opacity = clampf(opacity, 0.0, LF3_SHADOW_OPACITY)
-	l.shadow_blur = LF3_SHADOW_BLUR
+	l.shadow_blur = _lf3_effective_shadow_blur()
 	l.shadow_bias = LF3_SHADOW_BIAS
 	l.shadow_normal_bias = LF3_SHADOW_NORMAL_BIAS
+
+
+func _lf3_effective_shadow_blur() -> float:
+	return _lf3_test_shadow_blur_override \
+		if _lf3_test_shadow_blur_override > 0.0 else LF3_SHADOW_BLUR
+
+
+func _lf3_set_test_shadow_blur(value: float) -> void:
+	_lf3_test_shadow_blur_override = value
+	var family: Array[OmniLight3D] = _area_bounce_lamps \
+		if _area_lights_active() else _lamps
+	for light: OmniLight3D in family:
+		if light.shadow_enabled:
+			light.shadow_blur = _lf3_effective_shadow_blur()
 
 
 func lf3_debug_leak_risk() -> Dictionary:
@@ -996,12 +1292,16 @@ func lf3_debug_shadow_state() -> Dictionary:
 			"opacity": l.shadow_opacity,
 			"occlusion_risk": occlusion_risk,
 			"far_occlusion_risk": float(l.get_meta("lf3_far_occlusion_risk", 0.0)),
+			"receiver_affinity": float(l.get_meta("lf3_receiver_affinity", 0.0)),
+			"receiver_distance": float(l.get_meta("lf3_receiver_distance", -1.0)),
+			"angular_weight": float(l.get_meta("lf3_angular_weight", 1.0)),
+			"rank_score": float(l.get_meta("lf3_rank_score", 0.0)),
 		})
 		if _lf3_shadow_mode and not is_equal_approx(l.shadow_opacity, LF3_SHADOW_OPACITY):
 			transitioning += 1
 		if _lf3_shadow_mode and (l.shadow_opacity < 0.0 \
 				or l.shadow_opacity > LF3_SHADOW_OPACITY \
-				or not is_equal_approx(l.shadow_blur, LF3_SHADOW_BLUR) \
+				or not is_equal_approx(l.shadow_blur, _lf3_effective_shadow_blur()) \
 				or not is_equal_approx(l.shadow_bias, LF3_SHADOW_BIAS) \
 				or not is_equal_approx(l.shadow_normal_bias, LF3_SHADOW_NORMAL_BIAS)):
 			profile_errors.append(l.get_instance_id())
@@ -1025,9 +1325,89 @@ func lf3_debug_shadow_state() -> Dictionary:
 	}
 
 
+func _lf3_receiver_direction_state(target: Vector3) -> Dictionary:
+	var family: Array[OmniLight3D] = _area_bounce_lamps \
+		if _area_lights_active() else _lamps
+	var reaching: Array[Dictionary] = []
+	var shadowed: Array[Dictionary] = []
+	for light: OmniLight3D in family:
+		if not is_instance_valid(light):
+			continue
+		if not bool(light.get_meta("pool_want", light.visible)) \
+				or not bool(light.get_meta("bounce_shadow_allowed", true)) \
+				or bool(light.get_meta("far_bounce", false)):
+			continue
+		var horizontal := Vector2(light.global_position.x,
+			light.global_position.z).distance_to(Vector2(target.x, target.z))
+		if horizontal >= light.omni_range \
+				or _lf3_occupancy_blocks_segment(light.global_position, target):
+			continue
+		var item := {
+			"id": light.get_instance_id(),
+			"position": light.global_position,
+			"distance": horizontal,
+			"opacity": light.shadow_opacity if light.shadow_enabled else 0.0,
+		}
+		reaching.append(item)
+		if light.shadow_enabled and light.shadow_opacity > 0.001:
+			shadowed.append(item)
+	var sorter := func(a: Dictionary, b: Dictionary) -> bool:
+		var distance_a := float(a["distance"])
+		var distance_b := float(b["distance"])
+		if not is_equal_approx(distance_a, distance_b):
+			return distance_a < distance_b
+		return int(a["id"]) < int(b["id"])
+	reaching.sort_custom(sorter)
+	shadowed.sort_custom(sorter)
+	if reaching.is_empty():
+		return {
+			"has_source": false,
+			"has_shadow_source": false,
+			"nearest_source_shadowed": false,
+			"direction_dot": -2.0,
+		}
+	var source: Dictionary = reaching[0]
+	if shadowed.is_empty():
+		return {
+			"has_source": true,
+			"has_shadow_source": false,
+			"nearest_source_id": source["id"],
+			"nearest_source_position": source["position"],
+			"nearest_source_distance": source["distance"],
+			"nearest_source_shadowed": false,
+			"direction_dot": -2.0,
+		}
+	var shadow: Dictionary = shadowed[0]
+	var source_direction := Vector2(
+		float((source["position"] as Vector3).x - target.x),
+		float((source["position"] as Vector3).z - target.z)).normalized()
+	var shadow_direction := Vector2(
+		float((shadow["position"] as Vector3).x - target.x),
+		float((shadow["position"] as Vector3).z - target.z)).normalized()
+	return {
+		"has_source": true,
+		"has_shadow_source": true,
+		"nearest_source_id": source["id"],
+		"nearest_source_position": source["position"],
+		"nearest_source_distance": source["distance"],
+		"nearest_shadow_id": shadow["id"],
+		"nearest_shadow_position": shadow["position"],
+		"nearest_shadow_distance": shadow["distance"],
+		"nearest_source_shadowed": int(source["id"]) == int(shadow["id"]),
+		"direction_dot": source_direction.dot(shadow_direction),
+	}
+
+
 # Автоматический визуальный A/B реального level_e. Игрок переносится вместе с
 # light/streaming-пулом, а отдельная камера сохраняет один и тот же ракурс для
 # REFERENCE и LF3-11X. После прогона исходное состояние восстанавливается.
+func _lf3_apply_stability_maze_profile(profile_name: String) -> void:
+	_lf3_test_shadow_blur_override = \
+		2.125 if profile_name == "lf3_11g_blur2_125" else -1.0
+	_lf3_apply_test_profile(
+		"lf3_11g" if profile_name == "lf3_11g_blur2_125" else profile_name)
+
+
 func _lf3_level_e_capture_suite() -> void:
 	if _lf3_level_e_capture_running:
 		return
@@ -1040,7 +1420,8 @@ func _lf3_level_e_capture_suite() -> void:
 		return
 
 	var stamp := Time.get_datetime_string_from_system(false, true).replace(":", "-")
-	var relative_dir := ".lf3_level_e/%s" % stamp
+	var relative_dir := (".lf3_level_e_shadow_stability_maze/%s" \
+		if _lf3_stability_maze_requested else ".lf3_level_e/%s") % stamp
 	var absolute_dir := ProjectSettings.globalize_path("res://%s" % relative_dir)
 	if DirAccess.make_dir_recursive_absolute(absolute_dir) != OK:
 		push_error("LF3 level_e capture: cannot create %s" % absolute_dir)
@@ -1088,6 +1469,8 @@ func _lf3_level_e_capture_suite() -> void:
 			"blur": LF3_SHADOW_BLUR,
 			"bias": LF3_SHADOW_BIAS,
 			"normal_bias": LF3_SHADOW_NORMAL_BIAS,
+			"stability_candidate": "LF3-11G / blur 2.125" \
+				if _lf3_stability_maze_requested else "",
 		},
 		"pairs": [],
 	}
@@ -1107,13 +1490,14 @@ func _lf3_level_e_capture_suite() -> void:
 		for _frame in range(40):
 			await get_tree().process_frame
 
-		var profile_names := ["reference", "lf3_10j", "lf3_11f"]
+		var profile_names := ["reference", "lf3_10j", "lf3_11f",
+			"lf3_11g_blur2_125" if _lf3_stability_maze_requested else "lf3_11g"]
 		var images := {}
 		var states := {}
 		var leak_states := {}
 		var frame_times := {}
 		for profile_name: String in profile_names:
-			_lf3_apply_test_profile(profile_name)
+			_lf3_apply_stability_maze_profile(profile_name)
 			var started := Time.get_ticks_usec()
 			for _frame in range(12):
 				await get_tree().process_frame
@@ -1128,7 +1512,8 @@ func _lf3_level_e_capture_suite() -> void:
 			if captured.save_png(absolute_dir.path_join(filename)) != OK:
 				push_error("LF3 level_e capture: failed to save %s" % filename)
 
-		for comparison_name in ["lf3_10j", "lf3_11f"]:
+		for comparison_name in ["lf3_10j", "lf3_11f",
+				"lf3_11g_blur2_125" if _lf3_stability_maze_requested else "lf3_11g"]:
 			var reference_image := images["reference"] as Image
 			var comparison_image := images[comparison_name] as Image
 			var metrics := _lf3_compare_level_e_images(reference_image, comparison_image)
@@ -1152,62 +1537,78 @@ func _lf3_level_e_capture_suite() -> void:
 				"luma_ratio": metrics["luma_ratio"],
 			})
 
-	# Vulkan-стресс передачи: LF3 остаётся включённым, игрок и камера плавно
-	# ходят поперёк активного maze-пула. Проверяем реальный renderer, а не только
-	# data-only состояние, и жёстко следим за лимитом 10 shadow-cubemap.
+	# Один maze-маршрут отдельно для принятого 11F и guardian/view-кандидата.
+	# Профили не смешиваются в одной метрике: каждый получает собственные FPS,
+	# leak-risk, signature changes и контроль лимита 10+1.
 	var motion_start := _local_world(
 		MAZE_AFTER_PIT_CELL.x, MAZE_AFTER_PIT_CELL.y, 1.25, 3.75, 1.65)
-	var motion_peak_shadows := 0
-	var motion_transition_frames := 0
-	var motion_frame_ms_sum := 0.0
-	var motion_frame_ms_max := 0.0
-	var motion_stationary_progress_error := -1.0
 	var motion_frames := 900
-	for frame in range(motion_frames):
-		var cycle := float(frame % 360) / 359.0
-		var triangle := cycle * 2.0 if cycle <= 0.5 else (1.0 - cycle) * 2.0
-		var pos := motion_start + Vector3(triangle * 15.0, 0.0, 0.0)
-		_player_ref.global_position = pos
-		capture_camera.global_position = pos
-		capture_camera.look_at(pos + Vector3(2.0 if cycle <= 0.5 else -2.0, -0.25, 0.0), Vector3.UP)
-		var frame_started := Time.get_ticks_usec()
-		await get_tree().process_frame
-		var frame_ms := float(Time.get_ticks_usec() - frame_started) / 1000.0
-		motion_frame_ms_sum += frame_ms
-		motion_frame_ms_max = maxf(motion_frame_ms_max, frame_ms)
-		var state := lf3_debug_shadow_state()
-		motion_peak_shadows = maxi(motion_peak_shadows, int(state["active_shadows"]))
-		if int(state["transitioning_shadows"]) > 0 or bool(state["pending_incoming"]):
-			motion_transition_frames += 1
-		var progress := float(state.get("handoff_progress", 0.0))
-		if motion_stationary_progress_error < 0.0 \
-				and bool(state.get("pending_incoming", false)) \
-				and progress > 0.05 and progress < 0.95:
-			for _still_frame in range(30):
-				await get_tree().process_frame
-			var stationary_state := lf3_debug_shadow_state()
-			motion_stationary_progress_error = absf(
-				float(stationary_state.get("handoff_progress", 0.0)) - progress)
-			if motion_stationary_progress_error > 0.0001:
-				push_error("LF3 level_e capture: distance handoff moved while stationary")
+	var motion_reports := {}
+	var motion_profile_names := ["lf3_11f",
+		"lf3_11g_blur2_125" if _lf3_stability_maze_requested else "lf3_11g"]
+	if _lf3_stability_maze_reverse_requested:
+		motion_profile_names.reverse()
+	for profile_name: String in motion_profile_names:
+		_lf3_apply_stability_maze_profile(profile_name)
+		for _warm_frame in range(24):
+			await get_tree().process_frame
+		var motion_peak_shadows := 0
+		var motion_transition_frames := 0
+		var motion_frame_ms_sum := 0.0
+		var motion_frame_ms_max := 0.0
+		var leak_sum := 0.0
+		var leak_max := 0.0
+		var signature_changes := 0
+		var previous_signature := ""
+		for frame in range(motion_frames):
+			var cycle := float(frame % 360) / 359.0
+			var triangle := cycle * 2.0 if cycle <= 0.5 else (1.0 - cycle) * 2.0
+			var pos := motion_start + Vector3(triangle * 15.0, 0.0, 0.0)
+			_player_ref.global_position = pos
+			capture_camera.global_position = pos
+			capture_camera.look_at(pos + Vector3(
+				2.0 if cycle <= 0.5 else -2.0, -0.25, 0.0), Vector3.UP)
+			var frame_started := Time.get_ticks_usec()
+			await get_tree().process_frame
+			var frame_ms := float(Time.get_ticks_usec() - frame_started) / 1000.0
+			motion_frame_ms_sum += frame_ms
+			motion_frame_ms_max = maxf(motion_frame_ms_max, frame_ms)
+			var state := lf3_debug_shadow_state()
+			var active := int(state["active_shadows"])
+			motion_peak_shadows = maxi(motion_peak_shadows, active)
+			if int(state["transitioning_shadows"]) > 0 \
+					or bool(state["pending_incoming"]):
+				motion_transition_frames += 1
+			var signature := JSON.stringify(state["shadow_signature"])
+			if not previous_signature.is_empty() and signature != previous_signature:
+				signature_changes += 1
+			previous_signature = signature
+			var leak := lf3_debug_leak_risk()
+			var leak_energy := float(leak["unshadowed_energy_risk"])
+			leak_sum += leak_energy
+			leak_max = maxf(leak_max, leak_energy)
+			if motion_peak_shadows > LF3_SHADOW_TRANSIENT_CASTERS:
+				push_error("LF3 level_e capture: exceeded 11 shadow casters")
 				get_tree().quit(2)
 				return
-		if motion_peak_shadows > LF3_SHADOW_TRANSIENT_CASTERS:
-			push_error("LF3 level_e capture: handoff exceeded 11 shadow casters")
-			get_tree().quit(2)
-			return
-	for _frame in range(120):
-		await get_tree().process_frame
-	report["handoff_motion"] = {
-		"frames": motion_frames,
-		"peak_active_shadows": motion_peak_shadows,
-		"transition_frames": motion_transition_frames,
-		"stationary_progress_error": motion_stationary_progress_error,
-		"mean_frame_ms": motion_frame_ms_sum / float(motion_frames),
-		"max_frame_ms": motion_frame_ms_max,
-		"final_stationary_state": lf3_debug_shadow_state(),
-	}
+		motion_reports[profile_name] = {
+			"frames": motion_frames,
+			"peak_active_shadows": motion_peak_shadows,
+			"transition_frames": motion_transition_frames,
+			"signature_changes": signature_changes,
+			"mean_frame_ms": motion_frame_ms_sum / float(motion_frames),
+			"max_frame_ms": motion_frame_ms_max,
+			"mean_unshadowed_energy_risk": leak_sum / float(motion_frames),
+			"max_unshadowed_energy_risk": leak_max,
+			"final_state": lf3_debug_shadow_state(),
+		}
+		for _cool_frame in range(60):
+			await get_tree().process_frame
+	report["maze_motion"] = motion_reports
+	# Совместимость старых читателей отчёта: историческое поле остаётся 11F.
+	report["handoff_motion"] = motion_reports["lf3_11f"]
 
+	_lf3_test_shadow_blur_override = -1.0
 	lf3_set_shadow_mode(false)
 	_player_ref.global_transform = original_transform
 	_player_ref.set_physics_process(original_physics)
@@ -1440,22 +1841,58 @@ func _lf3_box_shadow_capture_suite() -> void:
 func _lf3_apply_test_profile(profile_name: String) -> void:
 	match profile_name:
 		"reference":
+			lf3_set_guardian_view(false)
+			lf3_set_angular_visibility(false)
+			lf3_set_receiver_priority(false)
 			lf3_set_far_frustum(true)
 			lf3_set_shadow_mode(false)
 		"lf3_10j":
+			lf3_set_guardian_view(false)
+			lf3_set_angular_visibility(false)
+			lf3_set_receiver_priority(false)
 			lf3_set_far_frustum(true)
 			lf3_set_occlusion_priority(false)
 			lf3_set_sharp_checkpoint(true)
 			lf3_set_shadow_mode(true)
 		"lf3_11p":
+			lf3_set_guardian_view(false)
+			lf3_set_angular_visibility(false)
+			lf3_set_receiver_priority(false)
 			lf3_set_sharp_checkpoint(false)
 			lf3_set_occlusion_priority(true)
 			lf3_set_far_frustum(false)
 			lf3_set_shadow_mode(true)
 		"lf3_11f":
+			lf3_set_guardian_view(false)
+			lf3_set_angular_visibility(false)
+			lf3_set_receiver_priority(false)
 			lf3_set_sharp_checkpoint(false)
 			lf3_set_occlusion_priority(true)
 			lf3_set_far_frustum(true)
+			lf3_set_shadow_mode(true)
+		"lf3_11r":
+			lf3_set_guardian_view(false)
+			lf3_set_angular_visibility(false)
+			lf3_set_sharp_checkpoint(false)
+			lf3_set_occlusion_priority(true)
+			lf3_set_far_frustum(true)
+			lf3_set_receiver_priority(true)
+			lf3_set_shadow_mode(true)
+		"lf3_11a":
+			lf3_set_guardian_view(false)
+			lf3_set_sharp_checkpoint(false)
+			lf3_set_occlusion_priority(true)
+			lf3_set_far_frustum(true)
+			lf3_set_receiver_priority(false)
+			lf3_set_angular_visibility(true)
+			lf3_set_shadow_mode(true)
+		"lf3_11g":
+			lf3_set_angular_visibility(false)
+			lf3_set_receiver_priority(false)
+			lf3_set_sharp_checkpoint(false)
+			lf3_set_occlusion_priority(true)
+			lf3_set_far_frustum(true)
+			lf3_set_guardian_view(true)
 			lf3_set_shadow_mode(true)
 
 
@@ -1521,10 +1958,12 @@ func _lf3_box_shadow_smoothness_capture_suite() -> void:
 		"sequences": {},
 		"directional": {},
 		"ab": {},
+		"rotation": {},
+		"rotation_directional": {},
 	}
 	var image_sets := {}
 
-	var profile_names := ["reference", "lf3_10j", "lf3_11f"]
+	var profile_names := ["reference", "lf3_11f", "lf3_11g"]
 	for mode_name: String in profile_names:
 		_lf3_apply_test_profile(mode_name)
 		for direction in ["approach", "retreat"]:
@@ -1559,6 +1998,7 @@ func _lf3_box_shadow_smoothness_capture_suite() -> void:
 					peak_pair = [previous.duplicate(), thumb.duplicate()]
 				var state := lf3_debug_shadow_state()
 				var leak_risk := lf3_debug_leak_risk()
+				var receiver_direction := _lf3_receiver_direction_state(target)
 				samples.append({
 					"index": index,
 					"path_fraction": fraction,
@@ -1569,6 +2009,7 @@ func _lf3_box_shadow_smoothness_capture_suite() -> void:
 					"transitioning_shadows": state["transitioning_shadows"],
 					"shadow_signature": state["shadow_signature"],
 					"leak_risk": leak_risk,
+					"receiver_direction": receiver_direction,
 				})
 				previous = thumb
 			var key := "%s_%s" % [mode_name, direction]
@@ -1604,7 +2045,7 @@ func _lf3_box_shadow_smoothness_capture_suite() -> void:
 			"pairs": pairs,
 		}
 
-	for comparison_name in ["lf3_10j", "lf3_11f"]:
+	for comparison_name in ["lf3_11f", "lf3_11g"]:
 		for direction in ["approach", "retreat"]:
 			var reference_images: Array = image_sets["reference_%s" % direction]
 			var lf3_images: Array = image_sets["%s_%s" % [comparison_name, direction]]
@@ -1618,6 +2059,79 @@ func _lf3_box_shadow_smoothness_capture_suite() -> void:
 				"peak_rgb_mae": peak,
 				"pairs": pairs,
 			}
+
+	# Неподвижный spatial-тест: одинаковые углы в обоих направлениях вращения.
+	var rotation_profiles := ["lf3_11f", "lf3_11g"]
+	var rotation_images := {}
+	var rotation_signatures := {}
+	var rotation_sample_count := 61
+	var base_forward := target - capture_camera.global_position
+	base_forward.y = 0.0
+	base_forward = base_forward.normalized()
+	_player_ref.global_position = Vector3(
+		camera_anchor.x, _player_ref.global_position.y, camera_anchor.z)
+	for profile_name: String in rotation_profiles:
+		_lf3_apply_test_profile(profile_name)
+		for rotation_direction in ["cw", "ccw"]:
+			var images: Array[Image] = []
+			var signatures := []
+			var samples := []
+			var previous: Image = null
+			for index in range(rotation_sample_count):
+				var fraction := float(index) / float(rotation_sample_count - 1)
+				if rotation_direction == "ccw":
+					fraction = 1.0 - fraction
+				var angle_deg := lerpf(-150.0, 150.0, fraction)
+				var direction := base_forward.rotated(Vector3.UP, deg_to_rad(angle_deg))
+				capture_camera.look_at(
+					capture_camera.global_position + direction * 10.0, Vector3.UP)
+				for _frame in range(2):
+					await get_tree().process_frame
+				await RenderingServer.frame_post_draw
+				var thumb := get_viewport().get_texture().get_image().duplicate()
+				thumb.convert(Image.FORMAT_RGBA8)
+				thumb.resize(320, 180, Image.INTERPOLATE_LANCZOS)
+				images.append(thumb)
+				var state := lf3_debug_shadow_state()
+				var signature := JSON.stringify(state["shadow_signature"])
+				signatures.append(signature)
+				var step_mae := 0.0 if previous == null else \
+					_lf3_box_image_mae(previous, thumb)
+				samples.append({
+					"index": index,
+					"angle_deg": angle_deg,
+					"step_rgb_mae": step_mae,
+					"active_shadows": state["active_shadows"],
+					"shadow_signature": state["shadow_signature"],
+					"leak_risk": lf3_debug_leak_risk(),
+				})
+				previous = thumb
+			var key := "%s_rotation_%s" % [profile_name, rotation_direction]
+			rotation_images[key] = images
+			rotation_signatures[key] = signatures
+			report["rotation"][key] = {
+				"samples": samples,
+				"stats": _lf3_rotation_stats(samples),
+			}
+			_lf3_box_save_contact_sheet(images,
+				absolute_dir.path_join("%s__contact.png" % key))
+		var cw_images: Array = rotation_images["%s_rotation_cw" % profile_name]
+		var ccw_images: Array = rotation_images["%s_rotation_ccw" % profile_name]
+		var cw_signatures: Array = rotation_signatures["%s_rotation_cw" % profile_name]
+		var ccw_signatures: Array = rotation_signatures["%s_rotation_ccw" % profile_name]
+		var peak_directional_mae := 0.0
+		var signature_mismatches := 0
+		for index in range(rotation_sample_count):
+			var mirrored := rotation_sample_count - 1 - index
+			peak_directional_mae = maxf(peak_directional_mae,
+				_lf3_box_image_mae(cw_images[index], ccw_images[mirrored]))
+			if String(cw_signatures[index]) != String(ccw_signatures[mirrored]):
+				signature_mismatches += 1
+		report["rotation_directional"][profile_name] = {
+			"peak_rgb_mae": peak_directional_mae,
+			"signature_mismatches": signature_mismatches,
+		}
+	capture_camera.look_at(target, Vector3.UP)
 
 	# Одинаковый 900-кадровый FPS/leak-risk маршрут для всех трёх профилей.
 	var stress_frames := 900
@@ -1689,15 +2203,407 @@ func _lf3_box_shadow_smoothness_capture_suite() -> void:
 	get_tree().quit()
 
 
+func _lf3_shadow_stability_lab_suite() -> void:
+	for _frame in range(12):
+		await get_tree().process_frame
+	if _player_ref == null:
+		push_error("LF3 stability lab: player is not ready")
+		get_tree().quit(2)
+		return
+	var box := find_child("arrow_cardboard_box_01", true, false) as Node3D
+	if box == null:
+		push_error("LF3 stability lab: arrow cardboard boxes are missing")
+		get_tree().quit(2)
+		return
+	var box_bounds := _node_world_aabb(box)
+	var target := box_bounds.position + box_bounds.size * Vector3(0.5, 0.15, 0.5)
+	var far_pos := _local_world(2, 1, 8.3, 14.0, 1.2)
+	var near_pos := _local_world(2, 1, 8.3, 1.8, 1.2)
+	var camera_anchor := far_pos.lerp(near_pos, 0.62)
+	var stamp := Time.get_datetime_string_from_system(false, true).replace(":", "-")
+	var absolute_dir := ProjectSettings.globalize_path(
+		"res://.lf3_level_e_shadow_stability/%s" % stamp)
+	if DirAccess.make_dir_recursive_absolute(absolute_dir) != OK:
+		push_error("LF3 stability lab: cannot create output directory")
+		get_tree().quit(2)
+		return
+
+	var original_transform := _player_ref.global_transform
+	var original_physics := _player_ref.is_physics_processing()
+	var original_input := _player_ref.is_processing_input()
+	var original_hud_visible := _hud_label.visible if _hud_label != null else false
+	var original_map_visible := _minimap.visible if _minimap != null else false
+	var original_window_size := get_window().size
+	var original_taa := get_viewport().use_taa
+	var original_atlas_size := get_viewport().positional_shadow_atlas_size
+	var quality_setting := \
+		"rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality"
+	var original_quality := int(ProjectSettings.get_setting(quality_setting, 2))
+	var high_quality := mini(5, maxi(4, original_quality))
+	var player_camera: Camera3D = null
+	var cameras := _player_ref.find_children("*", "Camera3D", true, false)
+	if not cameras.is_empty():
+		player_camera = cameras[0] as Camera3D
+	_player_ref.set_physics_process(false)
+	_player_ref.set_process_input(false)
+	_player_ref.velocity = Vector3.ZERO
+	if _hud_label != null:
+		_hud_label.visible = false
+	if _minimap != null:
+		_minimap.visible = false
+	get_window().size = Vector2i(960, 540)
+
+	var capture_camera := Camera3D.new()
+	add_child(capture_camera)
+	capture_camera.fov = 62.0
+	capture_camera.global_position = Vector3(camera_anchor.x, 1.55, camera_anchor.z)
+	capture_camera.look_at(target, Vector3.UP)
+	capture_camera.current = true
+	_player_ref.global_position = Vector3(
+		camera_anchor.x, _player_ref.global_position.y, camera_anchor.z)
+
+	var variants := [
+		{"name": "11f_default", "profile": "lf3_11f", "freeze": false,
+			"blur": LF3_SHADOW_BLUR, "taa": false, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11f_frozen", "profile": "lf3_11f", "freeze": true,
+			"blur": LF3_SHADOW_BLUR, "taa": false, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11f_frozen_blur1", "profile": "lf3_11f", "freeze": true,
+			"blur": 1.0, "taa": false, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11g_default", "profile": "lf3_11g", "freeze": false,
+			"blur": LF3_SHADOW_BLUR, "taa": false, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11g_blur2", "profile": "lf3_11g", "freeze": false,
+			"blur": 2.0, "taa": false, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11f_taa", "profile": "lf3_11f", "freeze": false,
+			"blur": LF3_SHADOW_BLUR, "taa": true, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11g_taa", "profile": "lf3_11g", "freeze": false,
+			"blur": LF3_SHADOW_BLUR, "taa": true, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11g_blur2_taa", "profile": "lf3_11g", "freeze": false,
+			"blur": 2.0, "taa": true, "quality": original_quality,
+			"atlas": original_atlas_size},
+		{"name": "11g_blur2_taa_high", "profile": "lf3_11g", "freeze": false,
+			"blur": 2.0, "taa": true, "quality": high_quality,
+			"atlas": original_atlas_size},
+	]
+	if _lf3_stability_focus_requested:
+		variants = [
+			{"name": "11f_default", "profile": "lf3_11f", "freeze": false,
+				"blur": LF3_SHADOW_BLUR, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11f_blur2", "profile": "lf3_11f", "freeze": false,
+				"blur": 2.0, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur1_5", "profile": "lf3_11g", "freeze": false,
+				"blur": 1.5, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur1_75", "profile": "lf3_11g", "freeze": false,
+				"blur": 1.75, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.0, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2_25", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.25, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2_5", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.5, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2_25_high", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.25, "taa": false,
+				"quality": high_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2_25_atlas2x", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.25, "taa": false,
+				"quality": original_quality,
+				"atlas": mini(16384, original_atlas_size * 2)},
+		]
+	if _lf3_stability_final_requested:
+		variants = [
+			{"name": "11f_default", "profile": "lf3_11f", "freeze": false,
+				"blur": LF3_SHADOW_BLUR, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.0, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2_125", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.125, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+			{"name": "11g_blur2_25", "profile": "lf3_11g", "freeze": false,
+				"blur": 2.25, "taa": false,
+				"quality": original_quality, "atlas": original_atlas_size},
+		]
+	var report := {
+		"timestamp": stamp,
+		"scene": "level_e.tscn",
+		"target": target,
+		"camera": capture_camera.global_position,
+		"stationary_frames": 48,
+		"rotation_samples_per_direction": 41,
+		"stress_frames": 600,
+		"default_filter_quality": original_quality,
+		"high_filter_quality": high_quality,
+		"default_atlas_size": original_atlas_size,
+		"variants": {},
+	}
+	var baseline_image: Image = null
+	var profile_images: Array[Image] = []
+
+	for variant: Dictionary in variants:
+		_lf3_test_shadow_pool_frozen = false
+		_lf3_set_test_shadow_blur(float(variant["blur"]))
+		get_viewport().use_taa = bool(variant["taa"])
+		get_viewport().positional_shadow_atlas_size = int(variant["atlas"])
+		RenderingServer.positional_soft_shadow_filter_set_quality(
+			int(variant["quality"]))
+		_lf3_apply_test_profile(String(variant["profile"]))
+		_player_ref.global_position = Vector3(
+			camera_anchor.x, _player_ref.global_position.y, camera_anchor.z)
+		capture_camera.look_at(target, Vector3.UP)
+		for _frame in range(32):
+			await get_tree().process_frame
+		if bool(variant["freeze"]):
+			_lf3_test_shadow_pool_frozen = true
+		for _frame in range(8):
+			await get_tree().process_frame
+
+		var stationary_images: Array[Image] = []
+		var stationary_steps := []
+		var stationary_from_first := []
+		var first_stationary: Image = null
+		var previous_stationary: Image = null
+		for frame in range(48):
+			await get_tree().process_frame
+			await RenderingServer.frame_post_draw
+			var image := get_viewport().get_texture().get_image().duplicate()
+			image.convert(Image.FORMAT_RGBA8)
+			image.resize(480, 270, Image.INTERPOLATE_LANCZOS)
+			stationary_images.append(image)
+			if first_stationary == null:
+				first_stationary = image
+			else:
+				stationary_from_first.append(
+					_lf3_box_image_mae(first_stationary, image))
+			if previous_stationary != null:
+				stationary_steps.append(
+					_lf3_box_image_mae(previous_stationary, image))
+			previous_stationary = image
+		var representative := stationary_images[stationary_images.size() - 1]
+		profile_images.append(representative)
+		if baseline_image == null:
+			baseline_image = representative
+		var visual_ab := _lf3_compare_level_e_images(baseline_image, representative)
+		_lf3_box_save_contact_sheet(stationary_images,
+			absolute_dir.path_join("%s__stationary.png" % String(variant["name"])))
+
+		var rotation_images := {}
+		var rotation_signatures := {}
+		var base_forward := target - capture_camera.global_position
+		base_forward.y = 0.0
+		base_forward = base_forward.normalized()
+		for rotation_direction in ["cw", "ccw"]:
+			var images: Array[Image] = []
+			var signatures := []
+			var steps := []
+			var previous: Image = null
+			for index in range(41):
+				var fraction := float(index) / 40.0
+				if rotation_direction == "ccw":
+					fraction = 1.0 - fraction
+				var angle_deg := lerpf(-120.0, 120.0, fraction)
+				var direction := base_forward.rotated(Vector3.UP, deg_to_rad(angle_deg))
+				capture_camera.look_at(
+					capture_camera.global_position + direction * 10.0, Vector3.UP)
+				for _frame in range(2):
+					await get_tree().process_frame
+				await RenderingServer.frame_post_draw
+				var image := get_viewport().get_texture().get_image().duplicate()
+				image.convert(Image.FORMAT_RGBA8)
+				image.resize(320, 180, Image.INTERPOLATE_LANCZOS)
+				images.append(image)
+				var state := lf3_debug_shadow_state()
+				signatures.append(JSON.stringify(state["shadow_signature"]))
+				if previous != null:
+					steps.append(_lf3_box_image_mae(previous, image))
+				previous = image
+			rotation_images[rotation_direction] = images
+			rotation_signatures[rotation_direction] = signatures
+			_lf3_box_save_contact_sheet(images,
+				absolute_dir.path_join("%s__rotation_%s.png" % [
+					String(variant["name"]), rotation_direction]))
+		var directional_values := []
+		var signature_mismatches := 0
+		var cw_images: Array = rotation_images["cw"]
+		var ccw_images: Array = rotation_images["ccw"]
+		var cw_signatures: Array = rotation_signatures["cw"]
+		var ccw_signatures: Array = rotation_signatures["ccw"]
+		for index in range(41):
+			var mirrored := 40 - index
+			directional_values.append(
+				_lf3_box_image_mae(cw_images[index], ccw_images[mirrored]))
+			if String(cw_signatures[index]) != String(ccw_signatures[mirrored]):
+				signature_mismatches += 1
+		capture_camera.look_at(target, Vector3.UP)
+		for _frame in range(16):
+			await get_tree().process_frame
+
+		var frame_times := []
+		var active_peak := 0
+		var frames_at_eleven := 0
+		var leak_values := []
+		var signature_changes := 0
+		var previous_signature := ""
+		for frame in range(600):
+			var cycle := float(frame % 320) / 319.0
+			var fraction := cycle * 2.0 if cycle <= 0.5 else (1.0 - cycle) * 2.0
+			_player_ref.global_position = far_pos.lerp(near_pos, fraction)
+			var started := Time.get_ticks_usec()
+			await get_tree().process_frame
+			frame_times.append(float(Time.get_ticks_usec() - started) / 1000.0)
+			var state := lf3_debug_shadow_state()
+			var active := int(state["active_shadows"])
+			active_peak = maxi(active_peak, active)
+			if active == LF3_SHADOW_TRANSIENT_CASTERS:
+				frames_at_eleven += 1
+			if active > LF3_SHADOW_TRANSIENT_CASTERS:
+				push_error("LF3 stability lab: exceeded 11 shadow casters")
+				get_tree().quit(2)
+				return
+			var signature := JSON.stringify(state["shadow_signature"])
+			if previous_signature != "" and signature != previous_signature:
+				signature_changes += 1
+			previous_signature = signature
+			leak_values.append(float(
+				lf3_debug_leak_risk()["unshadowed_energy_risk"]))
+
+		report["variants"][String(variant["name"])] = {
+			"profile": variant["profile"],
+			"frozen_pool": variant["freeze"],
+			"shadow_blur": variant["blur"],
+			"taa": variant["taa"],
+			"filter_quality": variant["quality"],
+			"atlas_size": variant["atlas"],
+			"visual_vs_11f_default": visual_ab,
+			"stationary_consecutive": _lf3_numeric_stats(stationary_steps),
+			"stationary_from_first": _lf3_numeric_stats(stationary_from_first),
+			"rotation_directional": _lf3_numeric_stats(directional_values),
+			"rotation_signature_mismatches": signature_mismatches,
+			"stress_frame_ms": _lf3_numeric_stats(frame_times),
+			"stress_active_peak": active_peak,
+			"stress_frames_at_eleven": frames_at_eleven,
+			"stress_signature_changes": signature_changes,
+			"stress_leak_risk": _lf3_numeric_stats(leak_values),
+		}
+
+	_lf3_box_save_contact_sheet(profile_images,
+		absolute_dir.path_join("variants__contact.png"))
+	_lf3_test_shadow_pool_frozen = false
+	_lf3_test_shadow_blur_override = -1.0
+	get_viewport().use_taa = original_taa
+	get_viewport().positional_shadow_atlas_size = original_atlas_size
+	RenderingServer.positional_soft_shadow_filter_set_quality(original_quality)
+	_lf3_apply_test_profile("lf3_11f")
+	_player_ref.global_transform = original_transform
+	_player_ref.set_physics_process(original_physics)
+	_player_ref.set_process_input(original_input)
+	if player_camera != null:
+		player_camera.current = true
+	if _hud_label != null:
+		_hud_label.visible = original_hud_visible
+	if _minimap != null:
+		_minimap.visible = original_map_visible
+	get_window().size = original_window_size
+	capture_camera.queue_free()
+	var report_file := FileAccess.open(
+		absolute_dir.path_join("report.json"), FileAccess.WRITE)
+	if report_file != null:
+		report_file.store_string(JSON.stringify(report, "\t"))
+	print("LF3_LEVEL_E_SHADOW_STABILITY_LAB_OK: ", absolute_dir)
+	get_tree().quit()
+
+
+func _lf3_numeric_stats(values: Array) -> Dictionary:
+	if values.is_empty():
+		return {"count": 0, "mean": 0.0, "median": 0.0,
+			"p95": 0.0, "max": 0.0}
+	var sorted := values.duplicate()
+	sorted.sort()
+	var sum := 0.0
+	for value in sorted:
+		sum += float(value)
+	var count := sorted.size()
+	return {
+		"count": count,
+		"mean": sum / float(count),
+		"median": float(sorted[count / 2]),
+		"p95": float(sorted[mini(count - 1, int(ceil(float(count) * 0.95)) - 1)]),
+		"max": float(sorted[count - 1]),
+	}
+
+
+func _lf3_rotation_stats(samples: Array) -> Dictionary:
+	var active_min := 2147483647
+	var active_max := 0
+	var active_sum := 0.0
+	var partial_angular_casters := 0
+	var peak_step := 0.0
+	var leak_sum := 0.0
+	var leak_max := 0.0
+	for sample: Dictionary in samples:
+		var active := int(sample["active_shadows"])
+		active_min = mini(active_min, active)
+		active_max = maxi(active_max, active)
+		active_sum += float(active)
+		peak_step = maxf(peak_step, float(sample["step_rgb_mae"]))
+		for caster: Dictionary in sample["shadow_signature"]:
+			var weight := float(caster.get("angular_weight", 1.0))
+			if weight > 0.001 and weight < 0.999:
+				partial_angular_casters += 1
+		var leak: Dictionary = sample["leak_risk"]
+		var leak_energy := float(leak.get("unshadowed_energy_risk", 0.0))
+		leak_sum += leak_energy
+		leak_max = maxf(leak_max, leak_energy)
+	return {
+		"active_min": active_min if not samples.is_empty() else 0,
+		"active_max": active_max,
+		"active_mean": active_sum / float(maxi(samples.size(), 1)),
+		"partial_angular_caster_samples": partial_angular_casters,
+		"peak_step_rgb_mae": peak_step,
+		"mean_unshadowed_energy_risk": leak_sum / float(maxi(samples.size(), 1)),
+		"max_unshadowed_energy_risk": leak_max,
+	}
+
+
 func _lf3_smoothness_stats(samples: Array) -> Dictionary:
 	var values := []
+	var receiver_samples := 0
+	var nearest_source_shadowed := 0
+	var direction_dot_sum := 0.0
+	var direction_dot_min := 1.0
+	var direction_dot_samples := 0
 	for sample: Dictionary in samples:
 		if int(sample["index"]) > 0:
 			values.append(float(sample["step_rgb_mae"]))
+		var receiver: Dictionary = sample.get("receiver_direction", {})
+		if bool(receiver.get("has_source", false)):
+			receiver_samples += 1
+			if bool(receiver.get("nearest_source_shadowed", false)):
+				nearest_source_shadowed += 1
+			var dot := float(receiver.get("direction_dot", -2.0))
+			if dot >= -1.0:
+				direction_dot_samples += 1
+				direction_dot_sum += dot
+				direction_dot_min = minf(direction_dot_min, dot)
 	values.sort()
 	if values.is_empty():
 		return {"median_step_rgb_mae": 0.0, "p95_step_rgb_mae": 0.0,
-			"peak_step_rgb_mae": 0.0, "peak_to_median": 0.0}
+			"peak_step_rgb_mae": 0.0, "peak_to_median": 0.0,
+			"receiver_samples": receiver_samples,
+			"nearest_source_shadowed_samples": nearest_source_shadowed}
 	var median := float(values[int(float(values.size() - 1) * 0.5)])
 	var p95 := float(values[int(float(values.size() - 1) * 0.95)])
 	var peak := float(values[values.size() - 1])
@@ -1706,6 +2612,11 @@ func _lf3_smoothness_stats(samples: Array) -> Dictionary:
 		"p95_step_rgb_mae": p95,
 		"peak_step_rgb_mae": peak,
 		"peak_to_median": peak / maxf(median, 0.000001),
+		"receiver_samples": receiver_samples,
+		"nearest_source_shadowed_samples": nearest_source_shadowed,
+		"nearest_source_mismatch_samples": receiver_samples - nearest_source_shadowed,
+		"mean_direction_dot": direction_dot_sum / float(maxi(direction_dot_samples, 1)),
+		"min_direction_dot": direction_dot_min if direction_dot_samples > 0 else -2.0,
 	}
 
 
@@ -1949,7 +2860,13 @@ func _near_load(block: Vector2i) -> bool:
 func _derive_geometry() -> void:
 	_load_center = _block_of(_hub_center_pos())
 	for c: Vector2i in _grid.keys():
-		_known_blocks[Vector2i(floori(float(c.x) / PITCH), floori(float(c.y) / PITCH))] = true
+		var block := Vector2i(floori(float(c.x) / PITCH),
+			floori(float(c.y) / PITCH))
+		_known_blocks[block] = true
+		if _stream_background_enabled or _stream_ab_requested:
+			if not _stream_block_cells.has(block):
+				_stream_block_cells[block] = {}
+			(_stream_block_cells[block] as Dictionary)[c] = _grid[c]
 	# Производную эмитим только у близких блоков; дальние — по подходу (_rebuild_block).
 	for block: Vector2i in _known_blocks.keys():
 		if _near_load(block):
@@ -2093,6 +3010,8 @@ func _update_streaming() -> void:
 	if not _stream_on or _player_ref == null:
 		return
 	var pb := _block_of(_player_ref.global_position)
+	if _stream_background_enabled:
+		_poll_stream_plan(pb)
 	if pb != _last_pb:
 		_last_pb = pb
 		_stream_build_queue.clear()
@@ -2104,10 +3023,20 @@ func _update_streaming() -> void:
 			for block: Vector2i in _known_blocks.keys():
 				if _cheby(block, pb) == distance and not _block_holder.has(block):
 					_stream_build_queue.append(block)
-	# Не больше одного rebuild за кадр: офисный блок сам по себе занимает ~7 мс.
+	if _stream_background_enabled and _stream_plan_thread != null:
+		return
+	# Default: не больше одного rebuild за кадр. Test candidate: один data-only
+	# worker готовит следующий блок, а SceneTree/resources коммитятся здесь.
 	while not _stream_build_queue.is_empty():
 		var block: Vector2i = _stream_build_queue.pop_front()
-		if _cheby(block, pb) <= STREAM_BUILD_RADIUS and not _block_holder.has(block):
+		if _cheby(block, pb) > STREAM_BUILD_RADIUS \
+				or _block_holder.has(block) or block == _stream_plan_block:
+			continue
+		if _stream_background_enabled:
+			if _stream_plan_thread == null:
+				_start_stream_plan(block)
+			break
+		else:
 			_rebuild_block(block)
 			break
 
@@ -2163,6 +3092,473 @@ func _rebuild_block(block: Vector2i) -> void:
 		cs.shape = _shape_cache[size]
 		cs.position = pos
 		body.add_child(cs)
+
+
+func _stream_plan_snapshot(block: Vector2i) -> Dictionary:
+	return {
+		"block": block,
+		"cells": (_stream_block_cells.get(block, {}) as Dictionary).duplicate(true),
+		"extra": (_block_rec.get(block, {"geo": [], "col": []}) as Dictionary).duplicate(true),
+		"cell": CELL,
+		"ceil_h": CEIL_H,
+		"slab_t": SLAB_T,
+		"base_h": BASEBOARD_H,
+		"base_pad": BASEBOARD_PAD,
+		"wall_kind": K_WALL,
+		"pit_kind": K_PIT,
+		"unit_box_arrays": _stream_unit_box_source_arrays(),
+	}
+
+
+func _stream_unit_box_source_arrays() -> Array:
+	if _stream_unit_box_arrays.is_empty():
+		var unit_box := BoxMesh.new()
+		unit_box.size = Vector3.ONE
+		_stream_unit_box_arrays = unit_box.surface_get_arrays(0)
+	return _stream_unit_box_arrays
+
+
+func _start_stream_plan(block: Vector2i) -> void:
+	if _stream_plan_thread != null:
+		return
+	_stream_plan_block = block
+	_stream_plan_started_usec = Time.get_ticks_usec()
+	_stream_plan_thread = Thread.new()
+	var error := _stream_plan_thread.start(
+		STREAM_BLOCK_PLANNER.build.bind(_stream_plan_snapshot(block)))
+	if error != OK:
+		push_error("[level_e] stream planner thread start failed: %s" % error_string(error))
+		_stream_plan_thread = null
+		_stream_plan_block = Vector2i(2147483647, 2147483647)
+
+
+func _poll_stream_plan(player_block: Vector2i) -> void:
+	if _stream_plan_thread == null or _stream_plan_thread.is_alive():
+		return
+	var plan: Dictionary = _stream_plan_thread.wait_to_finish()
+	var worker_ms := float(Time.get_ticks_usec() - _stream_plan_started_usec) / 1000.0
+	var block: Vector2i = plan.get("block", _stream_plan_block)
+	_stream_plan_thread = null
+	_stream_plan_block = Vector2i(2147483647, 2147483647)
+	_stream_background_worker_ms.append(worker_ms)
+	if _cheby(block, player_block) > STREAM_BUILD_RADIUS \
+			or _block_holder.has(block) or not _known_blocks.has(block):
+		return
+	var commit_started := Time.get_ticks_usec()
+	_rebuild_block_from_plan(plan)
+	_stream_background_commit_ms.append(
+		float(Time.get_ticks_usec() - commit_started) / 1000.0)
+
+
+func _finish_stream_plan_thread() -> void:
+	if _stream_plan_thread == null:
+		return
+	_stream_plan_thread.wait_to_finish()
+	_stream_plan_thread = null
+	_stream_plan_block = Vector2i(2147483647, 2147483647)
+
+
+func _records_to_surfaces(records: Array) -> Dictionary:
+	var surfaces: Dictionary = {}
+	for geometry: Array in records:
+		var surface_name: String = geometry[0]
+		var size: Vector3 = geometry[1]
+		var position: Vector3 = geometry[2]
+		if not surfaces.has(surface_name):
+			var surface := SurfaceTool.new()
+			surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+			surfaces[surface_name] = surface
+		(surfaces[surface_name] as SurfaceTool).append_from(
+			_get_box(size), 0, Transform3D(Basis(), position))
+	return surfaces
+
+
+func _rebuild_block_from_plan(plan: Dictionary) -> void:
+	var block: Vector2i = plan.get("block", Vector2i.ZERO)
+	if _block_holder.has(block) or not _known_blocks.has(block):
+		return
+	var holder := _block_holder_get(block)
+	if plan.has("derived_mesh_arrays"):
+		_build_block_mesh_arrays(holder, plan["derived_mesh_arrays"])
+	else:
+		_build_block_meshes(holder,
+			_records_to_surfaces(plan.get("derived_geo", []) as Array))
+	var extra_geo: Array = plan.get("extra_geo", [])
+	if not extra_geo.is_empty():
+		if plan.has("extra_mesh_arrays"):
+			_build_block_mesh_arrays(holder, plan["extra_mesh_arrays"])
+		else:
+			_build_block_meshes(holder, _records_to_surfaces(extra_geo))
+	var body := _block_body_get(block)
+	var collisions: Array = (plan.get("derived_col", []) as Array).duplicate()
+	collisions.append_array(plan.get("extra_col", []) as Array)
+	for collision: Array in collisions:
+		var size: Vector3 = collision[0]
+		var position: Vector3 = collision[1]
+		if not _shape_cache.has(size):
+			var shape := BoxShape3D.new()
+			shape.size = size
+			_shape_cache[size] = shape
+		var collision_shape := CollisionShape3D.new()
+		collision_shape.shape = _shape_cache[size]
+		collision_shape.position = position
+		body.add_child(collision_shape)
+
+
+func _build_block_mesh_arrays(holder: Node3D,
+		surface_arrays: Dictionary) -> void:
+	var materials := _mats_map()
+	for surface_name: String in surface_arrays:
+		var arrays: Array = surface_arrays[surface_name]
+		if arrays.is_empty() \
+				or (arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array).is_empty():
+			continue
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(0, materials[surface_name])
+		var instance := MeshInstance3D.new()
+		instance.mesh = mesh
+		instance.gi_mode = GeometryInstance3D.GI_MODE_STATIC
+		if surface_name == "ceil":
+			instance.layers = instance.layers | AREA_LIGHT_CEILING_FILL_LAYER
+		holder.add_child(instance)
+
+
+func _exit_tree() -> void:
+	_finish_stream_plan_thread()
+
+
+func _streaming_background_ab_suite() -> void:
+	_stream_on = false
+	_finish_stream_plan_thread()
+	if _player_ref != null:
+		_player_ref.set_physics_process(false)
+	for _warmup in range(4):
+		await get_tree().process_frame
+
+	var blocks: Array = _known_blocks.keys()
+	blocks.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var a_rec: Dictionary = _block_rec.get(a, {"geo": [], "col": []})
+		var b_rec: Dictionary = _block_rec.get(b, {"geo": [], "col": []})
+		var a_weight := (_stream_block_cells.get(a, {}) as Dictionary).size() \
+			+ (a_rec.get("geo", []) as Array).size() * 4 \
+			+ (a_rec.get("col", []) as Array).size() * 2
+		var b_weight := (_stream_block_cells.get(b, {}) as Dictionary).size() \
+			+ (b_rec.get("geo", []) as Array).size() * 4 \
+			+ (b_rec.get("col", []) as Array).size() * 2
+		if a_weight != b_weight:
+			return a_weight > b_weight
+		return a.y < b.y or (a.y == b.y and a.x < b.x))
+	if blocks.size() > 6:
+		blocks.resize(6)
+
+	var sync_samples: Array[float] = []
+	var worker_samples: Array[float] = []
+	var commit_samples: Array[float] = []
+	var worker_frame_samples: Array[float] = []
+	var samples: Array = []
+	var order_stats := {}
+	for order: String in ["sync_first", "candidate_first"]:
+		var order_sync: Array[float] = []
+		var order_commit: Array[float] = []
+		for block: Vector2i in blocks:
+			if _block_holder.has(block):
+				_free_block(block)
+				await get_tree().process_frame
+			var expected: Dictionary = STREAM_BLOCK_PLANNER.build(
+				_stream_plan_snapshot(block))
+			var sync_result: Dictionary
+			var candidate_result: Dictionary
+			if order == "sync_first":
+				sync_result = _stream_ab_measure_sync(block)
+				_free_block(block)
+				await get_tree().process_frame
+				candidate_result = await _stream_ab_measure_candidate(
+					block, worker_frame_samples)
+			else:
+				candidate_result = await _stream_ab_measure_candidate(
+					block, worker_frame_samples)
+				_free_block(block)
+				await get_tree().process_frame
+				sync_result = _stream_ab_measure_sync(block)
+			if candidate_result.has("error"):
+				push_error("[level_e] A/B worker failed: %s" % candidate_result["error"])
+				continue
+			var sync_ms := float(sync_result["main_ms"])
+			var worker_ms := float(candidate_result["worker_ms"])
+			var commit_ms := float(candidate_result["main_ms"])
+			sync_samples.append(sync_ms)
+			worker_samples.append(worker_ms)
+			commit_samples.append(commit_ms)
+			order_sync.append(sync_ms)
+			order_commit.append(commit_ms)
+			var sync_collision_count := int(sync_result["collision_count"])
+			var candidate_collision_count := int(candidate_result["collision_count"])
+			var sync_mesh_signature: Dictionary = sync_result["mesh_signature"]
+			var candidate_mesh_signature: Dictionary = candidate_result["mesh_signature"]
+			samples.append({
+				"order": order,
+				"block": [block.x, block.y],
+				"sync_main_ms": sync_ms,
+				"worker_latency_ms": worker_ms,
+				"candidate_main_commit_ms": commit_ms,
+				"derived_geo_count": int(candidate_result.get("derived_geo_count", -1)),
+				"extra_geo_count": int(candidate_result.get("extra_geo_count", -1)),
+				"expected_collision_count": int(expected.get("collision_count", -1)),
+				"sync_collision_count": sync_collision_count,
+				"candidate_collision_count": candidate_collision_count,
+				"collision_match": sync_collision_count == candidate_collision_count \
+					and sync_collision_count == int(expected.get("collision_count", -1)),
+				"sync_mesh_signature": sync_mesh_signature,
+				"candidate_mesh_signature": candidate_mesh_signature,
+				"mesh_signature_match": sync_mesh_signature == candidate_mesh_signature,
+			})
+			_free_block(block)
+			await get_tree().process_frame
+		order_stats[order] = {
+			"sync_main_ms": _stream_numeric_stats(order_sync),
+			"candidate_main_commit_ms": _stream_numeric_stats(order_commit),
+		}
+
+	var report := {
+		"engine": Engine.get_version_info().get("string", "unknown"),
+		"seed": maze_seed,
+		"candidate": "raw_mesh_arrays",
+		"sample_count": samples.size(),
+		"sync_main_ms": _stream_numeric_stats(sync_samples),
+		"candidate_worker_latency_ms": _stream_numeric_stats(worker_samples),
+		"candidate_main_commit_ms": _stream_numeric_stats(commit_samples),
+		"frames_while_worker_active_ms": _stream_numeric_stats(worker_frame_samples),
+		"all_collision_counts_match": samples.all(
+			func(sample: Dictionary) -> bool: return bool(sample["collision_match"])),
+		"all_mesh_signatures_match": samples.all(
+			func(sample: Dictionary) -> bool: return bool(sample["mesh_signature_match"])),
+		"order_stats": order_stats,
+		"samples": samples,
+	}
+	var timestamp := Time.get_datetime_string_from_system().replace(":", "-").replace("T", " ")
+	var absolute_dir := ProjectSettings.globalize_path(
+		"res://.streaming_ab/%s" % timestamp)
+	DirAccess.make_dir_recursive_absolute(absolute_dir)
+	var report_path := absolute_dir.path_join("report.json")
+	var report_file := FileAccess.open(report_path, FileAccess.WRITE)
+	if report_file != null:
+		report_file.store_string(JSON.stringify(report, "\t"))
+	print("[level_e] streaming background A/B: ", report_path)
+	print(JSON.stringify(report))
+	get_tree().quit()
+
+
+func _stream_ab_measure_sync(block: Vector2i) -> Dictionary:
+	var started := Time.get_ticks_usec()
+	_rebuild_block(block)
+	var main_ms := float(Time.get_ticks_usec() - started) / 1000.0
+	return {
+		"main_ms": main_ms,
+		"collision_count": (
+			_block_body_get(block).get_child_count() if _block_holder.has(block) else -1),
+		"mesh_signature": _stream_block_mesh_signature(block),
+	}
+
+
+func _stream_ab_measure_candidate(block: Vector2i,
+		worker_frame_samples: Array[float]) -> Dictionary:
+	var worker := Thread.new()
+	var worker_started := Time.get_ticks_usec()
+	var start_error := worker.start(
+		STREAM_BLOCK_PLANNER.build.bind(_stream_plan_snapshot(block)))
+	if start_error != OK:
+		return {"error": error_string(start_error)}
+	var frame_started := Time.get_ticks_usec()
+	while worker.is_alive():
+		await get_tree().process_frame
+		var frame_now := Time.get_ticks_usec()
+		worker_frame_samples.append(float(frame_now - frame_started) / 1000.0)
+		frame_started = frame_now
+	var plan: Dictionary = worker.wait_to_finish()
+	var worker_ms := float(Time.get_ticks_usec() - worker_started) / 1000.0
+	var commit_started := Time.get_ticks_usec()
+	_rebuild_block_from_plan(plan)
+	var main_ms := float(Time.get_ticks_usec() - commit_started) / 1000.0
+	return {
+		"worker_ms": worker_ms,
+		"main_ms": main_ms,
+		"collision_count": (
+			_block_body_get(block).get_child_count() if _block_holder.has(block) else -1),
+		"mesh_signature": _stream_block_mesh_signature(block),
+		"derived_geo_count": int(plan.get("derived_geo_count", -1)),
+		"extra_geo_count": int(plan.get("extra_geo_count", -1)),
+	}
+
+
+func _streaming_background_stress_suite() -> void:
+	_stream_on = true
+	_stream_background_enabled = true
+	_stream_background_worker_ms.clear()
+	_stream_background_commit_ms.clear()
+	_stream_build_queue.clear()
+	_last_pb = Vector2i(2147483647, 2147483647)
+	if _player_ref != null:
+		_player_ref.set_physics_process(false)
+	for _warmup in range(4):
+		await get_tree().process_frame
+
+	var destinations: Array = _known_blocks.keys()
+	destinations.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var a_rec: Dictionary = _block_rec.get(a, {"geo": [], "col": []})
+		var b_rec: Dictionary = _block_rec.get(b, {"geo": [], "col": []})
+		var a_weight := (_stream_block_cells.get(a, {}) as Dictionary).size() \
+			+ (a_rec.get("geo", []) as Array).size() * 4
+		var b_weight := (_stream_block_cells.get(b, {}) as Dictionary).size() \
+			+ (b_rec.get("geo", []) as Array).size() * 4
+		return a_weight > b_weight)
+	if destinations.size() > 6:
+		destinations.resize(6)
+
+	var frame_samples: Array[float] = []
+	var points: Array = []
+	var all_loaded := true
+	var all_collision_counts_match := true
+	for destination: Vector2i in destinations:
+		_player_ref.global_position = Vector3(
+			(float(destination.x) + 0.5) * float(PITCH) * CELL,
+			1.2,
+			(float(destination.y) + 0.5) * float(PITCH) * CELL)
+		var frame_started := Time.get_ticks_usec()
+		var settled := false
+		var frames_waited := 0
+		while frames_waited < 240:
+			await get_tree().process_frame
+			var frame_now := Time.get_ticks_usec()
+			frame_samples.append(float(frame_now - frame_started) / 1000.0)
+			frame_started = frame_now
+			frames_waited += 1
+			if _stream_plan_thread == null and _stream_build_queue.is_empty() \
+					and _stream_radius_is_loaded(destination):
+				settled = true
+				break
+		all_loaded = all_loaded and settled
+		var point_collision_match := true
+		for block: Vector2i in _known_blocks.keys():
+			if _cheby(block, destination) > STREAM_BUILD_RADIUS:
+				continue
+			if not _block_holder.has(block):
+				point_collision_match = false
+				continue
+			var expected: Dictionary = STREAM_BLOCK_PLANNER.build(
+				_stream_plan_snapshot(block))
+			var actual := _block_body_get(block).get_child_count()
+			if actual != int(expected.get("collision_count", -1)):
+				point_collision_match = false
+		all_collision_counts_match = all_collision_counts_match \
+			and point_collision_match
+		points.append({
+			"block": [destination.x, destination.y],
+			"frames_waited": frames_waited,
+			"settled": settled,
+			"collision_counts_match": point_collision_match,
+			"loaded_blocks": _block_holder.size(),
+		})
+
+	_finish_stream_plan_thread()
+	var report := {
+		"engine": Engine.get_version_info().get("string", "unknown"),
+		"seed": maze_seed,
+		"candidate": "raw_mesh_arrays_runtime",
+		"all_points_loaded": all_loaded,
+		"all_collision_counts_match": all_collision_counts_match,
+		"worker_observed_latency_ms":
+			_stream_numeric_stats(_stream_background_worker_ms),
+		"main_commit_ms": _stream_numeric_stats(_stream_background_commit_ms),
+		"frame_ms": _stream_numeric_stats(frame_samples),
+		"points": points,
+	}
+	var timestamp := Time.get_datetime_string_from_system().replace(":", "-").replace("T", " ")
+	var absolute_dir := ProjectSettings.globalize_path(
+		"res://.streaming_ab/%s" % timestamp)
+	DirAccess.make_dir_recursive_absolute(absolute_dir)
+	var report_path := absolute_dir.path_join("runtime_report.json")
+	var report_file := FileAccess.open(report_path, FileAccess.WRITE)
+	if report_file != null:
+		report_file.store_string(JSON.stringify(report, "\t"))
+	print("[level_e] streaming background runtime: ", report_path)
+	print(JSON.stringify(report))
+	get_tree().quit()
+
+
+func _stream_radius_is_loaded(center: Vector2i) -> bool:
+	for block: Vector2i in _known_blocks.keys():
+		if _cheby(block, center) <= STREAM_BUILD_RADIUS \
+				and not _block_holder.has(block):
+			return false
+	return true
+
+
+func _stream_block_mesh_signature(block: Vector2i) -> Dictionary:
+	var signature := {
+		"instances": 0,
+		"surfaces": 0,
+		"vertices": 0,
+		"indices": 0,
+		"vertex_checksum": 0,
+		"normal_checksum": 0,
+		"index_checksum": 0,
+	}
+	var holder: Node3D = _block_holder.get(block)
+	if holder == null:
+		return signature
+	for child in holder.get_children():
+		if not (child is MeshInstance3D):
+			continue
+		var mesh := (child as MeshInstance3D).mesh
+		if mesh == null:
+			continue
+		signature["instances"] = int(signature["instances"]) + 1
+		signature["surfaces"] = int(signature["surfaces"]) + mesh.get_surface_count()
+		for surface_index in range(mesh.get_surface_count()):
+			var arrays := mesh.surface_get_arrays(surface_index)
+			var vertices := arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array
+			var normals := arrays[Mesh.ARRAY_NORMAL] as PackedVector3Array
+			var indices := arrays[Mesh.ARRAY_INDEX] as PackedInt32Array
+			var vertex_base := int(signature["vertices"])
+			var index_base := int(signature["indices"])
+			for vertex_index in range(vertices.size()):
+				var vertex := vertices[vertex_index]
+				var normal := normals[vertex_index]
+				var weight := vertex_base + vertex_index + 1
+				signature["vertex_checksum"] = int(signature["vertex_checksum"]) \
+					+ weight * (
+						int(round(vertex.x * 10000.0)) * 3 \
+						+ int(round(vertex.y * 10000.0)) * 5 \
+						+ int(round(vertex.z * 10000.0)) * 7)
+				signature["normal_checksum"] = int(signature["normal_checksum"]) \
+					+ weight * (
+						int(round(normal.x * 10000.0)) * 3 \
+						+ int(round(normal.y * 10000.0)) * 5 \
+						+ int(round(normal.z * 10000.0)) * 7)
+			for index_offset in range(indices.size()):
+				signature["index_checksum"] = int(signature["index_checksum"]) \
+					+ (index_base + index_offset + 1) * indices[index_offset]
+			signature["vertices"] = vertex_base + vertices.size()
+			signature["indices"] = index_base + indices.size()
+	return signature
+
+
+func _stream_numeric_stats(values: Array[float]) -> Dictionary:
+	if values.is_empty():
+		return {"mean": 0.0, "median": 0.0, "p95": 0.0, "max": 0.0}
+	var sorted := values.duplicate()
+	sorted.sort()
+	var sum := 0.0
+	for value: float in values:
+		sum += value
+	return {
+		"mean": sum / float(values.size()),
+		"median": float(sorted[sorted.size() / 2]),
+		"p95": float(sorted[mini(sorted.size() - 1,
+			int(ceil(float(sorted.size()) * 0.95)) - 1)]),
+		"max": float(sorted[sorted.size() - 1]),
+	}
 
 
 # ── Спавн ──

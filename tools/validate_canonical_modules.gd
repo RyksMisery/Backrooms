@@ -61,10 +61,14 @@ func _initialize() -> void:
 	if FileAccess.file_exists("res://modules/level_ui_module.gd"):
 		_fail("combined legacy UI module still exists")
 		return
-	if "surface.append_from(source, 0, Transform3D(Basis.IDENTITY, local_position))" \
-			not in architecture:
-		_fail("architecture module no longer bakes grid phase into vertices")
-		return
+	for marker in ["_append_box_geometry(surface, source, local_position,",
+			"vertices[vertex_index] + local_position", "omit_face_normal",
+			"omit_outer_faces", "portal_recess",
+			"center_divider_cells", "_build_portal_recess_wall_x",
+			"_build_portal_recess_wall_z"]:
+		if marker not in architecture:
+			_fail("architecture module is missing geometry contract %s" % marker)
+			return
 	print("CANONICAL_MODULES_OK")
 	quit(0)
 
