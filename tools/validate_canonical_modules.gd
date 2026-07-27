@@ -33,6 +33,15 @@ func _initialize() -> void:
 		if marker not in level_e:
 			_fail("level_e does not consume %s" % marker)
 			return
+	if not level_e.begins_with("extends Node3D"):
+		_fail("level_e is not a self-contained Node3D")
+		return
+	for legacy_level in ["level_d.gd", "level_areas_c.gd"]:
+		if "extends \"res://%s\"" % legacy_level in level_e \
+				or "preload(\"res://%s\")" % legacy_level in level_e \
+				or "load(\"res://%s\")" % legacy_level in level_e:
+			_fail("level_e still has a runtime dependency on %s" % legacy_level)
+			return
 	if "preload(\"res://level_areas_c.gd\")" in infinite:
 		_fail("infinite_corridor_e still reads canonical rules from level_areas_c")
 		return
