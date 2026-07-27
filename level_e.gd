@@ -91,12 +91,17 @@ var _last_pb := Vector2i(2147483647, 2147483647)
 var _stream_build_queue: Array[Vector2i] = []
 var _stream_block_cells: Dictionary = {}
 var _stream_unit_box_arrays: Array = []
-var _stream_background_enabled := false
+var _stream_background_enabled := true
 var _stream_ab_requested := false
 var _stream_background_stress_requested := false
+var _stream_infinite_integration_requested := false
 var _stream_plan_thread: Thread
 var _stream_plan_block := Vector2i(2147483647, 2147483647)
 var _stream_plan_started_usec := 0
+var _stream_generation_epoch := 0
+var _stream_plan_task_epoch := -1
+var _stream_plan_discard_count := 0
+var _stream_suspended_for_anomaly := false
 var _stream_background_worker_ms: Array[float] = []
 var _stream_background_commit_ms: Array[float] = []
 var _bounce_range := AREA_LIGHT_BOUNCE_RANGE   # живой радиус bounce-omni ([ / ])
@@ -146,11 +151,13 @@ var _infinite_saved_map_visible := false
 
 
 func _ready() -> void:
+	_stream_infinite_integration_requested = \
+		"--level-e-infinite-streaming-integration-test" \
+		in OS.get_cmdline_user_args()
 	_stream_background_stress_requested = \
 		"--level-e-streaming-background-stress" in OS.get_cmdline_user_args()
 	_stream_background_enabled = \
-		"--level-e-streaming-background" in OS.get_cmdline_user_args() \
-		or _stream_background_stress_requested
+		"--level-e-streaming-sync" not in OS.get_cmdline_user_args()
 	_stream_ab_requested = "--level-e-streaming-ab" in OS.get_cmdline_user_args()
 	_level_e_reference_audio_requested = \
 		"--level-e-reference-audio" in OS.get_cmdline_user_args()
@@ -179,7 +186,8 @@ func _ready() -> void:
 		in OS.get_cmdline_user_args()
 	_lf3_guardian_test_requested = "--lf3-guardian-shadow-test" \
 		in OS.get_cmdline_user_args()
-	if _stream_ab_requested or _stream_background_stress_requested:
+	if _stream_ab_requested or _stream_background_stress_requested \
+			or _stream_infinite_integration_requested:
 		randomize_maze_seed = false
 		maze_seed = 173205
 	if _lf3_level_e_capture_requested or _lf3_box_capture_requested \
@@ -210,6 +218,8 @@ func _ready() -> void:
 		call_deferred("_streaming_background_ab_suite")
 	elif _stream_background_stress_requested:
 		call_deferred("_streaming_background_stress_suite")
+	elif _stream_infinite_integration_requested:
+		call_deferred("_infinite_streaming_integration_suite")
 
 
 # Hooks отделяют единую runtime-базу level_e от её текущей живой раскладки.
@@ -244,6 +254,10 @@ func _begin() -> void:
 	_known_blocks.clear()
 	_stream_block_cells.clear()
 	_stream_build_queue.clear()
+	_stream_generation_epoch = 0
+	_stream_plan_task_epoch = -1
+	_stream_plan_discard_count = 0
+	_stream_suspended_for_anomaly = false
 	_emit_ctx_active = false
 	_infinite_transition_started = false
 	_infinite_anomaly_active = false
@@ -342,6 +356,7 @@ func _enter_infinite_anomaly() -> void:
 	if _infinite_anomaly == null or not is_instance_valid(_infinite_anomaly):
 		_infinite_transition_started = false
 		return
+	_suspend_streaming_for_infinite()
 	_save_level_state_for_anomaly()
 	_infinite_anomaly_active = true
 	_infinite_portal_cooldown_until = Time.get_ticks_msec() + INFINITE_PORTAL_COOLDOWN_MS
@@ -368,7 +383,21 @@ func _leave_infinite_anomaly() -> void:
 	_infinite_anomaly_active = false
 	_infinite_anomaly.call("set_embedded_active", false)
 	_restore_level_state_after_anomaly()
+	_resume_streaming_after_infinite()
 	_infinite_transition_started = false
+
+
+func _suspend_streaming_for_infinite() -> void:
+	_stream_generation_epoch += 1
+	_stream_suspended_for_anomaly = true
+	_stream_build_queue.clear()
+	_last_pb = Vector2i(2147483647, 2147483647)
+
+
+func _resume_streaming_after_infinite() -> void:
+	_stream_suspended_for_anomaly = false
+	_stream_build_queue.clear()
+	_last_pb = Vector2i(2147483647, 2147483647)
 
 
 func _level_infinite_portal_transform() -> Transform3D:
@@ -493,6 +522,7 @@ func _input(event: InputEvent) -> void:
 	elif ke.keycode == KEY_K:
 		_stream_on = not _stream_on
 		if not _stream_on:
+			_stream_generation_epoch += 1
 			_stream_build_queue.clear()
 			_rebuild_all_freed()          # выкл → показать весь уровень
 		else:
@@ -2863,7 +2893,8 @@ func _derive_geometry() -> void:
 		var block := Vector2i(floori(float(c.x) / PITCH),
 			floori(float(c.y) / PITCH))
 		_known_blocks[block] = true
-		if _stream_background_enabled or _stream_ab_requested:
+		if (_stream_background_enabled and _level_e_streaming_enabled()) \
+				or _stream_ab_requested:
 			if not _stream_block_cells.has(block):
 				_stream_block_cells[block] = {}
 			(_stream_block_cells[block] as Dictionary)[c] = _grid[c]
@@ -3007,7 +3038,7 @@ func _redistribute_collision() -> void:
 # ── Авто-стриминг ──
 
 func _update_streaming() -> void:
-	if not _stream_on or _player_ref == null:
+	if not _stream_on or _player_ref == null or _stream_suspended_for_anomaly:
 		return
 	var pb := _block_of(_player_ref.global_position)
 	if _stream_background_enabled:
@@ -3123,6 +3154,7 @@ func _start_stream_plan(block: Vector2i) -> void:
 		return
 	_stream_plan_block = block
 	_stream_plan_started_usec = Time.get_ticks_usec()
+	_stream_plan_task_epoch = _stream_generation_epoch
 	_stream_plan_thread = Thread.new()
 	var error := _stream_plan_thread.start(
 		STREAM_BLOCK_PLANNER.build.bind(_stream_plan_snapshot(block)))
@@ -3130,6 +3162,7 @@ func _start_stream_plan(block: Vector2i) -> void:
 		push_error("[level_e] stream planner thread start failed: %s" % error_string(error))
 		_stream_plan_thread = null
 		_stream_plan_block = Vector2i(2147483647, 2147483647)
+		_stream_plan_task_epoch = -1
 
 
 func _poll_stream_plan(player_block: Vector2i) -> void:
@@ -3138,9 +3171,14 @@ func _poll_stream_plan(player_block: Vector2i) -> void:
 	var plan: Dictionary = _stream_plan_thread.wait_to_finish()
 	var worker_ms := float(Time.get_ticks_usec() - _stream_plan_started_usec) / 1000.0
 	var block: Vector2i = plan.get("block", _stream_plan_block)
+	var task_epoch := _stream_plan_task_epoch
 	_stream_plan_thread = null
 	_stream_plan_block = Vector2i(2147483647, 2147483647)
+	_stream_plan_task_epoch = -1
 	_stream_background_worker_ms.append(worker_ms)
+	if task_epoch != _stream_generation_epoch or _stream_suspended_for_anomaly:
+		_stream_plan_discard_count += 1
+		return
 	if _cheby(block, player_block) > STREAM_BUILD_RADIUS \
 			or _block_holder.has(block) or not _known_blocks.has(block):
 		return
@@ -3156,6 +3194,7 @@ func _finish_stream_plan_thread() -> void:
 	_stream_plan_thread.wait_to_finish()
 	_stream_plan_thread = null
 	_stream_plan_block = Vector2i(2147483647, 2147483647)
+	_stream_plan_task_epoch = -1
 
 
 func _records_to_surfaces(records: Array) -> Dictionary:
@@ -3484,6 +3523,172 @@ func _streaming_background_stress_suite() -> void:
 	print("[level_e] streaming background runtime: ", report_path)
 	print(JSON.stringify(report))
 	get_tree().quit()
+
+
+func _infinite_streaming_integration_suite() -> void:
+	_stream_on = true
+	_stream_background_enabled = true
+	_stream_background_worker_ms.clear()
+	_stream_background_commit_ms.clear()
+	_stream_build_queue.clear()
+	_last_pb = Vector2i(2147483647, 2147483647)
+	if _player_ref != null:
+		_player_ref.set_physics_process(false)
+	for _warmup in range(5):
+		await get_tree().process_frame
+
+	var level_entry_position := _infinite_connector_trigger.global_position \
+		+ Vector3(0.0, 0.0, CELL * 3.0)
+	_player_ref.global_position = level_entry_position
+	_player_ref.velocity = Vector3.ZERO
+	var portal_block := _block_of(_player_ref.global_position)
+	var pre_entry_settle: Dictionary = await _wait_for_stream_settle(
+		portal_block, 240)
+
+	var target_block := portal_block
+	var target_weight := -1
+	for block: Vector2i in _known_blocks.keys():
+		if _cheby(block, portal_block) > STREAM_BUILD_RADIUS:
+			continue
+		var weight := (_stream_block_cells.get(block, {}) as Dictionary).size()
+		if weight > target_weight:
+			target_block = block
+			target_weight = weight
+	_stream_on = false
+	if _block_holder.has(target_block):
+		_free_block(target_block)
+	await get_tree().process_frame
+	_stream_on = true
+	_start_stream_plan(target_block)
+	var task_epoch_before_entry := _stream_plan_task_epoch
+
+	var saved_environment := {
+		"ambient_color": _env.ambient_light_color,
+		"ambient_energy": _env.ambient_light_energy,
+		"fog_enabled": _env.fog_enabled,
+	}
+	var saved_hud_visible := _hud_label.visible if _hud_label != null else false
+	var saved_map_visible := _minimap.visible if _minimap != null else false
+	var saved_audio_playing := _final_hum_audio_player != null \
+		and _final_hum_audio_player.playing
+	_enter_infinite_anomaly()
+	var entered := _infinite_anomaly_active \
+		and _stream_suspended_for_anomaly \
+		and _infinite_anomaly.visible
+	for _inside_frame in range(4):
+		await get_tree().process_frame
+
+	var cycle_before := int(_infinite_anomaly.get("_cycle_count"))
+	_infinite_anomaly.set("_story_swapped", true)
+	_player_ref.global_position = Vector3(
+		INFINITE_WORLD_OFFSET.x, 1.2, -CELL * 120.0)
+	for _recycle_frame in range(5):
+		await get_tree().process_frame
+	var cycle_after := int(_infinite_anomaly.get("_cycle_count"))
+	_infinite_anomaly.set("_story_swapped", false)
+
+	_player_ref.global_transform = Transform3D(
+		Basis.IDENTITY, _infinite_return_trigger.global_position)
+	_player_ref.velocity = Vector3.ZERO
+	_leave_infinite_anomaly()
+	var return_block := _block_of(_player_ref.global_position)
+	var post_return_settle: Dictionary = await _wait_for_stream_settle(
+		return_block, 240)
+	for _restore_frame in range(2):
+		await get_tree().process_frame
+
+	var environment_restored: bool = _env.ambient_light_color == \
+		saved_environment["ambient_color"] \
+		and is_equal_approx(_env.ambient_light_energy,
+			float(saved_environment["ambient_energy"])) \
+		and _env.fog_enabled == bool(saved_environment["fog_enabled"])
+	var hud_restored: bool = _hud_label == null \
+		or _hud_label.visible == saved_hud_visible
+	var map_restored: bool = _minimap == null \
+		or _minimap.visible == saved_map_visible
+	var audio_restored: bool = not saved_audio_playing \
+		or (_final_hum_audio_player != null and _final_hum_audio_player.playing)
+	var collision_counts_match: bool = _stream_radius_collision_counts_match(
+		return_block)
+	var report := {
+		"engine": Engine.get_version_info().get("string", "unknown"),
+		"seed": maze_seed,
+		"checkpoint": "5030870",
+		"entered_infinite": entered,
+		"chunk_cycle_before": cycle_before,
+		"chunk_cycle_after": cycle_after,
+		"chunk_recycled": cycle_after > cycle_before,
+		"task_epoch_before_entry": task_epoch_before_entry,
+		"epoch_after_entry": _stream_generation_epoch,
+		"stale_worker_discarded": _stream_plan_discard_count > 0,
+		"discard_count": _stream_plan_discard_count,
+		"target_block_rebuilt": _block_holder.has(target_block),
+		"pre_entry_settle": pre_entry_settle,
+		"post_return_settle": post_return_settle,
+		"collision_counts_match": collision_counts_match,
+		"anomaly_inactive_after_return": not _infinite_anomaly_active \
+			and not _infinite_anomaly.visible,
+		"environment_restored": environment_restored,
+		"hud_restored": hud_restored,
+		"map_restored": map_restored,
+		"audio_restored": audio_restored,
+		"thread_finished": _stream_plan_thread == null,
+		"queue_empty": _stream_build_queue.is_empty(),
+		"main_commit_ms": _stream_numeric_stats(_stream_background_commit_ms),
+	}
+	report["passed"] = bool(report["entered_infinite"]) \
+		and bool(report["chunk_recycled"]) \
+		and bool(report["stale_worker_discarded"]) \
+		and bool(report["target_block_rebuilt"]) \
+		and bool((report["pre_entry_settle"] as Dictionary)["settled"]) \
+		and bool((report["post_return_settle"] as Dictionary)["settled"]) \
+		and bool(report["collision_counts_match"]) \
+		and bool(report["anomaly_inactive_after_return"]) \
+		and bool(report["environment_restored"]) \
+		and bool(report["hud_restored"]) \
+		and bool(report["map_restored"]) \
+		and bool(report["audio_restored"]) \
+		and bool(report["thread_finished"]) \
+		and bool(report["queue_empty"])
+	var timestamp := Time.get_datetime_string_from_system().replace(":", "-").replace("T", " ")
+	var absolute_dir := ProjectSettings.globalize_path(
+		"res://.streaming_ab/%s" % timestamp)
+	DirAccess.make_dir_recursive_absolute(absolute_dir)
+	var report_path := absolute_dir.path_join("infinite_integration_report.json")
+	var report_file := FileAccess.open(report_path, FileAccess.WRITE)
+	if report_file != null:
+		report_file.store_string(JSON.stringify(report, "\t"))
+	print("[level_e] infinite streaming integration: ", report_path)
+	print(JSON.stringify(report))
+	if not bool(report["passed"]):
+		push_error("[level_e] infinite streaming integration failed")
+	get_tree().quit(0 if bool(report["passed"]) else 1)
+
+
+func _wait_for_stream_settle(center: Vector2i,
+		max_frames: int) -> Dictionary:
+	var frames_waited := 0
+	while frames_waited < max_frames:
+		await get_tree().process_frame
+		frames_waited += 1
+		if _stream_plan_thread == null and _stream_build_queue.is_empty() \
+				and _stream_radius_is_loaded(center):
+			return {"settled": true, "frames_waited": frames_waited}
+	return {"settled": false, "frames_waited": frames_waited}
+
+
+func _stream_radius_collision_counts_match(center: Vector2i) -> bool:
+	for block: Vector2i in _known_blocks.keys():
+		if _cheby(block, center) > STREAM_BUILD_RADIUS:
+			continue
+		if not _block_holder.has(block):
+			return false
+		var expected: Dictionary = STREAM_BLOCK_PLANNER.build(
+			_stream_plan_snapshot(block))
+		if _block_body_get(block).get_child_count() \
+				!= int(expected.get("collision_count", -1)):
+			return false
+	return true
 
 
 func _stream_radius_is_loaded(center: Vector2i) -> bool:
