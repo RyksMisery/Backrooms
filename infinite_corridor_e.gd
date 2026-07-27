@@ -1670,17 +1670,42 @@ func _update_shadow_pool() -> void:
 			"direct_weight": direct_weight,
 		})
 	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		return float(a["distance"]) < float(b["distance"])
+		var da := float(a["distance"])
+		var db := float(b["distance"])
+		if not is_equal_approx(da, db):
+			return da < db
+		return (a["light"] as OmniLight3D).get_instance_id() \
+			< (b["light"] as OmniLight3D).get_instance_id()
 	)
 	var shadow_ids := {}
-	for index in range(mini(LF3_SHADOW_CASTERS, candidates.size())):
+	var limit := mini(CANONICAL_LIGHTING.LF3_SHADOW_TRANSIENT_CASTERS,
+		candidates.size())
+	var boundary_near_weight := 1.0
+	var boundary_far_weight := 0.0
+	if candidates.size() > LF3_SHADOW_CASTERS:
+		var near_distance := float(candidates[LF3_SHADOW_CASTERS - 1]["distance"])
+		var far_distance := float(candidates[LF3_SHADOW_CASTERS]["distance"])
+		var boundary_gap := maxf(0.0, far_distance - near_distance)
+		boundary_near_weight = 0.5 + 0.5 * smoothstep(
+			0.0, CANONICAL_LIGHTING.LF3_SHADOW_BOUNDARY_GAP, boundary_gap)
+		boundary_far_weight = 1.0 - boundary_near_weight
+	for index in range(limit):
 		var light := candidates[index]["light"] as OmniLight3D
-		var opacity := LF3_OCCLUSION_SHADOW_OPACITY \
+		var distance := float(candidates[index]["distance"])
+		var corridor_span := maxf(0.001, LAMP_DARK_DIST - LAMP_FULL_DIST)
+		var distance_weight := clampf(
+			(LAMP_DARK_DIST - distance) / corridor_span, 0.0, 1.0)
+		var opacity := distance_weight * LF3_OCCLUSION_SHADOW_OPACITY \
 			* float(candidates[index]["direct_weight"])
-		light.shadow_enabled = opacity > 0.01
-		light.shadow_opacity = opacity
+		if index == LF3_SHADOW_CASTERS - 1:
+			opacity *= boundary_near_weight
+		elif index == LF3_SHADOW_CASTERS:
+			opacity *= boundary_far_weight
+		light.shadow_enabled = opacity > 0.001
+		light.shadow_opacity = opacity if light.shadow_enabled else 0.0
 		light.shadow_blur = LF3_OCCLUSION_SHADOW_BLUR
-		shadow_ids[light.get_instance_id()] = true
+		if light.shadow_enabled:
+			shadow_ids[light.get_instance_id()] = true
 	for entry: Dictionary in _corridor_lights:
 		var light_value = entry.get("light")
 		if not is_instance_valid(light_value):

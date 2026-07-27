@@ -35,6 +35,8 @@ const P0_ATTEN := 0.66
 const P0_RANGE_TIGHT := 6.00
 const P0_ATTEN_TIGHT := 0.66
 const P0_ENERGY_MUL := 1.10
+# Legacy-референсы всё ещё парсятся редактором; продуктовый level_e эту
+# временную скорость больше не использует.
 const LIGHT_FADE_SPEED := 4.0
 const LAMP_FADE_ENABLED := false
 const LAMP_FADE_BEGIN := 28.0
@@ -59,6 +61,12 @@ const AREA_LIGHT_FAR_BOUNCE_ENABLED := true
 const AREA_LIGHT_FAR_BOUNCE_HOPS := 2
 const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := 0.65
 const AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL := 0.60
+# Пространственный area-pool: direct плавно уступает far-bounce на длине
+# одного area-step; дальний профиль держится до двух шагов и уходит в ноль
+# на третьем. Ещё один графовый hop нужен только как нулевое кольцо fade.
+const AREA_LIGHT_POOL_FULL_DISTANCE := Architecture.PITCH * Architecture.CELL
+const AREA_LIGHT_POOL_FADE_BEGIN := 2.0 * Architecture.PITCH * Architecture.CELL
+const AREA_LIGHT_POOL_OFF_DISTANCE := 3.0 * Architecture.PITCH * Architecture.CELL
 const AREA_LIGHT_BOUNCE_SHADOWS := true
 const AREA_LIGHT_BOUNCE_SHADOW_CASTERS := 10
 const AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST := 5.0

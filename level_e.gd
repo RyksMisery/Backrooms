@@ -148,9 +148,6 @@ const FOG_DENSITY := ARCHITECTURE.FOG_DENSITY
 const LAMP_DENSITY_R := LIGHTING.LAMP_DENSITY_R
 const LAMP_DENSITY_K := LIGHTING.LAMP_DENSITY_K
 const HUB_SEAM_STEP := 3        # шаг ламп в стыковых полосах хаба (гуще — пол не чернеет при малом радиусе)
-# Плавное загорание/гашение ламп пула по ВРЕМЕНИ (не по расстоянию): скорость
-# фейда энергии при входе/выходе области из пула света. ~4 → переход около 0.25–0.5 с.
-const LIGHT_FADE_SPEED := LIGHTING.LIGHT_FADE_SPEED
 # Distance-fade: дальние лампы плавно гаснут и не рисуются (перф). Флаг для A/B FPS.
 const LAMP_FADE_ENABLED := LIGHTING.LAMP_FADE_ENABLED
 const LAMP_FADE_BEGIN := LIGHTING.LAMP_FADE_BEGIN
@@ -174,6 +171,9 @@ const AREA_LIGHT_FAR_BOUNCE_ENABLED := LIGHTING.AREA_LIGHT_FAR_BOUNCE_ENABLED
 const AREA_LIGHT_FAR_BOUNCE_HOPS := LIGHTING.AREA_LIGHT_FAR_BOUNCE_HOPS
 const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := LIGHTING.AREA_LIGHT_FAR_BOUNCE_RANGE_MUL
 const AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL := LIGHTING.AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL
+const AREA_LIGHT_POOL_FULL_DISTANCE := LIGHTING.AREA_LIGHT_POOL_FULL_DISTANCE
+const AREA_LIGHT_POOL_FADE_BEGIN := LIGHTING.AREA_LIGHT_POOL_FADE_BEGIN
+const AREA_LIGHT_POOL_OFF_DISTANCE := LIGHTING.AREA_LIGHT_POOL_OFF_DISTANCE
 const AREA_LIGHT_BOUNCE_SHADOWS := LIGHTING.AREA_LIGHT_BOUNCE_SHADOWS
 const AREA_LIGHT_BOUNCE_SHADOW_CASTERS := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_CASTERS
 const AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST := LIGHTING.AREA_LIGHT_BOUNCE_SHADOW_FULL_DIST
@@ -792,9 +792,10 @@ func _set_ambient(v: float) -> void:
 
 func _level_e_base_process(delta: float) -> void:
 	_update_office_door_v2_view_side()
-	_update_shadow_pool()
 	_update_light_pool()
-	_update_light_fades(delta)
+	# Shadow ranking видит spatial pool текущего кадра, а не вчерашний
+	# pool_want; энергия и opacity входят/выходят синхронно.
+	_update_shadow_pool()
 	_check_pit_fall(delta)
 	_update_flash(delta)
 	if _hud_label != null:
@@ -4705,9 +4706,13 @@ func _level_e_base_apply_area_bounce_runtime(l: Light3D) -> void:
 	var omni := l as OmniLight3D
 	if omni == null:
 		return
-	var far := bool(omni.get_meta("far_bounce", false))
-	var range_mul := AREA_LIGHT_FAR_BOUNCE_RANGE_MUL if far else 1.0
-	var energy_mul := AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL if far else 1.0
+	var full_weight := clampf(float(
+		omni.get_meta("pool_full_weight", 1.0)), 0.0, 1.0)
+	var visibility_weight := clampf(float(
+		omni.get_meta("pool_visibility_weight", 1.0)), 0.0, 1.0)
+	var range_mul := lerpf(AREA_LIGHT_FAR_BOUNCE_RANGE_MUL, 1.0, full_weight)
+	var energy_mul := lerpf(AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL, 1.0, full_weight) \
+		* visibility_weight
 	omni.omni_range = float(omni.get_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)) * range_mul if _area_bounce_mode else 0.0
 	omni.light_energy = AREA_LIGHT_BOUNCE_ENERGY * energy_mul
 	if not _area_bounce_mode:
@@ -4728,6 +4733,15 @@ func _apply_area_light_mode() -> void:
 			l.visible = area_on
 			if is_bounce:
 				_apply_area_bounce_runtime(l)
+	# Runtime-переключатель мог записать новый nominal поверх уже взвешенной
+	# энергии. Следующий spatial pass должен считать его весом 1, а не делить
+	# ещё раз на коэффициент предыдущего кадра.
+	for l: Light3D in _lamps:
+		l.set_meta("pool_nominal_energy", l.light_energy)
+		l.set_meta("pool_applied_weight", 1.0)
+	for l: Light3D in _area_lamps:
+		l.set_meta("pool_nominal_energy", l.light_energy)
+		l.set_meta("pool_applied_weight", 1.0)
 	_update_light_pool()
 
 
@@ -5065,11 +5079,9 @@ func _cells_connected(a: Vector2i, b: Vector2i) -> bool:
 	return false
 
 
-# Всегда светят: область игрока (+ её группа слияния) и ЛЮБАЯ область,
-# реально соединённая с ней проходом (см. _cells_connected) — детерминированно,
-# без физических запросов за кадр, без риска отставания от быстрого игрока.
-# В AreaLight-режиме второй графовый шаг получает только слабый короткий
-# bounce-fill без теней: дальняя глубина без возврата полной цены света.
+# Occupancy-граф остаётся грубым фильтром, но внутри него энергия зависит
+# только от текущего расстояния до интерьера area-group. Поэтому проход вперёд
+# и назад в одной координате даёт один результат, без временного хвоста.
 func _update_light_pool() -> void:
 	if _player_ref == null or (_lamps.is_empty() and _area_lamps.is_empty() and _area_bounce_lamps.is_empty()):
 		return
@@ -5079,63 +5091,90 @@ func _update_light_pool() -> void:
 	var player_ids := _player_area_ids(player_cell)
 	var max_hops := 1
 	if area_on and AREA_LIGHT_FAR_BOUNCE_ENABLED:
-		max_hops = maxi(1, AREA_LIGHT_FAR_BOUNCE_HOPS)
+		# Дополнительный hop — нулевое кольцо, на котором spatial fade успевает
+		# закончиться до исключения источника из topology-набора.
+		max_hops = maxi(1, AREA_LIGHT_FAR_BOUNCE_HOPS + 1)
 	if OS.has_feature("android") and not ACTIVE_LIGHT_NEIGHBORS_ON_ANDROID:
 		max_hops = 0
 	var light_ids := _light_area_ids_by_depth(player_ids, max_hops)
-	var safe_ids: Dictionary = light_ids["full"]
-	var far_ids: Dictionary = light_ids["far"]
-	# Вместо мгновенного visible пишем «хочет гореть» (pool_want); плавный переход
-	# энергии делает _update_light_fades (по времени, не по расстоянию).
+	var depths: Dictionary = light_ids["depth"]
+	var spatial_weights := {}
+	for id_value in depths.keys():
+		var id := String(id_value)
+		var distance := _distance_to_area_group_interior(id, p)
+		var full_weight := 1.0 - smoothstep(
+			0.0, AREA_LIGHT_POOL_FULL_DISTANCE, distance)
+		var visibility_weight := 1.0 - smoothstep(
+			AREA_LIGHT_POOL_FADE_BEGIN, AREA_LIGHT_POOL_OFF_DISTANCE, distance)
+		spatial_weights[id] = {
+			"full": clampf(full_weight, 0.0, 1.0),
+			"visible": clampf(visibility_weight, 0.0, 1.0),
+		}
 	for l: OmniLight3D in _lamps:
-		l.set_meta("pool_want", (not area_on) and safe_ids.has(String(l.get_meta("area_id", ""))))
+		var weights: Dictionary = spatial_weights.get(
+			String(l.get_meta("area_id", "")), {})
+		var weight := float(weights.get("full", 0.0)) if not area_on else 0.0
+		_set_spatial_pool_light(l, weight)
 	for l: Light3D in _area_lamps:
-		l.set_meta("pool_want", area_on and safe_ids.has(String(l.get_meta("area_id", ""))))
+		var weights: Dictionary = spatial_weights.get(
+			String(l.get_meta("area_id", "")), {})
+		var weight := float(weights.get("full", 0.0)) if area_on else 0.0
+		_set_spatial_pool_light(l, weight)
 	for l: OmniLight3D in _area_bounce_lamps:
 		var id := String(l.get_meta("area_id", ""))
-		var full_light := safe_ids.has(id)
-		var far_light := area_on and not full_light and far_ids.has(id)
-		l.set_meta("pool_want", area_on and (full_light or far_light))
-		l.set_meta("far_bounce", far_light)
+		var weights: Dictionary = spatial_weights.get(id, {})
+		var full_weight := float(weights.get("full", 0.0)) if area_on else 0.0
+		var visibility_weight := float(weights.get("visible", 0.0)) \
+			if area_on else 0.0
+		l.set_meta("pool_full_weight", full_weight)
+		l.set_meta("pool_visibility_weight", visibility_weight)
+		l.set_meta("pool_shadow_weight", full_weight)
+		l.set_meta("pool_want", visibility_weight > 0.001)
+		l.set_meta("far_bounce", full_weight <= 0.001)
 		_apply_area_bounce_runtime(l)
+		l.visible = visibility_weight > 0.001
 	_update_bounce_shadow_pool(p)
 
 
-# Плавное загорание/гашение ламп пула по ВРЕМЕНИ (не по расстоянию): вместо
-# мгновенного visible энергия едет к цели за ~LIGHT_FADE_SPEED. Базовую («полную»)
-# энергию перехватываем, пока лампа на полной яркости, чтобы не спорить с режимами
-# света (tuned/p0/old) и far/near-bounce, которые тоже её пишут.
-func _update_light_fades(delta: float) -> void:
-	var k := 1.0 - exp(-LIGHT_FADE_SPEED * delta)
-	for l: Light3D in _lamps:
-		_fade_pool_light(l, k)
-	for l: Light3D in _area_lamps:
-		_fade_pool_light(l, k)
-	for l: Light3D in _area_bounce_lamps:
-		_fade_pool_light(l, k)
+func _set_spatial_pool_light(l: Light3D, weight: float) -> void:
+	weight = clampf(weight, 0.0, 1.0)
+	var previous_weight := float(l.get_meta("pool_applied_weight", 1.0))
+	var nominal_energy := float(l.get_meta("pool_nominal_energy", l.light_energy))
+	# Между кадрами режим света или flicker могут изменить уже взвешенную
+	# энергию. Снимаем пространственный множитель и сохраняем новый nominal.
+	if previous_weight > 0.001:
+		nominal_energy = l.light_energy / previous_weight
+	elif l.light_energy > 0.001:
+		nominal_energy = l.light_energy
+	l.set_meta("pool_nominal_energy", nominal_energy)
+	l.set_meta("pool_applied_weight", weight)
+	l.set_meta("pool_weight", weight)
+	l.set_meta("pool_want", weight > 0.001)
+	l.light_energy = nominal_energy * weight
+	l.visible = weight > 0.001
 
 
-func _fade_pool_light(l: Light3D, k: float) -> void:
-	var target := 1.0 if bool(l.get_meta("pool_want", l.visible)) else 0.0
-	if not l.has_meta("pool_fade"):
-		# Первый кадр: без вспышки — снимаем текущую энергию как базу и встаём на цель.
-		l.set_meta("base_e", l.light_energy)
-		l.set_meta("pool_fade", target)
-	var fade := float(l.get_meta("pool_fade"))
-	if fade >= 0.99:
-		l.set_meta("base_e", l.light_energy)   # лампа на полной — обновляем базу (режим мог сменить)
-	var base_e := float(l.get_meta("base_e", l.light_energy))
-	fade = lerpf(fade, target, k)
-	if target == 0.0 and fade < 0.003:
-		fade = 0.0
-	l.set_meta("pool_fade", fade)
-	l.visible = fade > 0.002
-	l.light_energy = base_e * fade
+func _distance_to_area_group_interior(id: String, player_pos: Vector3) -> float:
+	var best := INF
+	for group_id_value in _area_group(id):
+		var area := _area_by_id(String(group_id_value))
+		if area.is_empty():
+			continue
+		var base := _area_base_cell(area) + Vector2i(WALL_CELLS, WALL_CELLS)
+		var min_x := float(base.x) * CELL
+		var min_z := float(base.y) * CELL
+		var max_x := float(base.x + ROOM_CELLS) * CELL
+		var max_z := float(base.y + ROOM_CELLS) * CELL
+		var dx := maxf(maxf(min_x - player_pos.x, 0.0), player_pos.x - max_x)
+		var dz := maxf(maxf(min_z - player_pos.z, 0.0), player_pos.z - max_z)
+		best = minf(best, Vector2(dx, dz).length())
+	return best if is_finite(best) else INF
 
 
 func _light_area_ids_by_depth(player_ids: Array, max_hops: int) -> Dictionary:
 	var full_ids := {}
 	var far_ids := {}
+	var depth_by_id := {}
 	var depth_by_cell := {}
 	var queue: Array[Vector2i] = []
 	for pid in player_ids:
@@ -5170,13 +5209,15 @@ func _light_area_ids_by_depth(player_ids: Array, max_hops: int) -> Dictionary:
 		var area: Dictionary = _area_by_cell[cell]
 		var depth := int(depth_by_cell[cell])
 		for gid in _area_group(String(area["id"])):
+			if not depth_by_id.has(gid) or depth < int(depth_by_id[gid]):
+				depth_by_id[gid] = depth
 			if depth <= 1:
 				full_ids[gid] = true
 			elif not full_ids.has(gid):
 				far_ids[gid] = true
 	for gid in full_ids.keys():
 		far_ids.erase(gid)
-	return {"full": full_ids, "far": far_ids}
+	return {"full": full_ids, "far": far_ids, "depth": depth_by_id}
 
 
 func _level_e_base_update_bounce_shadow_pool(player_pos: Vector3) -> void:
@@ -6503,6 +6544,11 @@ func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
 			_lf3_set_shadow(l, false)
 			continue
 		var distance := l.global_position.distance_to(player_pos)
+		var pool_shadow_weight := clampf(float(
+			l.get_meta("pool_shadow_weight", 1.0)), 0.0, 1.0)
+		if pool_shadow_weight <= 0.001:
+			_lf3_set_shadow(l, false)
+			continue
 		var occlusion_risk := _lf3_light_occlusion_risk_cached(l,
 			receiver_probes) if _lf3_guardian_view_enabled else (_lf3_light_occlusion_risk(
 				l, receiver_probes) if _lf3_occlusion_priority_enabled \
@@ -6557,6 +6603,7 @@ func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
 			"receiver_affinity": receiver_affinity,
 			"receiver_distance": receiver_distance,
 			"angular_weight": angular_weight,
+			"pool_shadow_weight": pool_shadow_weight,
 			"rank_score": rank_score,
 			"id": l.get_instance_id(),
 		})
@@ -6598,6 +6645,7 @@ func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
 			LF3_SHADOW_FULL_DISTANCE, shadow_off_distance, distance)) \
 			* LF3_SHADOW_OPACITY
 		opacity *= float(candidate["angular_weight"])
+		opacity *= float(candidate["pool_shadow_weight"])
 		if index == LF3_SHADOW_CASTERS - 1:
 			opacity *= boundary_near_weight
 		elif index == LF3_SHADOW_CASTERS:
