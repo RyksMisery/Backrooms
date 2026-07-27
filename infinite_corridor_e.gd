@@ -125,6 +125,10 @@ var _lf3_indirect_prepared_plans := {}
 var _lf3_indirect_prepared_order: Array[String] = []
 var _lf3_indirect_waiting_signature := ""
 var _lf3_indirect_waiting_key := ""
+var _lf3_story_transition_anchor_z := 0.0
+var _lf3_story_transition_active := false
+var _lf3_story_transition_weight := 0.0
+var _lf3_story_transition_last_cycle := -1
 var _lf3_motion_running := false
 var _lf3_leak_capture_running := false
 var _lf3_leak_capture_state := {}
@@ -147,6 +151,8 @@ const LF2_LIGHT_SAMPLE_LEVELS := [-1.0, 1.0, 0.08]
 const LF3_DIRECT_POOL_SIZE := 24
 const LF3_SHADOW_CASTERS := CANONICAL_LIGHTING.LF3_SHADOW_CASTERS
 const LF3_FLOOR_INDIRECT_GAIN := 0.035
+const LF3_STORY_BLEND_START_DIST := CELL * 40.0
+const LF3_STORY_BLEND_END_DIST := CELL * 52.0
 const LF3_OCCLUSION_SHADOW_OPACITY := CANONICAL_LIGHTING.LF3_SHADOW_OPACITY
 const LF3_OCCLUSION_SHADOW_BLUR := CANONICAL_LIGHTING.LF3_SHADOW_BLUR
 const LF3_LEAK_ROIS := {
@@ -381,6 +387,7 @@ func _process(delta: float) -> void:
 		_env.ambient_light_energy = _live_ambient
 	if _lf_field_active and _lf3_indirect_enabled:
 		_lf3_ensure_floor_indirect()
+		_lf3_update_story_indirect_transition()
 	_update_story_pit(delta)
 	_update_story_light_flicker(delta)
 	_lf2_apply_light_sample()
@@ -2521,6 +2528,112 @@ func _lf3_finish_indirect_prepare() -> void:
 	_lf3_indirect_queued_request = {}
 
 
+func _lf3_update_story_indirect_transition() -> void:
+	if not _story_swapped or _player_ref == null \
+			or _story_room == null or not is_instance_valid(_story_room):
+		return
+	var distance := absf(
+		_player_ref.global_position.z - _lf3_story_transition_anchor_z)
+	var weight := smoothstep(
+		LF3_STORY_BLEND_START_DIST, LF3_STORY_BLEND_END_DIST, distance)
+	if not _lf3_story_transition_active and weight <= 0.0:
+		_lf3_story_transition_weight = 0.0
+		return
+	if _lf3_story_transition_active \
+			and is_equal_approx(weight, _lf3_story_transition_weight) \
+			and _lf3_story_transition_last_cycle == _cycle_count:
+		return
+	var story_source := lf3_debug_occupancy_source(-1, true, false)
+	var corridor_source := _lf3_corridor_only_occupancy_source()
+	if story_source.has("errors") or corridor_source.has("errors"):
+		return
+	var story_key := _lf3_indirect_content_key_for_source(story_source)
+	var corridor_key := _lf3_indirect_content_key_for_source(corridor_source)
+	if not _lf3_indirect_prepared_plans.has(story_key):
+		return
+	if not _lf3_indirect_prepared_plans.has(corridor_key):
+		lf3_prepare_indirect_topology(corridor_source)
+		return
+	var adapter := LF3_ADAPTER.new()
+	var story_config: Dictionary = adapter.build(story_source)
+	var corridor_config: Dictionary = adapter.build(corridor_source)
+	if not (story_config.get("errors", []) as Array).is_empty() \
+			or not (corridor_config.get("errors", []) as Array).is_empty():
+		return
+	var story_plan := _lf3_indirect_prepared_plans[story_key] as Dictionary
+	var corridor_plan := _lf3_indirect_prepared_plans[corridor_key] as Dictionary
+	var story_irradiance := story_plan.get(
+		"irradiance", PackedColorArray()) as PackedColorArray
+	var corridor_irradiance := corridor_plan.get(
+		"irradiance", PackedColorArray()) as PackedColorArray
+	if story_irradiance.size() != (
+			story_config.get("grid_size", Vector2i.ZERO) as Vector2i).x * (
+			story_config.get("grid_size", Vector2i.ZERO) as Vector2i).y \
+			or corridor_irradiance.size() != (
+				corridor_config.get("grid_size", Vector2i.ZERO) as Vector2i).x * (
+				corridor_config.get("grid_size", Vector2i.ZERO) as Vector2i).y:
+		return
+	var started_us := Time.get_ticks_usec()
+	if weight <= 0.0:
+		if _lf3_floor_renderer.update_from_irradiance(
+				self, _mat_floor, story_config, story_irradiance,
+				story_source["bounds"], true):
+			_lf3_story_transition_active = false
+			_lf3_story_transition_weight = 0.0
+			_lf3_story_transition_last_cycle = _cycle_count
+		return
+	var blended := _lf3_blend_irradiance_world(
+		story_config, story_irradiance,
+		corridor_config, corridor_irradiance,
+		corridor_config, weight)
+	var refresh_bindings := not _lf3_story_transition_active
+	if _lf3_floor_renderer.update_from_irradiance(
+			self, _mat_floor, corridor_config, blended,
+			corridor_source["bounds"], refresh_bindings):
+		_lf3_story_transition_active = true
+		_lf3_story_transition_weight = weight
+		_lf3_story_transition_last_cycle = _cycle_count
+		_lf3_last_rebuild_profile["topology_blend_weight"] = weight
+		_lf3_last_rebuild_profile["topology_blend_ms"] = float(
+			Time.get_ticks_usec() - started_us) / 1000.0
+
+
+func _lf3_blend_irradiance_world(
+		from_config: Dictionary, from_irradiance: PackedColorArray,
+		to_config: Dictionary, to_irradiance: PackedColorArray,
+		output_config: Dictionary, weight: float) -> PackedColorArray:
+	var output_size: Vector2i = output_config.get(
+		"grid_size", Vector2i.ZERO)
+	var output_origin: Vector2i = output_config.get(
+		"origin_cell", Vector2i.ZERO)
+	var result := PackedColorArray()
+	result.resize(output_size.x * output_size.y)
+	for z in range(output_size.y):
+		for x in range(output_size.x):
+			var world_cell := output_origin + Vector2i(x, z)
+			var from_value := _lf3_sample_irradiance_world(
+				from_config, from_irradiance, world_cell)
+			var to_value := _lf3_sample_irradiance_world(
+				to_config, to_irradiance, world_cell)
+			result[z * output_size.x + x] = from_value.lerp(
+				to_value, weight)
+	return result
+
+
+func _lf3_sample_irradiance_world(config: Dictionary,
+		irradiance: PackedColorArray, world_cell: Vector2i) -> Color:
+	var size: Vector2i = config.get("grid_size", Vector2i.ZERO)
+	var local_cell := world_cell - (
+		config.get("origin_cell", Vector2i.ZERO) as Vector2i)
+	if local_cell.x < 0 or local_cell.y < 0 \
+			or local_cell.x >= size.x or local_cell.y >= size.y:
+		return Color.BLACK
+	var index := local_cell.y * size.x + local_cell.x
+	if index < 0 or index >= irradiance.size():
+		return Color.BLACK
+	return irradiance[index]
+
+
 func _lf_set_legacy_active(active: bool) -> void:
 	if not active and _lf_field_active:
 		return
@@ -3458,6 +3571,10 @@ func _set_story_audio_volume(player: AudioStreamPlayer, base_db: float, level: f
 
 func _do_story_swap() -> void:
 	_story_swapped = true
+	_lf3_story_transition_anchor_z = _open_door_world_z
+	_lf3_story_transition_active = false
+	_lf3_story_transition_weight = 0.0
+	_lf3_story_transition_last_cycle = -1
 	var pit_world := _story_room.to_global(_story_pit_local)
 	_add_box(_story_room, "floor", Vector3(STORY_PIT_SIZE, SLAB_T, STORY_PIT_SIZE),
 		Vector3(_story_pit_local.x, -SLAB_T * 0.5, _story_pit_local.z), true)
@@ -3611,6 +3728,7 @@ func _deactivate_open_door(reschedule: bool) -> void:
 	_story_room = null
 	_story_chair = null
 	_story_chair_fill = null
+	_lf3_story_transition_active = false
 	call_deferred("_lf_rebuild_corridor_field")
 
 

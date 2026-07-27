@@ -97,7 +97,8 @@ func build_from_irradiance(level_root: Node,
 # removed topology restores only bindings outside the new bounds.
 func update_from_irradiance(level_root: Node,
 		source_material: StandardMaterial3D, config: Dictionary,
-		irradiance: PackedColorArray, world_bounds: Rect2) -> bool:
+		irradiance: PackedColorArray, world_bounds: Rect2,
+		refresh_bindings := true) -> bool:
 	if not _ready or _indirect_material == null \
 			or source_material != _source_material:
 		return build_from_irradiance(
@@ -130,37 +131,39 @@ func update_from_irradiance(level_root: Node,
 	_cell_size = cell_size
 	_apply_world_mapping(origin_cell)
 	var mapping_done_us := Time.get_ticks_usec()
-	var retained: Array[Dictionary] = []
 	var retained_ids := {}
-	for binding: Dictionary in _bindings:
-		var mesh_value = binding.get("mesh")
-		if not is_instance_valid(mesh_value):
-			continue
-		var mesh := mesh_value as MeshInstance3D
-		if mesh == null or mesh.mesh == null:
-			continue
-		var world_box := mesh.global_transform * mesh.get_aabb()
-		if not _box_inside_xz(world_box, world_bounds):
-			mesh.material_override = binding.get("original") as Material
-			continue
-		retained.append(binding)
-		retained_ids[mesh.get_instance_id()] = true
-	_bindings = retained
+	if refresh_bindings:
+		var retained: Array[Dictionary] = []
+		for binding: Dictionary in _bindings:
+			var mesh_value = binding.get("mesh")
+			if not is_instance_valid(mesh_value):
+				continue
+			var mesh := mesh_value as MeshInstance3D
+			if mesh == null or mesh.mesh == null:
+				continue
+			var world_box := mesh.global_transform * mesh.get_aabb()
+			if not _box_inside_xz(world_box, world_bounds):
+				mesh.material_override = binding.get("original") as Material
+				continue
+			retained.append(binding)
+			retained_ids[mesh.get_instance_id()] = true
+		_bindings = retained
 	var filter_done_us := Time.get_ticks_usec()
 	var new_bindings := 0
-	for child in level_root.find_children("*", "MeshInstance3D", true, false):
-		var mesh := child as MeshInstance3D
-		if mesh == null or mesh.mesh == null \
-				or retained_ids.has(mesh.get_instance_id()) \
-				or mesh.material_override != source_material:
-			continue
-		var world_box := mesh.global_transform * mesh.get_aabb()
-		if not _box_inside_xz(world_box, world_bounds):
-			continue
-		_bindings.append({"mesh": mesh, "original": source_material})
-		mesh.material_override = _indirect_material \
-			if _active else source_material
-		new_bindings += 1
+	if refresh_bindings:
+		for child in level_root.find_children("*", "MeshInstance3D", true, false):
+			var mesh := child as MeshInstance3D
+			if mesh == null or mesh.mesh == null \
+					or retained_ids.has(mesh.get_instance_id()) \
+					or mesh.material_override != source_material:
+				continue
+			var world_box := mesh.global_transform * mesh.get_aabb()
+			if not _box_inside_xz(world_box, world_bounds):
+				continue
+			_bindings.append({"mesh": mesh, "original": source_material})
+			mesh.material_override = _indirect_material \
+				if _active else source_material
+			new_bindings += 1
 	var bindings_done_us := Time.get_ticks_usec()
 	_ready = not _bindings.is_empty()
 	last_build_profile = {
@@ -171,6 +174,7 @@ func update_from_irradiance(level_root: Node,
 		"bindings_ms": float(bindings_done_us - filter_done_us) / 1000.0,
 		"activate_ms": 0.0,
 		"new_bindings": new_bindings,
+		"refreshed_bindings": refresh_bindings,
 	}
 	return _ready
 
