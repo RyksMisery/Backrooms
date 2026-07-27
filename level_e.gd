@@ -1,9 +1,114 @@
-extends "res://level_d.gd"
+extends "res://level_areas_c.gd"
 
 const CANONICAL_ARCHITECTURE := preload("res://modules/architecture_module.gd")
 const CANONICAL_LIGHTING := preload("res://modules/lighting_module.gd")
 const CANONICAL_AUDIO := preload("res://modules/audio_module.gd")
 const STREAM_BLOCK_PLANNER := preload("res://modules/stream_block_plan_module.gd")
+
+# Продуктовая раскладка бывшего compatibility-слоя level_d. Она принадлежит
+# level_e; level_d остаётся только визуальным/регрессионным эталоном.
+const HUB := [
+	["hall_nw", Vector2i(1, 1), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
+	["hall_ne", Vector2i(2, 1), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
+	["hall_sw", Vector2i(1, 2), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
+	["hall_se", Vector2i(2, 2), "column_hall", 0, "КОЛОННЫЙ ЗАЛ", {"area_group": "hub_core"}],
+	["cor_n_w", Vector2i(1, 0), "branch", 3, "РАЗВЕТВИТЕЛЬ СЗ"],
+	["cor_n_e", Vector2i(2, 0), "branch", 3, "РАЗВЕТВИТЕЛЬ СВ"],
+	["cor_s_w", Vector2i(1, 3), "branch", 1, "РАЗВЕТВИТЕЛЬ ЮЗ"],
+	["cor_s_e", Vector2i(2, 3), "branch", 1, "РАЗВЕТВИТЕЛЬ ЮВ"],
+	["cor_w_n", Vector2i(0, 1), "branch", 2, "РАЗВЕТВИТЕЛЬ ЗС"],
+	["cor_w_s", Vector2i(0, 2), "branch", 2, "РАЗВЕТВИТЕЛЬ ЗЮ"],
+	["cor_e_n", Vector2i(3, 1), "branch", 0, "РАЗВЕТВИТЕЛЬ ВС"],
+	["cor_e_s", Vector2i(3, 2), "branch", 0, "РАЗВЕТВИТЕЛЬ ВЮ"],
+]
+const FIRST_RING_CELL := Vector2i(3, 0)
+const ENTRANCE_BRANCH := Vector2i(2, 0)
+const MAZE_AFTER_PIT_CELL := Vector2i(4, 0)
+const MAZE_AFTER_PIT_TAIL_CELL := Vector2i(4, 1)
+const OFFICE_AFTER_MAZE_CELL := Vector2i(4, 2)
+const PIT_EXIT_LANE_D := Vector2i(10, 13)
+const LEVEL_D_MAZE_OFFICE_LANE := Vector2i(12, 15)
+const ROOMS := [
+	[FIRST_RING_CELL, "pit", 0, "ЗАЛ-ПРОВАЛ"],
+	[Vector2i(0, 0), "lit_hall", 0, "УГЛОВОЙ ЗАЛ СЗ"],
+	[Vector2i(3, 3), "lit_hall", 0, "УГЛОВОЙ ЗАЛ ЮВ"],
+	[Vector2i(0, 3), "lit_hall", 0, "УГЛОВОЙ ЗАЛ ЮЗ"],
+	[Vector2i(2, -1), "column_hall", 0, "КОЛОННЫЙ ЗАЛ (кольцо)"],
+	[Vector2i(0, 4), "column_hall", 0, "КОЛОННЫЙ ЗАЛ (кольцо)"],
+	[Vector2i(-1, 2), "column_hall", 0, "КОЛОННЫЙ ЗАЛ (кольцо)"],
+	[Vector2i(0, -1), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(1, -1), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(3, -1), "empty", 0, "ОБЛАСТЬ"],
+	[MAZE_AFTER_PIT_CELL, "maze_wilson_x2", 0, "ЛАБИРИНТ ПОСЛЕ ПРОВАЛА",
+		{
+			"area_group": "maze_after_pit",
+			"maze_pair_cell": MAZE_AFTER_PIT_TAIL_CELL,
+			"maze_entrance_side": "W",
+			"maze_entrance_lo": PIT_EXIT_LANE_D.x,
+			"maze_entrance_hi": PIT_EXIT_LANE_D.y,
+			"maze_real_entrance": true,
+			"maze_exit_side": "S",
+			"maze_exit_lo": LEVEL_D_MAZE_OFFICE_LANE.x,
+			"maze_exit_hi": LEVEL_D_MAZE_OFFICE_LANE.y,
+			"maze_exit_real": true,
+		}],
+	[MAZE_AFTER_PIT_TAIL_CELL, "maze_wilson_x2_tail", 0,
+		"ЛАБИРИНТ ПОСЛЕ ПРОВАЛА (ЮГ)", {"area_group": "maze_after_pit"}],
+	[OFFICE_AFTER_MAZE_CELL, "office_corridor", 0, "ОФИС-КОРИДОР"],
+	[Vector2i(4, 3), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(3, 4), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(2, 4), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(1, 4), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(-1, 3), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(-1, 1), "empty", 0, "ОБЛАСТЬ"],
+	[Vector2i(-1, 0), "empty", 0, "ОБЛАСТЬ"],
+]
+const LINKS := [
+	[Vector2i(0, 0), Vector2i(0, -1)], [Vector2i(0, -1), Vector2i(1, -1)],
+	[Vector2i(1, -1), Vector2i(2, -1)], [Vector2i(2, -1), Vector2i(3, -1)],
+	[Vector2i(4, 2), Vector2i(4, 3)], [Vector2i(4, 3), Vector2i(3, 3)],
+	[Vector2i(3, 3), Vector2i(3, 4)], [Vector2i(3, 4), Vector2i(2, 4)],
+	[Vector2i(2, 4), Vector2i(1, 4)], [Vector2i(1, 4), Vector2i(0, 4)],
+	[Vector2i(0, 4), Vector2i(0, 3)], [Vector2i(0, 3), Vector2i(-1, 3)],
+	[Vector2i(-1, 3), Vector2i(-1, 2)], [Vector2i(-1, 2), Vector2i(-1, 1)],
+	[Vector2i(-1, 1), Vector2i(-1, 0)], [Vector2i(-1, 0), Vector2i(0, 0)],
+]
+const PIT_BORDER_D := 0.05
+const PIT_GAP_D := 0.6
+const PIT_ENTRY_LANE_D := Vector2i(0, 3)
+const PIT_LANDING_X_CELLS_D := [-1, -2]
+const PIT_LANDING_Z_LANE_D := Vector2i(3, 6)
+const PIT_LIGHT_POINTS_D := [
+	Vector2(13.5, 1.5), Vector2(1.5, 13.5), Vector2(13.5, 13.5), Vector2(7.5, 7.5)
+]
+const PIT_ENTRY_NICHE_LIGHT_D := Vector2(-0.5, 4.5)
+const PIT_FLICKER_POS_D := Vector2(-1.5, 1.5)
+const PIT_SIGN_POS_D := Vector3(-1.0, 0.0, 0.5)
+const PIT_POCKET_SIGN_POS_D := Vector3(-1.3, 0.25, 5.2)
+const WINDOW_BRANCHES := [
+	[Vector2i(1, 0), "N"], [Vector2i(0, 1), "W"], [Vector2i(0, 2), "W"],
+	[Vector2i(3, 1), "E"], [Vector2i(3, 2), "E"], [Vector2i(1, 3), "S"],
+	[Vector2i(2, 3), "S"],
+]
+const WIN_LANE := 11
+const SLIT_W := 0.25
+const SLIT_BASE_H := 0.12
+const SLIT_BASE_PAD := 0.05
+const LAMP_SOURCE_DROP_D := CANONICAL_LIGHTING.SOURCE_LEVEL_DROP
+const MAC_RENDER_SCALE := CANONICAL_ARCHITECTURE.MAC_RENDER_SCALE
+const HALL_LIGHT_CHECKER := true
+const CARDBOARD_BOX_PATH := \
+	"res://objects/cardboard_box_01_1k/cardboard_box_01_1k.gltf"
+const HALL_ARROW_TEXTURE_PATH := "res://decals/backrooms_arrow_black.png"
+const HALL_ARROW_SIZE := Vector2(2.0, 2.0)
+const HALL_ARROW_WALL_EPS := 0.01
+const ARROW_CARD_BOX_POS_D := Vector2(8.3, 0.55)
+const ARROW_CARD_BOX_SCALE := 1.75
+const ARROW_CARD_BOX_YAW := -0.12
+const ARROW_CARD_BOX_TURN_DEG := 90.0
+const ARROW_CARD_BOX_GAP_D := 0.125
+const ARROW_CARD_BOX_SECOND_YAW_DEG := 15.0
+const ARROW_CARD_BOX_TOP_YAW_DEG := 5.0
 
 # level_e — раздельная по областям геометрия + АВТО-стриминг (build/free блоков
 # по близости к игроку). База пакует уровень в слитые меши и одно тело коллизии;
@@ -195,6 +300,11 @@ func _ready() -> void:
 		randomize_maze_seed = false
 		maze_seed = 173205
 	super._ready()
+	if OS.get_name() == "macOS":
+		get_viewport().scaling_3d_scale = MAC_RENDER_SCALE
+	_tuned_on = true
+	_p0_on = false
+	_apply_tuned_mode()
 	if _level_e_main_layout_features_enabled():
 		_setup_infinite_connector_trigger()
 		_setup_model_fill_system()
@@ -245,6 +355,32 @@ func _level_e_input_content(_event: InputEventKey) -> void:
 	pass
 
 
+func _init_areas() -> void:
+	_areas = []
+	for r in HUB:
+		var area := {
+			"id": String(r[0]), "cell": r[1], "type": String(r[2]),
+			"rot": int(r[3]), "name": String(r[4])
+		}
+		if r.size() > 5 and r[5] is Dictionary:
+			for key in (r[5] as Dictionary).keys():
+				area[key] = (r[5] as Dictionary)[key]
+		_areas.append(area)
+	for r in ROOMS:
+		var cell: Vector2i = r[0]
+		var area := {
+			"id": "r_%d_%d" % [cell.x, cell.y], "cell": cell,
+			"type": String(r[1]), "rot": int(r[2]), "name": String(r[3])
+		}
+		if r.size() > 4 and r[4] is Dictionary:
+			for key in (r[4] as Dictionary).keys():
+				area[key] = (r[4] as Dictionary)[key]
+		_areas.append(area)
+	_area_by_cell.clear()
+	for area: Dictionary in _areas:
+		_area_by_cell[area["cell"]] = area
+
+
 func _begin() -> void:
 	_finish_stream_plan_thread()
 	super._begin()
@@ -268,7 +404,13 @@ func _begin() -> void:
 # а дальний слой оставляем глухим: получается ниша, а не ложная дыра
 # в физически соседнюю область.
 func _carve_passages() -> void:
-	super._carve_passages()
+	_carve_hub()
+	for lk in LINKS:
+		_carve_area_link(lk[0], lk[1])
+	_carve_pit_gates()
+	_carve_after_pit_chain()
+	for wb in WINDOW_BRANCHES:
+		_branch_window_carve(wb[0], String(wb[1]))
 	if preview_template != "" or not _area_by_cell.has(INFINITE_CONNECTOR_AREA):
 		return
 	var area: Dictionary = _area_by_cell[INFINITE_CONNECTOR_AREA]
@@ -281,6 +423,366 @@ func _carve_passages() -> void:
 			_set_cell(cell, K_PASSAGE)
 			_area_id[cell] = String(area["id"])
 			_light_block.erase(cell)
+
+
+func _carve_hub() -> void:
+	var east := Vector2i(1, 0)
+	var south := Vector2i(0, 1)
+	var merge := [
+		[Vector2i(1, 1), east, 0, ROOM_CELLS],
+		[Vector2i(1, 2), east, 0, ROOM_CELLS],
+		[Vector2i(1, 1), south, 0, ROOM_CELLS],
+		[Vector2i(2, 1), south, 0, ROOM_CELLS],
+	]
+	for cc in merge:
+		if _area_by_cell.has(cc[0]):
+			_carve_passage(_area_by_cell[cc[0]], cc[1], cc[2], cc[3])
+	var jb := _area_base(1, 1)
+	for gx in range(jb.x + WALL_CELLS + ROOM_CELLS,
+			jb.x + WALL_CELLS + ROOM_CELLS + WALL_CELLS):
+		for gz in range(jb.y + WALL_CELLS + ROOM_CELLS,
+				jb.y + WALL_CELLS + ROOM_CELLS + WALL_CELLS):
+			_set_cell(Vector2i(gx, gz), K_PASSAGE)
+	var spokes := [
+		[Vector2i(1, 0), south], [Vector2i(2, 0), south],
+		[Vector2i(1, 2), south], [Vector2i(2, 2), south],
+		[Vector2i(0, 1), east], [Vector2i(0, 2), east],
+		[Vector2i(2, 1), east], [Vector2i(2, 2), east],
+	]
+	for sp in spokes:
+		if _area_by_cell.has(sp[0]):
+			_carve_passage(_area_by_cell[sp[0]], sp[1], 3, 6)
+			_carve_passage(_area_by_cell[sp[0]], sp[1], 9, 12)
+
+
+func _carve_pit_gates() -> void:
+	if _area_by_cell.has(ENTRANCE_BRANCH):
+		_carve_passage(_area_by_cell[ENTRANCE_BRANCH], Vector2i(1, 0),
+			PIT_ENTRY_LANE_D.x, PIT_ENTRY_LANE_D.y)
+	if _area_by_cell.has(FIRST_RING_CELL):
+		_carve_passage(_area_by_cell[FIRST_RING_CELL], Vector2i(1, 0),
+			PIT_EXIT_LANE_D.x, PIT_EXIT_LANE_D.y)
+
+
+func _carve_after_pit_chain() -> void:
+	if _area_by_cell.has(MAZE_AFTER_PIT_TAIL_CELL):
+		_carve_passage(_area_by_cell[MAZE_AFTER_PIT_TAIL_CELL], Vector2i(0, 1),
+			LEVEL_D_MAZE_OFFICE_LANE.x, LEVEL_D_MAZE_OFFICE_LANE.y)
+
+
+func _pit_exit_configs() -> Array:
+	var cfgs: Array = []
+	if _area_by_cell.has(FIRST_RING_CELL):
+		cfgs.append({
+			"cell": FIRST_RING_CELL, "dir": Vector2i(1, 0),
+			"lane": PIT_EXIT_LANE_D
+		})
+	return cfgs
+
+
+func _branch_window_carve(bc: Vector2i, side: String) -> void:
+	match side:
+		"N":
+			var north := bc + Vector2i(0, -1)
+			if _area_by_cell.has(north):
+				_carve_passage(_area_by_cell[north], Vector2i(0, 1),
+					WIN_LANE, WIN_LANE + 1)
+		"S":
+			if _area_by_cell.has(bc):
+				_carve_passage(_area_by_cell[bc], Vector2i(0, 1),
+					WIN_LANE, WIN_LANE + 1)
+		"W":
+			var west := bc + Vector2i(-1, 0)
+			if _area_by_cell.has(west):
+				_carve_passage(_area_by_cell[west], Vector2i(1, 0),
+					WIN_LANE, WIN_LANE + 1)
+		"E":
+			if _area_by_cell.has(bc):
+				_carve_passage(_area_by_cell[bc], Vector2i(1, 0),
+					WIN_LANE, WIN_LANE + 1)
+
+
+func _build_area_content() -> void:
+	super._build_area_content()
+	for wb in WINDOW_BRANCHES:
+		_branch_window_geo(wb[0], String(wb[1]))
+	_place_hall_arrow()
+	_place_arrow_cardboard_box()
+
+
+func _branch_window_geo(bc: Vector2i, side: String) -> void:
+	var wall := 0.0
+	var along_x := true
+	match side:
+		"N":
+			wall = -1.5
+		"S":
+			wall = ROOM_CELLS + 1.5
+		"W":
+			wall = -1.5
+			along_x = false
+		"E":
+			wall = ROOM_CELLS + 1.5
+			along_x = false
+		_:
+			return
+	var depth := WALL_CELLS * CELL
+	var fw := 0.5 - SLIT_W * 0.5
+	var c1 := WIN_LANE + fw * 0.5
+	var c2 := WIN_LANE + 1.0 - fw * 0.5
+	if along_x:
+		_put("wall", Vector3(fw * CELL, CEIL_H, depth),
+			_local_world(bc.x, bc.y, c1, wall, CEIL_H * 0.5), true, false)
+		_put("wall", Vector3(fw * CELL, CEIL_H, depth),
+			_local_world(bc.x, bc.y, c2, wall, CEIL_H * 0.5), true, false)
+		_put("base", Vector3(fw * CELL + SLIT_BASE_PAD, SLIT_BASE_H,
+			depth + SLIT_BASE_PAD),
+			_local_world(bc.x, bc.y, c1, wall, SLIT_BASE_H * 0.5), false, false)
+		_put("base", Vector3(fw * CELL + SLIT_BASE_PAD, SLIT_BASE_H,
+			depth + SLIT_BASE_PAD),
+			_local_world(bc.x, bc.y, c2, wall, SLIT_BASE_H * 0.5), false, false)
+	else:
+		_put("wall", Vector3(depth, CEIL_H, fw * CELL),
+			_local_world(bc.x, bc.y, wall, c1, CEIL_H * 0.5), true, false)
+		_put("wall", Vector3(depth, CEIL_H, fw * CELL),
+			_local_world(bc.x, bc.y, wall, c2, CEIL_H * 0.5), true, false)
+		_put("base", Vector3(depth + SLIT_BASE_PAD, SLIT_BASE_H,
+			fw * CELL + SLIT_BASE_PAD),
+			_local_world(bc.x, bc.y, wall, c1, SLIT_BASE_H * 0.5), false, false)
+		_put("base", Vector3(depth + SLIT_BASE_PAD, SLIT_BASE_H,
+			fw * CELL + SLIT_BASE_PAD),
+			_local_world(bc.x, bc.y, wall, c2, SLIT_BASE_H * 0.5), false, false)
+
+
+func _place_hall_arrow() -> void:
+	var tex := load(HALL_ARROW_TEXTURE_PATH) as Texture2D
+	if tex == null:
+		return
+	var mesh := QuadMesh.new()
+	mesh.size = HALL_ARROW_SIZE
+	var mat := StandardMaterial3D.new()
+	mat.albedo_texture = tex
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	mesh.material = mat
+	var mi := MeshInstance3D.new()
+	mi.name = "hall_arrow_decal"
+	mi.mesh = mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.position = _local_world(2, 1, 7.3, HALL_ARROW_WALL_EPS, 1.95)
+	add_child(mi)
+
+
+func _place_arrow_cardboard_box() -> void:
+	var scene := load(CARDBOARD_BOX_PATH) as PackedScene
+	if scene == null:
+		return
+	var base_yaw := ARROW_CARD_BOX_YAW + deg_to_rad(ARROW_CARD_BOX_TURN_DEG)
+	var floor_pos := _local_world(2, 1, ARROW_CARD_BOX_POS_D.x,
+		ARROW_CARD_BOX_POS_D.y, 0.0)
+	var first := _spawn_arrow_cardboard_box(scene, "arrow_cardboard_box_01",
+		floor_pos, base_yaw)
+	if first == null:
+		return
+	var first_box := _node_world_aabb(first)
+	var second := _spawn_arrow_cardboard_box(scene, "arrow_cardboard_box_02",
+		floor_pos, base_yaw + deg_to_rad(ARROW_CARD_BOX_SECOND_YAW_DEG))
+	if second != null:
+		var second_box := _node_world_aabb(second)
+		var second_center := second_box.position + second_box.size * 0.5
+		var target_x := first_box.position.x + first_box.size.x \
+			+ ARROW_CARD_BOX_GAP_D * CELL + second_box.size.x * 0.5
+		second.position.x += target_x - second_center.x
+	var first_center := first_box.position + first_box.size * 0.5
+	var top_pos := Vector3(first_center.x + ARROW_CARD_BOX_GAP_D * CELL,
+		first_box.end.y, first_center.z)
+	var top := _spawn_arrow_cardboard_box(scene, "arrow_cardboard_box_03",
+		top_pos, base_yaw + deg_to_rad(ARROW_CARD_BOX_TOP_YAW_DEG))
+	for inst: Node3D in [first, second, top]:
+		if inst != null:
+			_add_model_collision(inst)
+	for inst: Node3D in [first, second]:
+		if inst == null:
+			continue
+		var foot := _node_world_aabb(inst)
+		if foot.size.x > 0.0 and foot.size.z > 0.0:
+			_add_contact_shadow(Vector3(foot.position.x + foot.size.x * 0.5,
+				0.0, foot.position.z + foot.size.z * 0.5),
+				maxf(foot.size.x, foot.size.z) * 0.58)
+
+
+func _spawn_arrow_cardboard_box(scene: PackedScene, box_name: String,
+		floor_pos: Vector3, yaw: float) -> Node3D:
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return null
+	inst.name = box_name
+	add_child(inst)
+	inst.scale = Vector3.ONE * ARROW_CARD_BOX_SCALE
+	inst.rotation.y = yaw
+	var box := _node_world_aabb(inst)
+	if box.size.y > 0.0:
+		var center := box.position + box.size * 0.5
+		inst.position += floor_pos - Vector3(center.x, box.position.y, center.z)
+	return inst
+
+
+func _build_pit(area: Dictionary) -> void:
+	var pit_cell: Vector2i = area["cell"]
+	var n := PIT_COUNT
+	var b := PIT_BORDER_D
+	var gap := PIT_GAP_D
+	var inner := float(ROOM_CELLS) - b * 2.0
+	var hole := (inner - float(n - 1) * gap) / float(n)
+	if hole <= 0.0:
+		return
+	var base := _area_base_cell(area)
+	for lx in range(ROOM_CELLS):
+		for lz in range(ROOM_CELLS):
+			var cell := Vector2i(base.x + WALL_CELLS + lx,
+				base.y + WALL_CELLS + lz)
+			_set_cell(cell, K_PIT)
+			_light_block[cell] = true
+	_pit_walk(pit_cell, 0.0, 0.0, float(ROOM_CELLS), b)
+	_pit_walk(pit_cell, 0.0, float(ROOM_CELLS) - b, float(ROOM_CELLS), b)
+	_pit_walk(pit_cell, 0.0, b, b, inner)
+	_pit_walk(pit_cell, float(ROOM_CELLS) - b, b, b, inner)
+	for k in range(1, n):
+		var off := b + float(k - 1) * (hole + gap) + hole
+		_pit_walk(pit_cell, off, b, gap, inner)
+		_pit_walk(pit_cell, b, off, inner, gap)
+	var icen := _local_world(pit_cell.x, pit_cell.y,
+		float(ROOM_CELLS) * 0.5, float(ROOM_CELLS) * 0.5, -PIT_DEPTH)
+	_void_box(Vector3(icen.x, -PIT_DEPTH, icen.z),
+		Vector3(inner * CELL, 0.2, inner * CELL))
+	for ix in range(n):
+		var hx := b + float(ix) * (hole + gap)
+		for iz in range(n):
+			var hz := b + float(iz) * (hole + gap)
+			var corner := _local_world(pit_cell.x, pit_cell.y, hx, hz, 0.0)
+			_pit_fall_rects.append(Rect2(corner.x, corner.z,
+				hole * CELL, hole * CELL))
+			_pit_rects.append(Rect2(float(base.x + WALL_CELLS) + hx,
+				float(base.y + WALL_CELLS) + hz, hole, hole))
+	for wlx in PIT_LANDING_X_CELLS_D:
+		for wlz in range(PIT_LANDING_Z_LANE_D.x, PIT_LANDING_Z_LANE_D.y):
+			_set_cell(Vector2i(base.x + WALL_CELLS + wlx,
+				base.y + WALL_CELLS + wlz), K_FLOOR)
+
+
+func _apply_runtime_light_rules(light: Light3D) -> void:
+	if bool(light.get_meta("skip_level_d_source_drop", false)):
+		return
+	light.position.y -= LAMP_SOURCE_DROP_D
+
+
+func _spawn_lamp_source(pos: Vector3, tight := false) -> void:
+	super._spawn_lamp_source(pos, tight)
+	if _lamps.is_empty():
+		return
+	var light: OmniLight3D = _lamps[_lamps.size() - 1]
+	if String(light.get_meta("area_id", "")) == "":
+		var cell := Vector2i(int(floor(pos.x / CELL)), int(floor(pos.z / CELL)))
+		var ids := _player_area_ids(cell)
+		if not ids.is_empty():
+			_set_last_lamp_area_id(String(ids[0]))
+
+
+func _add_column_hall_lights(area: Dictionary) -> void:
+	var c: Vector2i = area["cell"]
+	var base := _area_base_cell(area)
+	var first := LIGHT_MARGIN
+	var last := ROOM_CELLS - LIGHT_MARGIN - 1
+	for lx in range(first, last + 1, LIGHT_STEP):
+		for lz in range(first, last + 1, LIGHT_STEP):
+			var cell := Vector2i(base.x + WALL_CELLS + lx,
+				base.y + WALL_CELLS + lz)
+			if HALL_LIGHT_CHECKER and (
+					floori(float(cell.x) / float(LIGHT_STEP))
+					+ floori(float(cell.y) / float(LIGHT_STEP))) % 2 != 0:
+				continue
+			if _light_blocked(cell):
+				continue
+			var pos := _local_world(c.x, c.y, float(lx) + 0.5,
+				float(lz) + 0.5, CEIL_H + 0.02)
+			_emit_ceiling_light(pos,
+				Vector3(CELL - 0.05, 0.06, CELL - 0.05))
+			_spawn_lamp_source(pos, true)
+
+
+func _add_pit_lights(area: Dictionary) -> void:
+	var c: Vector2i = area["cell"]
+	for p: Vector2 in PIT_LIGHT_POINTS_D:
+		var pos := _local_world(c.x, c.y, p.x, p.y, CEIL_H + 0.02)
+		_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
+		_spawn_lamp_source(pos)
+	var niche_pos := _local_world(c.x, c.y, PIT_ENTRY_NICHE_LIGHT_D.x,
+		PIT_ENTRY_NICHE_LIGHT_D.y, CEIL_H + 0.02)
+	_emit_ceiling_light(niche_pos,
+		Vector3(CELL - 0.05, 0.06, CELL - 0.05))
+	_spawn_lamp_source(niche_pos, true)
+
+
+func _add_pit_flicker_light() -> void:
+	if not _area_by_cell.has(FIRST_RING_CELL):
+		return
+	_flicker_pos = _local_world(FIRST_RING_CELL.x, FIRST_RING_CELL.y,
+		PIT_FLICKER_POS_D.x, PIT_FLICKER_POS_D.y, CEIL_H + 0.02)
+	_has_flicker = true
+	_spawn_flicker_panel(_flicker_pos)
+	_flick_spot = SpotLight3D.new()
+	_flick_spot.position = _flicker_pos + Vector3(0.0, -0.3, 0.0)
+	_flick_spot.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+	_flick_spot.light_color = WETSIGN_SPOT_COLOR
+	_flick_spot.light_energy = WETSIGN_SPOT_ENERGY
+	_flick_spot.spot_range = WETSIGN_SPOT_RANGE
+	_flick_spot.spot_angle = WETSIGN_SPOT_ANGLE
+	_flick_spot.shadow_enabled = false
+	_apply_runtime_light_rules(_flick_spot)
+	add_child(_flick_spot)
+
+
+func _place_pit_warning_sign() -> void:
+	if not _area_by_cell.has(FIRST_RING_CELL):
+		return
+	var scene := load(
+		"res://objects/WetFloorSign_01_1k/WetFloorSign_01_1k.gltf") as PackedScene
+	if scene == null:
+		return
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return
+	inst.name = "pit_entrance_sign"
+	var pos := _local_world(FIRST_RING_CELL.x, FIRST_RING_CELL.y,
+		PIT_SIGN_POS_D.x, PIT_SIGN_POS_D.z, PIT_SIGN_POS_D.y)
+	inst.position = pos
+	inst.rotation.y = PI * 0.5 + deg_to_rad(30.0)
+	inst.scale = Vector3.ONE * 1.5
+	add_child(inst)
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(0.55, 0.62, 0.3) * 1.5
+	cs.shape = box
+	cs.position = pos + Vector3(0.0, 0.31 * 1.5, 0.0)
+	_body.add_child(cs)
+	var inst2 := scene.instantiate() as Node3D
+	if inst2 != null:
+		inst2.name = "pit_pocket_sign"
+		inst2.position = _local_world(FIRST_RING_CELL.x, FIRST_RING_CELL.y,
+			PIT_POCKET_SIGN_POS_D.x, PIT_POCKET_SIGN_POS_D.z,
+			PIT_POCKET_SIGN_POS_D.y)
+		inst2.rotation = Vector3(0.0, PI * 1.25, PI * 0.5)
+		inst2.scale = Vector3.ONE * 1.5
+		add_child(inst2)
+
+
+func _build_hud() -> void:
+	super._build_hud()
+	if _minimap != null:
+		_minimap.offset_left = -732
+		_minimap.offset_bottom = 732
 
 
 func _setup_infinite_connector_trigger() -> void:
