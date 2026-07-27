@@ -866,3 +866,20 @@ would reintroduce the old omni leak through partitions and walls» — на пр
 
 Light rules are editable. When a new architectural pattern is added, update
 this file if it introduces a new panel type, spacing rule, or clearance rule.
+
+## Асинхронная смена occupancy-топологии LF3
+
+- Полный `LF3OccupancySolver.solve()` запрещён на основном потоке во время
+  игрового переключения топологии. Источник света передаётся как неизменяемый
+  snapshot (`bounds`, `active_rects`, `closed_segments`, `emitters`,
+  `cache_key`), adapter и solver выполняются worker-потоком.
+- Основной поток только принимает готовое поле, создаёт GPU-текстуру и
+  атомарно перепривязывает материал. Пока новое поле не готово, действует
+  предыдущее; синхронного fallback во время игры нет.
+- Любая заранее известная смена — удаление постановочной комнаты, открытие
+  выхода, пристыковка области-шлюза — обязана запросить подготовку до изменения
+  видимой геометрии и дождаться `lf3_indirect_topology_ready(key)`.
+  `cache_key` включает тип и ревизию топологии, поэтому механизм не привязан к
+  прямому коридору или конкретной двери.
+- Перемещение неизменной периодической топологии продолжает использовать
+  дешёвый `reproject`; worker запускается только при смене содержимого поля.

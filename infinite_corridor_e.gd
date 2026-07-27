@@ -28,6 +28,8 @@ const STORY_LAMP_FLICK_STREAM := CANONICAL_AUDIO.LAMP_FLICK_STREAM
 const LF_CONTROLLER := preload("res://lighting_field/lighting_mode_controller.gd")
 const LF3_SOLVER := preload("res://lighting_field/lf3_occupancy_solver.gd")
 const LF3_ADAPTER := preload("res://lighting_field/lf3_occupancy_adapter.gd")
+const LF3_INDIRECT_PLAN_BUILDER := preload(
+	"res://lighting_field/lf3_indirect_plan_builder.gd")
 const LF3_FLOOR_RENDERER := preload(
 	"res://lighting_field/lf3_floor_indirect_renderer.gd")
 const LF_CORRIDOR_VISUAL_MASK := 1
@@ -115,6 +117,14 @@ var _lf3_indirect_enabled := true
 var _lf3_indirect_signature := ""
 var _lf3_indirect_content_key := ""
 var _lf3_last_rebuild_profile := {}
+var _lf3_indirect_prepare_thread: Thread
+var _lf3_indirect_prepare_key := ""
+var _lf3_indirect_prepare_started_us := 0
+var _lf3_indirect_queued_request := {}
+var _lf3_indirect_prepared_plans := {}
+var _lf3_indirect_prepared_order: Array[String] = []
+var _lf3_indirect_waiting_signature := ""
+var _lf3_indirect_waiting_key := ""
 var _lf3_motion_running := false
 var _lf3_leak_capture_running := false
 var _lf3_leak_capture_state := {}
@@ -362,6 +372,7 @@ func _build_hud() -> void:
 
 func _process(delta: float) -> void:
 	super._process(delta)
+	_lf3_poll_indirect_prepare()
 	_update_office_door_v2_view_side()
 	# Родитель (_update_ambient_darkness) каждый кадр тянет ambient к своему target
 	# (AMBIENT_START/AMBIENT_DARK). Перебиваем его нашим значением, чтобы _live_ambient
@@ -2274,6 +2285,7 @@ func _lf_append_prop_materials(root_value: Variant, definitions: Array,
 func _lf3_ensure_floor_indirect() -> void:
 	if _lf3_floor_renderer == null or _mat_floor == null:
 		return
+	_lf3_poll_indirect_prepare()
 	var signature := "%d|%s|%d|%d|%.3f" % [
 		_cycle_count,
 		_open_state,
@@ -2321,6 +2333,59 @@ func _lf3_ensure_floor_indirect() -> void:
 		_lf3_floor_renderer.set_active(
 			_lf_field_active and _lf3_indirect_enabled)
 		return
+	if _lf3_indirect_prepared_plans.has(content_key):
+		var plan := _lf3_indirect_prepared_plans[content_key] as Dictionary
+		var plan_config := plan.get("config", {}) as Dictionary
+		var irradiance := plan.get(
+			"irradiance", PackedColorArray()) as PackedColorArray
+		if plan_config.get("grid_size", Vector2i.ZERO) == config.get(
+				"grid_size", Vector2i.ZERO) \
+				and irradiance.size() == (
+					config.get("grid_size", Vector2i.ZERO) as Vector2i).x * (
+					config.get("grid_size", Vector2i.ZERO) as Vector2i).y:
+			var commit_started_us := Time.get_ticks_usec()
+			if _lf3_floor_renderer.update_from_irradiance(
+					self, _mat_floor, config, irradiance, source["bounds"]):
+				var commit_done_us := Time.get_ticks_usec()
+				var worker_profile := plan.get(
+					"worker_profile", {}) as Dictionary
+				_lf3_last_rebuild_profile = {
+					"adapter_ms": float(
+						adapter_done_us - rebuild_start_us) / 1000.0,
+					"solver_ms": 0.0,
+					"renderer_ms": float(
+						commit_done_us - commit_started_us) / 1000.0,
+					"total_ms": float(
+						commit_done_us - rebuild_start_us) / 1000.0,
+					"worker_adapter_ms": float(
+						worker_profile.get("adapter_ms", 0.0)),
+					"worker_solver_ms": float(
+						worker_profile.get("solver_ms", 0.0)),
+					"worker_total_ms": float(
+						worker_profile.get("total_ms", 0.0)),
+					"renderer_detail": _lf3_floor_renderer.last_build_profile.duplicate(
+						true),
+					"async_commit": true,
+					"reprojected": false,
+				}
+				_lf3_indirect_content_key = content_key
+				_lf3_indirect_signature = signature
+				_lf3_indirect_waiting_signature = ""
+				_lf3_indirect_waiting_key = ""
+				_lf3_floor_renderer.set_active(
+					_lf_field_active and _lf3_indirect_enabled)
+				return
+	if _lf3_floor_renderer.is_ready():
+		# During play a changed topology is never solved synchronously. Keep the
+		# previous field until the generic snapshot worker has a replacement.
+		if signature != _lf3_indirect_waiting_signature \
+				or content_key != _lf3_indirect_waiting_key:
+			_lf3_indirect_waiting_signature = signature
+			_lf3_indirect_waiting_key = content_key
+			lf3_prepare_indirect_topology(source)
+		_lf3_floor_renderer.set_active(
+			_lf_field_active and _lf3_indirect_enabled)
+		return
 	var solver := LF3_SOLVER.new()
 	solver.solve(config)
 	var solver_done_us := Time.get_ticks_usec()
@@ -2336,10 +2401,124 @@ func _lf3_ensure_floor_indirect() -> void:
 		"total_ms": float(renderer_done_us - rebuild_start_us) / 1000.0,
 		"reprojected": false,
 	}
+	# Keep the last solved topology reusable even after another topology becomes
+	# active. This makes a later return to the corridor (or gateway) a commit,
+	# not a second solve.
+	_lf3_store_prepared_indirect_plan(content_key, {
+		"key": content_key,
+		"config": config,
+		"irradiance": solver.irradiance,
+		"errors": [],
+		"worker_profile": {
+			"adapter_ms": 0.0,
+			"solver_ms": 0.0,
+			"total_ms": 0.0,
+			"startup_sync": true,
+		},
+	})
 	_lf3_indirect_content_key = content_key
 	_lf3_indirect_signature = signature
 	_lf3_floor_renderer.set_active(
 		_lf_field_active and _lf3_indirect_enabled)
+
+
+# Public preparation seam for any future topology owner, including a gateway
+# area attached to either side door. The source must describe the combined
+# corridor/opening/area occupancy and carry a revisioned cache_key.
+func lf3_prepare_indirect_topology(source: Dictionary) -> String:
+	if source.has("errors") or not source.has("cache_key"):
+		return ""
+	var content_key := _lf3_indirect_content_key_for_source(source)
+	if content_key == _lf3_indirect_content_key \
+			or _lf3_indirect_prepared_plans.has(content_key) \
+			or content_key == _lf3_indirect_prepare_key:
+		return content_key
+	var request := {
+		"key": content_key,
+		"source": source.duplicate(true),
+	}
+	if _lf3_indirect_prepare_thread == null:
+		_lf3_start_indirect_prepare(request)
+	else:
+		# A topology selected later supersedes an older queued request; the
+		# running worker is allowed to finish without blocking the main thread.
+		_lf3_indirect_queued_request = request
+	return content_key
+
+
+func lf3_indirect_topology_ready(content_key: String) -> bool:
+	_lf3_poll_indirect_prepare()
+	return not content_key.is_empty() \
+		and (content_key == _lf3_indirect_content_key \
+			or _lf3_indirect_prepared_plans.has(content_key))
+
+
+func _lf3_indirect_content_key_for_source(source: Dictionary) -> String:
+	return "%s|%d|%d|%.3f" % [
+		String(source.get("cache_key", "uncached")),
+		_lf2_light_sample_index,
+		1 if _comparison_floor_enabled else 0,
+		_live_energy_mul,
+	]
+
+
+func _lf3_start_indirect_prepare(request: Dictionary) -> void:
+	_lf3_indirect_prepare_thread = Thread.new()
+	_lf3_indirect_prepare_key = String(request.get("key", ""))
+	_lf3_indirect_prepare_started_us = Time.get_ticks_usec()
+	var error := _lf3_indirect_prepare_thread.start(
+		LF3_INDIRECT_PLAN_BUILDER.build.bind(request))
+	if error != OK:
+		push_error("LF3 indirect worker start failed: %s" % error_string(error))
+		_lf3_indirect_prepare_thread = null
+		_lf3_indirect_prepare_key = ""
+
+
+func _lf3_poll_indirect_prepare() -> void:
+	if _lf3_indirect_prepare_thread == null \
+			or _lf3_indirect_prepare_thread.is_alive():
+		return
+	var plan := _lf3_indirect_prepare_thread.wait_to_finish() as Dictionary
+	var elapsed_ms := float(
+		Time.get_ticks_usec() - _lf3_indirect_prepare_started_us) / 1000.0
+	_lf3_indirect_prepare_thread = null
+	_lf3_indirect_prepare_key = ""
+	if not plan.is_empty() and (plan.get("errors", []) as Array).is_empty():
+		var key := String(plan.get("key", ""))
+		var worker_profile := plan.get("worker_profile", {}) as Dictionary
+		worker_profile["elapsed_ms"] = elapsed_ms
+		plan["worker_profile"] = worker_profile
+		_lf3_store_prepared_indirect_plan(key, plan)
+	elif not plan.is_empty():
+		push_warning("LF3 indirect worker rejected topology: %s" % [
+			plan.get("errors", [])])
+	if not _lf3_indirect_queued_request.is_empty():
+		var queued := _lf3_indirect_queued_request
+		_lf3_indirect_queued_request = {}
+		var queued_key := String(queued.get("key", ""))
+		if queued_key != _lf3_indirect_content_key \
+				and not _lf3_indirect_prepared_plans.has(queued_key):
+			_lf3_start_indirect_prepare(queued)
+
+
+func _lf3_store_prepared_indirect_plan(key: String, plan: Dictionary) -> void:
+	if key.is_empty():
+		return
+	_lf3_indirect_prepared_order.erase(key)
+	_lf3_indirect_prepared_order.append(key)
+	_lf3_indirect_prepared_plans[key] = plan
+	while _lf3_indirect_prepared_order.size() > 3:
+		var expired: String = _lf3_indirect_prepared_order.pop_front()
+		_lf3_indirect_prepared_plans.erase(expired)
+
+
+func _lf3_finish_indirect_prepare() -> void:
+	if _lf3_indirect_prepare_thread == null:
+		return
+	_lf3_indirect_prepare_thread.wait_to_finish()
+	_lf3_indirect_prepare_thread = null
+	_lf3_indirect_prepare_key = ""
+	_lf3_indirect_queued_request = {}
 
 
 func _lf_set_legacy_active(active: bool) -> void:
@@ -3305,6 +3484,9 @@ func _do_story_swap() -> void:
 	if _story_flash != null:
 		_story_flash.visible = true
 		_story_flash.color.a = 1.0
+	# The room still exists for many metres, but its eventual replacement is
+	# already known. Solve that topology now so recycle only commits GPU data.
+	lf3_prepare_indirect_topology(_lf3_corridor_only_occupancy_source())
 
 
 func _tip_story_chair() -> void:
@@ -3430,6 +3612,10 @@ func _deactivate_open_door(reschedule: bool) -> void:
 	_story_chair = null
 	_story_chair_fill = null
 	call_deferred("_lf_rebuild_corridor_field")
+
+
+func _exit_tree() -> void:
+	_lf3_finish_indirect_prepare()
 
 
 func _activate_open_door() -> void:
