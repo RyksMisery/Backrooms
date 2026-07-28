@@ -76,6 +76,8 @@ const AREA_LIGHT_BOUNCE_SHADOW_BLUR := 2.25
 const AREA_LIGHT_BOUNCE_SHADOW_BIAS := 0.06
 const AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS := 1.25
 const AREA_LIGHT_BOUNCE_SHADOWS_ON_ANDROID := false
+const AREA_LIGHT_SPOT_FALLBACK_ANGLE := 70.0
+const AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL := 8.0
 const AREA_LIGHT_WORLD_LAYER := 1 << 0
 const AREA_LIGHT_CEILING_FILL_LAYER := Architecture.CEILING_FILL_LAYER
 const AREA_LIGHT_CEILING_GLOW_ENABLED := false
@@ -263,6 +265,31 @@ func add_level_e_area_ceiling_light(parent: Node3D,
 	parent.add_child(bounce)
 	area_bounce_lamps.append(bounce)
 	return {"legacy": legacy, "panel": panel, "bounce": bounce}
+
+
+func add_area_bounce_spot_test(parent: Node3D, local_position: Vector3,
+		angle_degrees: float, energy_multiplier: float) -> SpotLight3D:
+	var spot := SpotLight3D.new()
+	spot.name = "area_bounce_spot_test"
+	spot.position = local_position
+	spot.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+	spot.light_color = LIGHT_COLOR
+	spot.light_energy = AREA_LIGHT_BOUNCE_ENERGY * maxf(
+		energy_multiplier, 0.0)
+	spot.spot_range = AREA_LIGHT_BOUNCE_RANGE
+	spot.spot_angle = clampf(angle_degrees, 1.0, 89.0)
+	spot.spot_attenuation = AREA_LIGHT_BOUNCE_ATTEN
+	spot.shadow_enabled = true
+	spot.shadow_opacity = LF3_SHADOW_OPACITY
+	spot.shadow_blur = LF3_SHADOW_BLUR
+	spot.shadow_bias = LF3_SHADOW_BIAS
+	spot.shadow_normal_bias = LF3_SHADOW_NORMAL_BIAS
+	spot.light_cull_mask = AREA_LIGHT_WORLD_LAYER \
+		| AREA_LIGHT_CEILING_FILL_LAYER
+	spot.visible = false
+	spot.set_meta("area_bounce_spot_test", true)
+	parent.add_child(spot)
+	return spot
 
 
 func _new_area_light() -> Light3D:

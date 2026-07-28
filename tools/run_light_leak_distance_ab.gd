@@ -27,6 +27,9 @@ const ALL_VARIANTS := [
 	"boundary_two_rows_6_lf3",
 	"segment_guardian",
 	"risk_all_shadow",
+	"risk_all_shadow_dp",
+	"spot_shadow",
+	"lf3_spot_fallback",
 	"zone_cull",
 ]
 const FINALIST_VARIANTS := [
@@ -217,6 +220,7 @@ func _place_view(partition_cell: int, side: String) -> void:
 
 
 func _apply_variant(variant: String, partition_cell: int) -> void:
+	_lab.reset_spot_shadow_profile_for_test()
 	var snapshot: Dictionary = _lab.debug_snapshot()
 	var wants_zone := variant == "zone_cull"
 	if bool(snapshot["light_zone_cull_enabled"]) != wants_zone:
@@ -248,6 +252,7 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 			if source_on else 0.0
 		bounce.omni_range = _variant_range(
 			variant, cell_z, partition_cell)
+		bounce.omni_shadow_mode = OmniLight3D.SHADOW_CUBE
 		bounce.shadow_enabled = false
 		bounce.shadow_opacity = 0.0
 		bounce.shadow_bias = Lighting.AREA_LIGHT_BOUNCE_SHADOW_BIAS
@@ -260,13 +265,22 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 	if variant == "segment_guardian":
 		_lab.apply_segment_guardian_for_test()
 		return
+	if variant == "spot_shadow":
+		_lab.apply_spot_shadow_profile_for_test(
+			_spot_angle(), _spot_energy_multiplier(),
+			_spot_fill_energy_multiplier())
+		return
+	if variant == "lf3_spot_fallback":
+		_lab.apply_lf3_spot_fallback_for_test(
+			_spot_angle(), _spot_energy_multiplier())
+		return
 	if variant in ["lf3_default", "lf3_low_bias",
 			"lf3_selected_full_opacity", "lf3_risk_full_opacity",
 			"lf3_risk_weighted_opacity",
 			"range_7_lf3", "range_6_lf3", "range_5_lf3",
 			"far_row_off_lf3", "checker_sources_lf3",
 			"boundary_range_6_lf3", "boundary_two_rows_6_lf3",
-			"risk_all_shadow"]:
+			"risk_all_shadow", "risk_all_shadow_dp"]:
 		_lighting.update_level_e_area_lighting(_player)
 		if variant == "lf3_low_bias":
 			_apply_low_bias()
@@ -278,6 +292,8 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 			_set_risk_weighted_shadow_opacity()
 		elif variant == "risk_all_shadow":
 			_enable_all_risk_shadows()
+		elif variant == "risk_all_shadow_dp":
+			_enable_all_dual_paraboloid_shadows()
 	elif variant in ["all_shadow", "all_shadow_low_bias"]:
 		for bounce: OmniLight3D in _lighting.area_bounce_lamps:
 			if bounce.visible and bounce.global_position.distance_to(
@@ -327,6 +343,26 @@ func _requested_variant() -> String:
 	return ""
 
 
+func _spot_angle() -> float:
+	return _float_argument("--spot-angle=", 70.0)
+
+
+func _spot_energy_multiplier() -> float:
+	return _float_argument("--spot-energy=", 1.0)
+
+
+func _spot_fill_energy_multiplier() -> float:
+	return _float_argument("--spot-fill-energy=", 0.0)
+
+
+func _float_argument(prefix: String, fallback: float) -> float:
+	for argument in OS.get_cmdline_user_args():
+		var text := String(argument)
+		if text.begins_with(prefix):
+			return text.trim_prefix(prefix).to_float()
+	return fallback
+
+
 func _apply_low_bias() -> void:
 	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
 		if bounce.shadow_enabled:
@@ -355,6 +391,14 @@ func _enable_all_risk_shadows() -> void:
 			float(bounce.get_meta("lf3_far_occlusion_risk", 0.0)))
 		if bounce.visible and risk > 0.001:
 			_lighting.set_lf3_shadow_opacity(bounce, 1.0)
+
+
+func _enable_all_dual_paraboloid_shadows() -> void:
+	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
+		if not bounce.visible:
+			continue
+		bounce.omni_shadow_mode = OmniLight3D.SHADOW_DUAL_PARABOLOID
+		_lighting.set_lf3_shadow_opacity(bounce, 1.0)
 
 
 func _shadow_risk_summary() -> Dictionary:
@@ -386,6 +430,9 @@ func _active_sources() -> int:
 	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
 		if bounce.visible and bounce.light_energy > 0.0001:
 			count += 1
+	for spot: SpotLight3D in _lab.spot_test_lights():
+		if spot.visible and spot.light_energy > 0.0001:
+			count += 1
 	return count
 
 
@@ -393,6 +440,9 @@ func _active_shadows() -> int:
 	var count := 0
 	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
 		if bounce.shadow_enabled and bounce.shadow_opacity > 0.001:
+			count += 1
+	for spot: SpotLight3D in _lab.spot_test_lights():
+		if spot.visible and spot.shadow_enabled and spot.shadow_opacity > 0.001:
 			count += 1
 	return count
 
