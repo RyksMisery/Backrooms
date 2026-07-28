@@ -6116,7 +6116,8 @@ func _level_e_hud_text() -> String:
 		("ON" if _stream_on else "OFF"), _block_holder.size(),
 		("FLOOR1" if _comparison_floor_enabled else "CLASSIC"),
 		("ZONE-11 (V)" if _light_zones_enabled else
-			(_lf3_profile_label() if _lf3_shadow_mode else "REFERENCE TEST")),
+			("%s (V)" % _lf3_profile_label()
+				if _lf3_shadow_mode else "REFERENCE TEST")),
 		("FINAL WAV" if _final_lamp_audio_enabled else "REFERENCE TEST"),
 		("ON" if _model_fill_enabled else "OFF"), _model_fill_energy,
 		_model_fill_receiver_count,
@@ -6142,7 +6143,7 @@ func _input(event: InputEvent) -> void:
 		_apply_model_fill_profile()
 	elif ke.keycode == KEY_0:
 		lf3_toggle_guardian_test()
-	elif ke.keycode == KEY_V and _light_zones_ab_requested:
+	elif ke.keycode == KEY_V:
 		set_level_e_light_zones_enabled(not _light_zones_enabled)
 	elif ke.keycode == KEY_1:
 		_model_fill_energy = maxf(0.0, _model_fill_energy - MODEL_FILL_ENERGY_STEP)

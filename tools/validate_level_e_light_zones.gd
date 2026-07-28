@@ -22,7 +22,10 @@ func _run() -> void:
 			or not level.has_method("level_e_light_zone_debug_state"):
 		_fail("level_e light-zone A/B API is missing")
 		return
-	level.call("set_level_e_light_zones_enabled", true)
+	var toggle := InputEventKey.new()
+	toggle.keycode = KEY_V
+	toggle.pressed = true
+	level.call("_input", toggle)
 	for _frame in range(4):
 		await process_frame
 	var initial: Dictionary = level.call("level_e_light_zone_debug_state")
@@ -118,7 +121,7 @@ func _run() -> void:
 		if signature != String(group_states[group]):
 			_fail("cluster state depends on traversal direction in %s" % group)
 			return
-	level.call("set_level_e_light_zones_enabled", false)
+	level.call("_input", toggle)
 	for _frame in range(4):
 		await process_frame
 	var restored: Dictionary = level.call("level_e_light_zone_debug_state")
