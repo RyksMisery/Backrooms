@@ -33,10 +33,10 @@ func _run() -> void:
 			"zone_static"]:
 		_fail("unknown variant: %s" % variant)
 		return
-	if route not in ["default", "dark_wall_opening"]:
+	if route not in ["default", "dark_wall_opening", "portal_crossing"]:
 		_fail("unknown route: %s" % route)
 		return
-	if route == "dark_wall_opening":
+	if route in ["dark_wall_opening", "portal_crossing"]:
 		side = "dark"
 
 	root.size = CAPTURE_SIZE
@@ -197,6 +197,10 @@ func _route_eye(side: String, t: float, route: String) -> Vector3:
 		var cells := Vector2(13.5, 13.5).lerp(Vector2(13.5, 8.75), t)
 		return Vector3(cells.x * Architecture.CELL, 1.65,
 			cells.y * Architecture.CELL)
+	if route == "portal_crossing":
+		var cells := Vector2(7.5, 10.5).lerp(Vector2(7.5, 4.5), t)
+		return Vector3(cells.x * Architecture.CELL, 1.65,
+			cells.y * Architecture.CELL)
 	var start_cells := Vector2(13.5, 13.5) if side == "dark" \
 		else Vector2(1.5, 3.5)
 	var end_cells := Vector2(1.5, 9.5) if side == "dark" \
@@ -210,6 +214,9 @@ func _route_target(side: String, route: String) -> Vector3:
 	if route == "dark_wall_opening":
 		return Vector3(7.5 * Architecture.CELL, 1.55,
 			7.5 * Architecture.CELL)
+	if route == "portal_crossing":
+		return Vector3(7.5 * Architecture.CELL, 1.55,
+			2.5 * Architecture.CELL)
 	var cells := Vector2(0.5, 7.5) if side == "dark" \
 		else Vector2(7.5, 7.5)
 	return Vector3(cells.x * Architecture.CELL, 1.35,

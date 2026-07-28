@@ -546,3 +546,27 @@ Rendered-результат:
 
 `F` включает именно `zone_static_11`; прежний position-dependent suppression
 оставлен только отрицательным bot-контролем.
+
+Следующая версия `zone_static_11` обязана получать зоны, портал, нормаль,
+caster-набор и пространственный blend из
+`modules/light_zone_profile_module.gd`. Локальные проверки `_partition_cell`,
+оси `Z` и `OPENING_CELL` в runtime-профиле запрещены. Перемещение
+перегородки и закрытие проёма должны приводить только к пересборке data-плана.
+
+Маршрут `--route=portal_crossing` проходит через открытый portal по его
+нормали и проверяет, что energy меняется монотонно, caster signature остаётся
+неизменной, а прямой/обратный проход совпадают.
+
+Универсальный data-план прошёл:
+
+- четыре положения перегородки `5/7/9/11`: в каждой тёмной зоне ровно
+  `11` источников/теней и ambient-level sealed luma
+  (`.light_leak_distance_ab/2026-07-28T20-14-21/report.json`);
+- транспонированную вертикальную topology, широкий portal, два раздельных
+  portal и sealed-контроль (`LIGHT_ZONE_PROFILE_MODULE_OK`);
+- точный стеновой маршрут `20-14-01`: нули role/signature/energy-change;
+- три пары wall/portal stress `21-41-19` … `21-42-14`: ноль role-change и
+  mirror mismatch; portal energy монотонно проходит `0→1` через spatial
+  smoothstep без смены caster;
+- sealed/open corner `21-18-24/21-18-34`: ноль смен caster и прежний
+  ambient-level sealed результат.

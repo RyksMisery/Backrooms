@@ -40,9 +40,16 @@ func _run() -> void:
 	var door: Dictionary = lab.debug_snapshot()
 	_expect(bool(door["door_present"]) and bool(door["opening_blocked"]),
 		"closed door must block occupancy")
+	_expect(int(door["light_zone_count"]) == 2 \
+		and int(door["light_portal_count"]) == 0,
+		"closed door must rebuild two zones without a portal")
 	lab.toggle_door()
-	_expect(not bool(lab.debug_snapshot()["opening_blocked"]),
+	var reopened: Dictionary = lab.debug_snapshot()
+	_expect(not bool(reopened["opening_blocked"]),
 		"removed door must restore clear opening")
+	_expect(int(reopened["light_zone_count"]) == 2 \
+		and int(reopened["light_portal_count"]) == 1,
+		"open door must restore the portal without merging zones")
 
 	lab.toggle_seal()
 	var sealed: Dictionary = lab.debug_snapshot()

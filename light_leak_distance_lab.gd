@@ -9,6 +9,7 @@ const Lighting := preload("res://modules/lighting_module.gd")
 const Audio := preload("res://modules/audio_module.gd")
 const HUD := preload("res://modules/hud_module.gd")
 const Map := preload("res://modules/map_module.gd")
+const LightZones := preload("res://modules/light_zone_profile_module.gd")
 const PLAYER_SCENE := preload("res://player.tscn")
 
 const PARTITION_MIN_CELL := 3
@@ -38,7 +39,7 @@ var _segment_guardian_opacity := {}
 var _spot_bounce_lamps: Array[SpotLight3D] = []
 var _up_spot_bounce_lamps: Array[SpotLight3D] = []
 var _zone_static_enabled := false
-var _zone_static_shadow_ids := {}
+var _light_zone_plan := {}
 var _grid: Dictionary = {}
 var _gmin := Vector2i.ZERO
 var _gmax := Vector2i.ZERO
@@ -153,6 +154,10 @@ func debug_snapshot() -> Dictionary:
 		"panel_count": _lighting.area_lamps.size(),
 		"legacy_count": _lighting.lamps.size(),
 		"profile": _lighting.lf3_profile_label(),
+		"light_zone_count": (
+			_light_zone_plan.get("zones", []) as Array).size(),
+		"light_portal_count": (
+			_light_zone_plan.get("portals", []) as Array).size(),
 		"opening_blocked": _lf3_cell_blocked(
 			Vector2i(OPENING_CELL, _partition_cell)),
 	}
@@ -207,6 +212,7 @@ func _rebuild_partition() -> void:
 			Vector3(opening_x, opening_height * 0.5, partition_z),
 			"wall", true, true)
 	_rebuild_grid()
+	_rebuild_light_zone_plan()
 	_lighting.invalidate_lf3_guardian_cache()
 	_invalidate_segment_guardian()
 
@@ -222,7 +228,7 @@ func _rebuild_lights() -> void:
 	_lighting.area_bounce_lamps.clear()
 	_spot_bounce_lamps.clear()
 	_up_spot_bounce_lamps.clear()
-	_zone_static_shadow_ids.clear()
+	_light_zone_plan.clear()
 
 	var indices: Array[int] = _lighting.grid_indices(
 		Architecture.ROOM_CELLS)
@@ -237,6 +243,7 @@ func _rebuild_lights() -> void:
 					Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
 					(float(cell_z) + 0.5) * Architecture.CELL),
 				"light_leak_lit_side")
+	_rebuild_light_zone_plan()
 	_lighting.invalidate_lf3_guardian_cache()
 	_invalidate_segment_guardian()
 	if _audio != null:
@@ -399,52 +406,45 @@ func reset_lf3_occlusion_suppression_for_test() -> void:
 
 
 func apply_zone_static_11_for_test() -> void:
-	_ensure_zone_static_shadow_ids()
+	if _light_zone_plan.is_empty():
+		_rebuild_light_zone_plan()
+	if _light_zone_plan.is_empty():
+		return
 	var local_player := to_local(_player.global_position)
-	var partition_z := (float(_partition_cell) + 0.5) * Architecture.CELL
-	var fade_begin := partition_z + Architecture.CELL * 0.25
-	var fade_end := partition_z + Architecture.CELL
-	var dark_weight := smoothstep(fade_begin, fade_end, local_player.z)
-	for light: OmniLight3D in _lighting.area_bounce_lamps:
-		var selected := _zone_static_shadow_ids.has(light.get_instance_id())
+	var state := LightZones.sample(_light_zone_plan,
+		Vector2(local_player.x, local_player.z) / Architecture.CELL, 1.0)
+	var caster_set := {}
+	for source_index: int in _light_zone_plan["caster_indices"]:
+		caster_set[source_index] = true
+	var energies: Array = state["energy"]
+	var opacities: Array = state["opacity"]
+	for index in range(_lighting.area_bounce_lamps.size()):
+		var light: OmniLight3D = _lighting.area_bounce_lamps[index]
+		var selected := caster_set.has(index)
 		light.set_meta("pool_want", true)
-		light.visible = true
-		light.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY * (
-			1.0 if selected else 1.0 - dark_weight)
+		light.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY \
+			* float(energies[index])
 		light.visible = light.light_energy > 0.0001
 		if selected:
 			light.set_meta("lf3_transfer_weight", 1.0)
 			_lighting.set_lf3_shadow_opacity(light,
-				lerpf(Lighting.LF3_SHADOW_OPACITY, 1.0, dark_weight))
+				float(opacities[index]))
 		else:
 			_lighting.set_lf3_shadow(light, false)
 
 
-func _ensure_zone_static_shadow_ids() -> void:
-	if not _zone_static_shadow_ids.is_empty():
+func _rebuild_light_zone_plan() -> void:
+	_light_zone_plan.clear()
+	if _grid.is_empty() or _lighting == null \
+			or _lighting.area_bounce_lamps.is_empty():
 		return
-	var partition_z := (float(_partition_cell) + 0.5) * Architecture.CELL
-	var opening_x := (float(OPENING_CELL) + 0.5) * Architecture.CELL
-	var ranked: Array[Dictionary] = []
+	var source_cells: Array[Vector2i] = []
 	for light: OmniLight3D in _lighting.area_bounce_lamps:
-		var local := light.position
-		ranked.append({
-			"light": light,
-			"score": absf(partition_z - local.z) * 10.0
-				+ absf(opening_x - local.x),
-			"id": light.get_instance_id(),
-		})
-	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		var score_a := float(a["score"])
-		var score_b := float(b["score"])
-		if not is_equal_approx(score_a, score_b):
-			return score_a < score_b
-		return int(a["id"]) < int(b["id"])
-	)
-	for index in range(mini(Lighting.LF3_SHADOW_TRANSIENT_CASTERS,
-			ranked.size())):
-		var light := ranked[index]["light"] as OmniLight3D
-		_zone_static_shadow_ids[light.get_instance_id()] = true
+		source_cells.append(Vector2i(
+			floori(light.position.x / Architecture.CELL),
+			floori(light.position.z / Architecture.CELL)))
+	_light_zone_plan = LightZones.build(_grid, _gmin, _gmax, source_cells,
+		Lighting.LF3_SHADOW_TRANSIENT_CASTERS)
 
 
 func apply_segment_guardian_for_test() -> void:
