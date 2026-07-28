@@ -23,6 +23,7 @@ const VARIANTS := [
 	"boundary_range_6_lf3",
 	"boundary_two_rows_6_lf3",
 	"segment_guardian",
+	"risk_all_shadow",
 	"zone_cull",
 ]
 
@@ -202,6 +203,9 @@ func _apply_variant(variant: String) -> void:
 	if variant in ["ambient", "bounce_no_shadow"]:
 		return
 	_lighting.update_level_e_area_lighting(_player)
+	if variant == "risk_all_shadow":
+		_enable_all_risk_shadows()
+		return
 	match variant:
 		"lf3_11f_guard":
 			_lab.apply_leak_guard()
@@ -209,6 +213,15 @@ func _apply_variant(variant: String) -> void:
 			_lab.apply_leak_guard(&"smooth", 0.5)
 		"lf3_11f_guard_linear", "range_7_guard_linear":
 			_lab.apply_leak_guard(&"linear", 1.0)
+
+
+func _enable_all_risk_shadows() -> void:
+	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
+		var risk := maxf(
+			float(bounce.get_meta("lf3_occlusion_risk", 0.0)),
+			float(bounce.get_meta("lf3_far_occlusion_risk", 0.0)))
+		if bounce.visible and risk > 0.001:
+			_lighting.set_lf3_shadow_opacity(bounce, 1.0)
 
 
 func _nearest_source_row() -> int:

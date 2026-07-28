@@ -26,6 +26,7 @@ const ALL_VARIANTS := [
 	"boundary_range_6_lf3",
 	"boundary_two_rows_6_lf3",
 	"segment_guardian",
+	"risk_all_shadow",
 	"zone_cull",
 ]
 const FINALIST_VARIANTS := [
@@ -42,6 +43,7 @@ const FINALIST_VARIANTS := [
 	"boundary_range_6_lf3",
 	"boundary_two_rows_6_lf3",
 	"segment_guardian",
+	"risk_all_shadow",
 	"zone_cull",
 ]
 
@@ -263,7 +265,8 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 			"lf3_risk_weighted_opacity",
 			"range_7_lf3", "range_6_lf3", "range_5_lf3",
 			"far_row_off_lf3", "checker_sources_lf3",
-			"boundary_range_6_lf3", "boundary_two_rows_6_lf3"]:
+			"boundary_range_6_lf3", "boundary_two_rows_6_lf3",
+			"risk_all_shadow"]:
 		_lighting.update_level_e_area_lighting(_player)
 		if variant == "lf3_low_bias":
 			_apply_low_bias()
@@ -273,6 +276,8 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 			_set_selected_shadow_opacity(true)
 		elif variant == "lf3_risk_weighted_opacity":
 			_set_risk_weighted_shadow_opacity()
+		elif variant == "risk_all_shadow":
+			_enable_all_risk_shadows()
 	elif variant in ["all_shadow", "all_shadow_low_bias"]:
 		for bounce: OmniLight3D in _lighting.area_bounce_lamps:
 			if bounce.visible and bounce.global_position.distance_to(
@@ -341,6 +346,15 @@ func _set_selected_shadow_opacity(risk_only: bool) -> void:
 
 func _set_risk_weighted_shadow_opacity() -> void:
 	_lab.apply_leak_guard()
+
+
+func _enable_all_risk_shadows() -> void:
+	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
+		var risk := maxf(
+			float(bounce.get_meta("lf3_occlusion_risk", 0.0)),
+			float(bounce.get_meta("lf3_far_occlusion_risk", 0.0)))
+		if bounce.visible and risk > 0.001:
+			_lighting.set_lf3_shadow_opacity(bounce, 1.0)
 
 
 func _shadow_risk_summary() -> Dictionary:
