@@ -54,6 +54,18 @@ func _run() -> void:
 	lab.toggle_leak_guard()
 	_expect(bool(lab.debug_snapshot()["leak_guard_enabled"]),
 		"laboratory leak guard must toggle on")
+	lab.toggle_light_zone_cull()
+	_expect(bool(lab.debug_snapshot()["light_zone_cull_enabled"]),
+		"laboratory light-zone cull must toggle on")
+	lab.toggle_seal()
+	lab.apply_light_zone_cull_for_test()
+	_expect(int(lab.debug_snapshot()["active_source_count"]) == 0,
+		"sealed dark component must cull lit-side sources")
+	lab.toggle_seal()
+	lab.apply_light_zone_cull_for_test()
+	_expect(int(lab.debug_snapshot()["active_source_count"]) \
+		== int(lab.debug_snapshot()["light_count"]),
+		"open passage must restore lit-side sources")
 
 	print("LIGHT_LEAK_DISTANCE_LAB_OK: ", lab.debug_snapshot())
 	lab.queue_free()

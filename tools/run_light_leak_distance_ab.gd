@@ -23,6 +23,9 @@ const ALL_VARIANTS := [
 	"range_5_lf3",
 	"far_row_off_lf3",
 	"checker_sources_lf3",
+	"boundary_range_6_lf3",
+	"boundary_two_rows_6_lf3",
+	"zone_cull",
 ]
 const FINALIST_VARIANTS := [
 	"ambient",
@@ -35,6 +38,9 @@ const FINALIST_VARIANTS := [
 	"range_6_lf3",
 	"far_row_off_lf3",
 	"checker_sources_lf3",
+	"boundary_range_6_lf3",
+	"boundary_two_rows_6_lf3",
+	"zone_cull",
 ]
 
 var _lab
@@ -93,13 +99,19 @@ func _run() -> void:
 	) else PARTITION_CELLS
 	var variants: Array = FINALIST_VARIANTS if "--finalists" \
 		in OS.get_cmdline_user_args() else ALL_VARIANTS
-	if _open_control:
+	var requested_variant := _requested_variant()
+	if not requested_variant.is_empty():
+		variants = [requested_variant]
+	elif _open_control:
 		variants = [
 			"ambient",
 			"lf3_default",
 			"lf3_risk_full_opacity",
 			"lf3_risk_weighted_opacity",
 			"range_6_lf3",
+			"boundary_range_6_lf3",
+			"boundary_two_rows_6_lf3",
+			"zone_cull",
 		]
 	var report := {
 		"timestamp": timestamp,
@@ -225,17 +237,23 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 		bounce.set_meta("pool_want", source_on)
 		bounce.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY \
 			if source_on else 0.0
-		bounce.omni_range = _variant_range(variant)
+		bounce.omni_range = _variant_range(
+			variant, cell_z, partition_cell)
 		bounce.shadow_enabled = false
 		bounce.shadow_opacity = 0.0
 		bounce.shadow_bias = Lighting.AREA_LIGHT_BOUNCE_SHADOW_BIAS
 		bounce.shadow_normal_bias = \
 			Lighting.AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS
+	if variant == "zone_cull":
+		_lab.apply_light_zone_cull_for_test()
+		_lighting.update_level_e_area_lighting(_player)
+		return
 	if variant in ["lf3_default", "lf3_low_bias",
 			"lf3_selected_full_opacity", "lf3_risk_full_opacity",
 			"lf3_risk_weighted_opacity",
 			"range_7_lf3", "range_6_lf3", "range_5_lf3",
-			"far_row_off_lf3", "checker_sources_lf3"]:
+			"far_row_off_lf3", "checker_sources_lf3",
+			"boundary_range_6_lf3", "boundary_two_rows_6_lf3"]:
 		_lighting.update_level_e_area_lighting(_player)
 		if variant == "lf3_low_bias":
 			_apply_low_bias()
@@ -263,7 +281,14 @@ func _nearest_source_row(partition_cell: int) -> int:
 	return nearest if nearest >= 0 else partition_cell
 
 
-func _variant_range(variant: String) -> float:
+func _variant_range(variant: String, cell_z: int,
+		partition_cell: int) -> float:
+	var nearest_row := _nearest_source_row(partition_cell)
+	if variant == "boundary_range_6_lf3" and cell_z == nearest_row:
+		return 6.0
+	if variant == "boundary_two_rows_6_lf3" \
+			and cell_z >= nearest_row - Lighting.LIGHT_STEP:
+		return 6.0
 	match variant:
 		"range_7_lf3":
 			return 7.0
@@ -273,6 +298,18 @@ func _variant_range(variant: String) -> float:
 			return 5.0
 		_:
 			return Lighting.AREA_LIGHT_BOUNCE_RANGE
+
+
+func _requested_variant() -> String:
+	for argument in OS.get_cmdline_user_args():
+		var text := String(argument)
+		if not text.begins_with("--variant="):
+			continue
+		var requested := text.trim_prefix("--variant=")
+		if requested in ALL_VARIANTS:
+			return requested
+		_fail("unknown light-leak variant: %s" % requested)
+	return ""
 
 
 func _apply_low_bias() -> void:

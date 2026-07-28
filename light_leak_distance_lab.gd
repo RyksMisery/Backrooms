@@ -31,6 +31,7 @@ var _partition_cell := INITIAL_PARTITION_CELL
 var _door_present := false
 var _opening_sealed := false
 var _leak_guard_enabled := false
+var _light_zone_cull_enabled := false
 var _grid: Dictionary = {}
 var _gmin := Vector2i.ZERO
 var _gmax := Vector2i.ZERO
@@ -65,6 +66,7 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	_apply_light_zone_cull()
 	_lighting.update_level_e_area_lighting(_player)
 	if _leak_guard_enabled:
 		apply_leak_guard()
@@ -87,6 +89,8 @@ func _input(event: InputEvent) -> void:
 			toggle_seal()
 		KEY_V:
 			toggle_leak_guard()
+		KEY_B:
+			toggle_light_zone_cull()
 		KEY_M:
 			_map.toggle()
 
@@ -118,13 +122,19 @@ func toggle_leak_guard() -> void:
 	_leak_guard_enabled = not _leak_guard_enabled
 
 
+func toggle_light_zone_cull() -> void:
+	_light_zone_cull_enabled = not _light_zone_cull_enabled
+
+
 func debug_snapshot() -> Dictionary:
 	return {
 		"partition_cell": _partition_cell,
 		"door_present": _door_present,
 		"opening_sealed": _opening_sealed,
 		"leak_guard_enabled": _leak_guard_enabled,
+		"light_zone_cull_enabled": _light_zone_cull_enabled,
 		"light_count": _lighting.area_bounce_lamps.size(),
+		"active_source_count": _active_source_count(),
 		"panel_count": _lighting.area_lamps.size(),
 		"legacy_count": _lighting.lamps.size(),
 		"profile": _lighting.lf3_profile_label(),
@@ -261,12 +271,14 @@ func _hud_text() -> String:
 	var opening_state := "ЗАГЛУШКА" if _opening_sealed \
 		else ("ДВЕРЬ" if _door_present else "ОТКРЫТ")
 	var guard_state := "GUARD ON" if _leak_guard_enabled else "GUARD OFF"
-	return ("ТЕСТ ЗАСВЕТА · %s · %s\n" \
+	var zone_state := "ZONE ON" if _light_zone_cull_enabled else "ZONE OFF"
+	return ("ТЕСТ ЗАСВЕТА · %s · %s · %s\n" \
 		+ "светлая:%d клеток  тёмная:%d  ряд:%d/15\n" \
 		+ "источники:%d  тени:%d  %s\n" \
-		+ "←/→ перегородка · Z дверь · X заглушка · V guard · M карта\n%d fps") % [
+		+ "←/→ перегородка · Z дверь · X заглушка · V guard · B zone · M карта\n%d fps") % [
 			opening_state,
 			guard_state,
+			zone_state,
 			lit_cells,
 			dark_cells,
 			_partition_cell + 1,
@@ -285,12 +297,45 @@ func _active_shadow_count() -> int:
 	return count
 
 
-func apply_leak_guard() -> void:
+func _active_source_count() -> int:
+	var count := 0
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		if light.visible and light.light_energy > 0.0001:
+			count += 1
+	return count
+
+
+func apply_leak_guard(curve: StringName = &"smooth",
+		strength := 1.0) -> void:
 	for light: OmniLight3D in _lighting.area_bounce_lamps:
 		if not light.shadow_enabled:
 			continue
 		var risk := maxf(
 			float(light.get_meta("lf3_occlusion_risk", 0.0)),
 			float(light.get_meta("lf3_far_occlusion_risk", 0.0)))
-		var guard_weight := smoothstep(0.0, 0.20, risk)
+		var transfer_weight := clampf(
+			float(light.get_meta("lf3_transfer_weight", 1.0)), 0.0, 1.0)
+		var angular_weight := clampf(
+			float(light.get_meta("lf3_angular_weight", 1.0)), 0.0, 1.0)
+		var risk_weight := risk if curve == &"linear" \
+			else smoothstep(0.0, 0.20, risk)
+		var guard_weight := risk_weight * clampf(strength, 0.0, 1.0) \
+			* transfer_weight * angular_weight
 		light.shadow_opacity = maxf(light.shadow_opacity, guard_weight)
+
+
+func apply_light_zone_cull_for_test() -> void:
+	_light_zone_cull_enabled = true
+	_apply_light_zone_cull()
+
+
+func _apply_light_zone_cull() -> void:
+	var disconnected := (_opening_sealed or _door_present) \
+		and to_local(_player.global_position).z > (
+			float(_partition_cell) + 0.5) * Architecture.CELL
+	var sources_on := not (_light_zone_cull_enabled and disconnected)
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		light.visible = sources_on
+		light.set_meta("pool_want", sources_on)
+		light.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY \
+			if sources_on else 0.0

@@ -328,6 +328,7 @@ func apply_lf3_shadow_pool(lights: Array[OmniLight3D],
 	for light: OmniLight3D in lights:
 		if not is_instance_valid(light):
 			continue
+		light.set_meta("lf3_transfer_weight", 0.0)
 		capture_reference_shadow_profile(light)
 		var allowed := bool(light.get_meta("bounce_shadow_allowed", true))
 		var pool_on := bool(light.get_meta("pool_want", light.visible))
@@ -435,11 +436,14 @@ func apply_lf3_shadow_pool(lights: Array[OmniLight3D],
 		var opacity := (1.0 - smoothstep(LF3_SHADOW_FULL_DISTANCE,
 			shadow_off_distance, distance)) * LF3_SHADOW_OPACITY
 		opacity *= float(candidate["angular_weight"])
+		var transfer_weight := 1.0
 		if index == LF3_SHADOW_CASTERS - 1:
-			opacity *= boundary_near_weight
+			transfer_weight = boundary_near_weight
 		elif index == LF3_SHADOW_CASTERS:
-			opacity *= boundary_far_weight
+			transfer_weight = boundary_far_weight
 		var light := candidate["lamp"] as OmniLight3D
+		light.set_meta("lf3_transfer_weight", transfer_weight)
+		opacity *= transfer_weight
 		if opacity > 0.001:
 			active_ids[light.get_instance_id()] = true
 			set_lf3_shadow_opacity(light, opacity)
