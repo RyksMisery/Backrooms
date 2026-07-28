@@ -51,6 +51,9 @@ func _run() -> void:
 	lab.toggle_seal()
 	_expect(not bool(lab.debug_snapshot()["opening_blocked"]),
 		"removed diagnostic plug must restore clear opening")
+	lab.toggle_leak_guard()
+	_expect(bool(lab.debug_snapshot()["leak_guard_enabled"]),
+		"laboratory leak guard must toggle on")
 
 	print("LIGHT_LEAK_DISTANCE_LAB_OK: ", lab.debug_snapshot())
 	lab.queue_free()

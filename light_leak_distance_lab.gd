@@ -30,6 +30,7 @@ var _player: CharacterBody3D
 var _partition_cell := INITIAL_PARTITION_CELL
 var _door_present := false
 var _opening_sealed := false
+var _leak_guard_enabled := false
 var _grid: Dictionary = {}
 var _gmin := Vector2i.ZERO
 var _gmax := Vector2i.ZERO
@@ -65,6 +66,8 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_lighting.update_level_e_area_lighting(_player)
+	if _leak_guard_enabled:
+		apply_leak_guard()
 	_audio.update(delta)
 	_map.update()
 	_hud.update(_hud_text())
@@ -82,6 +85,8 @@ func _input(event: InputEvent) -> void:
 			toggle_door()
 		KEY_X:
 			toggle_seal()
+		KEY_V:
+			toggle_leak_guard()
 		KEY_M:
 			_map.toggle()
 
@@ -109,11 +114,16 @@ func toggle_seal() -> void:
 	_rebuild_partition()
 
 
+func toggle_leak_guard() -> void:
+	_leak_guard_enabled = not _leak_guard_enabled
+
+
 func debug_snapshot() -> Dictionary:
 	return {
 		"partition_cell": _partition_cell,
 		"door_present": _door_present,
 		"opening_sealed": _opening_sealed,
+		"leak_guard_enabled": _leak_guard_enabled,
 		"light_count": _lighting.area_bounce_lamps.size(),
 		"panel_count": _lighting.area_lamps.size(),
 		"legacy_count": _lighting.lamps.size(),
@@ -250,11 +260,13 @@ func _hud_text() -> String:
 	var dark_cells := Architecture.ROOM_CELLS - _partition_cell - 1
 	var opening_state := "ЗАГЛУШКА" if _opening_sealed \
 		else ("ДВЕРЬ" if _door_present else "ОТКРЫТ")
-	return ("ТЕСТ ЗАСВЕТА · %s\n" \
+	var guard_state := "GUARD ON" if _leak_guard_enabled else "GUARD OFF"
+	return ("ТЕСТ ЗАСВЕТА · %s · %s\n" \
 		+ "светлая:%d клеток  тёмная:%d  ряд:%d/15\n" \
 		+ "источники:%d  тени:%d  %s\n" \
-		+ "←/→ перегородка · Z дверь · X заглушка · M карта\n%d fps") % [
+		+ "←/→ перегородка · Z дверь · X заглушка · V guard · M карта\n%d fps") % [
 			opening_state,
+			guard_state,
 			lit_cells,
 			dark_cells,
 			_partition_cell + 1,
@@ -271,3 +283,14 @@ func _active_shadow_count() -> int:
 		if light.shadow_enabled and light.shadow_opacity > 0.001:
 			count += 1
 	return count
+
+
+func apply_leak_guard() -> void:
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		if not light.shadow_enabled:
+			continue
+		var risk := maxf(
+			float(light.get_meta("lf3_occlusion_risk", 0.0)),
+			float(light.get_meta("lf3_far_occlusion_risk", 0.0)))
+		var guard_weight := smoothstep(0.0, 0.20, risk)
+		light.shadow_opacity = maxf(light.shadow_opacity, guard_weight)
