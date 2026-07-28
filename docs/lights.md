@@ -28,6 +28,16 @@ LF3 и не вызывается `level_e`.
 `AREA_LIGHT_SPOT_FALLBACK_ANGLE = 70°` и
 `AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL = 8`.
 
+Отклонённый лабораторный hybrid назначал Omni статически:
+`(source_index_x + 2 × source_index_z) % 3 == 0`; остальные источники —
+Spot. Роль запрещено менять в runtime. Для сетки `7×3` это `7 Omni + 14 Spot`
+и меньшая shadow-map стоимость, чем у штатного LF3, но профиль не восстановил
+верх стен.
+
+Отклонённый A/B-профиль `bidirectional_spot` использует для каждой панели
+постоянные downward/upward SpotLight. Оба источника наследуют канонические
+range и shadow-параметры; подбор энергий не дал совпадения всех lit ROI.
+
 Допустимый лабораторный companion-fill использует исходный Omni без тени,
 но с range не больше `LIGHT_STEP × CELL`; энергия остаётся параметром A/B.
 
@@ -633,6 +643,20 @@ back to the old `OmniLight3D` family as the runtime fallback.
 Area lights are more expensive than omni lights. Keep shadows off by default
 for the full-level pass; enable them later only for selected hero fixtures if
 FPS allows it.
+
+Лабораторный occupancy-suppression не заменяет источник и не увеличивает
+shadow-budget: после штатного выбора LF3 он может плавно уменьшать энергию
+только у незащищённого bounce-источника, если его луч к receiver-пробам
+пересекает закрытую occupancy-ячейку. Открытый проём считается открытым путём.
+Такой кандидат обязан проверяться отдельно на движении в светлой и тёмной
+частях; зависимость от направления камеры запрещена.
+
+Принятый лабораторный вес:
+`energy = base × (1 - blocked_weight × (1 - shadow_coverage))`, где
+`shadow_coverage = clamp(shadow_opacity, 0, 1)`. Для blocked-источника
+topology-guard поднимает opacity с учётом штатного `transfer_weight`.
+Это комплементарный crossfade: смена штатного LF3 caster не выключает Omni
+скачком, а передаёт вклад одновременно с opacity тени.
 
 Unlike legacy omni sources, ceiling `AreaLight3D` panels are the light surface
 itself. Do not apply the `level_d` vertical source-drop rule to them: keep the

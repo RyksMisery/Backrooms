@@ -63,9 +63,9 @@ func _run() -> void:
 	lab.apply_segment_guardian_for_test()
 	_expect(_active_shadows(lab) <= 11,
 		"segment guardian must preserve the LF3 10+1 shadow budget")
-	lab.toggle_spot_fallback()
-	_expect(bool(lab.debug_snapshot()["spot_fallback_enabled"]),
-		"laboratory Spot fallback must toggle on")
+	lab.toggle_occlusion_suppression()
+	_expect(bool(lab.debug_snapshot()["occlusion_suppression_enabled"]),
+		"laboratory occupancy suppression must toggle on")
 	lab.toggle_seal()
 	lab.apply_light_zone_cull_for_test()
 	_expect(int(lab.debug_snapshot()["active_source_count"]) == 0,

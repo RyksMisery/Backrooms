@@ -78,6 +78,7 @@ const AREA_LIGHT_BOUNCE_SHADOW_NORMAL_BIAS := 1.25
 const AREA_LIGHT_BOUNCE_SHADOWS_ON_ANDROID := false
 const AREA_LIGHT_SPOT_FALLBACK_ANGLE := 70.0
 const AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL := 8.0
+const AREA_LIGHT_HYBRID_OMNI_MODULUS := 3
 const AREA_LIGHT_WORLD_LAYER := 1 << 0
 const AREA_LIGHT_CEILING_FILL_LAYER := Architecture.CEILING_FILL_LAYER
 const AREA_LIGHT_CEILING_GLOW_ENABLED := false
@@ -125,6 +126,7 @@ var lf3_receiver_priority_enabled := false
 var lf3_angular_visibility_enabled := false
 var lf3_guardian_view_enabled := false
 var lf3_sharp_checkpoint_enabled := false
+var lf3_player_receiver_only_enabled := false
 var _lf3_cell_blocked_provider := Callable()
 var _lf3_camera_provider := Callable()
 var _lf3_cell_size := Architecture.CELL
@@ -268,11 +270,13 @@ func add_level_e_area_ceiling_light(parent: Node3D,
 
 
 func add_area_bounce_spot_test(parent: Node3D, local_position: Vector3,
-		angle_degrees: float, energy_multiplier: float) -> SpotLight3D:
+		angle_degrees: float, energy_multiplier: float,
+		upward := false) -> SpotLight3D:
 	var spot := SpotLight3D.new()
 	spot.name = "area_bounce_spot_test"
 	spot.position = local_position
-	spot.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
+	spot.rotation_degrees = Vector3(
+		90.0 if upward else -90.0, 0.0, 0.0)
 	spot.light_color = LIGHT_COLOR
 	spot.light_energy = AREA_LIGHT_BOUNCE_ENERGY * maxf(
 		energy_multiplier, 0.0)
@@ -509,19 +513,22 @@ func lf3_receiver_probe_data(player_pos: Vector3, include_far: bool) -> Dictiona
 
 func lf3_receiver_probe_data_for_view(player_pos: Vector3, view_origin: Vector3,
 		forward: Vector3, right: Vector3, include_far: bool) -> Dictionary:
-	var visible_probes: Array[Vector3] = [
-		view_origin + forward * 3.0,
-		view_origin + forward * 6.0,
-		view_origin + forward * 9.0,
-		view_origin + forward * 4.0 + right * 2.5,
-		view_origin + forward * 4.0 - right * 2.5,
-		view_origin + forward * 7.0 + right * 3.5,
-		view_origin + forward * 7.0 - right * 3.5,
-	]
+	var visible_probes: Array[Vector3] = []
+	if not lf3_player_receiver_only_enabled:
+		visible_probes.assign([
+			view_origin + forward * 3.0,
+			view_origin + forward * 6.0,
+			view_origin + forward * 9.0,
+			view_origin + forward * 4.0 + right * 2.5,
+			view_origin + forward * 4.0 - right * 2.5,
+			view_origin + forward * 7.0 + right * 3.5,
+			view_origin + forward * 7.0 - right * 3.5,
+		])
 	var local_probes: Array[Vector3] = [player_pos]
 	local_probes.append_array(visible_probes)
 	var far_probes: Array[Vector3] = []
-	if include_far and _lf3_cell_blocked_provider.is_valid():
+	if include_far and not lf3_player_receiver_only_enabled \
+			and _lf3_cell_blocked_provider.is_valid():
 		var half_angle := deg_to_rad(60.0)
 		for ray_index in range(LF3_FRUSTUM_RECEIVER_RAYS):
 			var fraction := float(ray_index) / float(maxi(

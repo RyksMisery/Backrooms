@@ -28,7 +28,7 @@ func _run() -> void:
 	if side not in ["dark", "lit"]:
 		_fail("unknown side: %s" % side)
 		return
-	if variant not in ["lf3", "hybrid"]:
+	if variant not in ["lf3", "hybrid", "bidirectional", "occlusion"]:
 		_fail("unknown variant: %s" % variant)
 		return
 
@@ -155,6 +155,7 @@ func _capture_route(side: String, variant: String,
 
 func _apply_variant(variant: String) -> void:
 	_lab.reset_spot_shadow_profile_for_test()
+	_lab.reset_lf3_occlusion_suppression_for_test()
 	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
 		bounce.visible = true
 		bounce.set_meta("pool_want", true)
@@ -167,8 +168,17 @@ func _apply_variant(variant: String) -> void:
 		_lab.apply_lf3_spot_fallback_for_test(
 			Lighting.AREA_LIGHT_SPOT_FALLBACK_ANGLE,
 			Lighting.AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL)
+	elif variant == "bidirectional":
+		_lab.apply_bidirectional_spot_profile_for_test(
+			Lighting.AREA_LIGHT_SPOT_FALLBACK_ANGLE,
+			_float_argument("--spot-energy=",
+				Lighting.AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL),
+			_float_argument("--spot-up-energy=", 1.0),
+			_float_argument("--spot-up-angle=", 35.0))
 	else:
 		_lighting.update_level_e_area_lighting(_player)
+		if variant == "occlusion":
+			_lab.apply_lf3_occlusion_suppression_for_test(1.0, false)
 
 
 func _route_eye(side: String, t: float) -> Vector3:
@@ -372,6 +382,14 @@ func _argument(prefix: String, fallback: String) -> String:
 		var text := String(argument)
 		if text.begins_with(prefix):
 			return text.trim_prefix(prefix)
+	return fallback
+
+
+func _float_argument(prefix: String, fallback: float) -> float:
+	for argument in OS.get_cmdline_user_args():
+		var text := String(argument)
+		if text.begins_with(prefix):
+			return text.trim_prefix(prefix).to_float()
 	return fallback
 
 

@@ -36,7 +36,8 @@ var _segment_guardian_enabled := false
 var _segment_guardian_key := ""
 var _segment_guardian_opacity := {}
 var _spot_bounce_lamps: Array[SpotLight3D] = []
-var _spot_fallback_enabled := false
+var _up_spot_bounce_lamps: Array[SpotLight3D] = []
+var _occlusion_suppression_enabled := false
 var _grid: Dictionary = {}
 var _gmin := Vector2i.ZERO
 var _gmax := Vector2i.ZERO
@@ -72,10 +73,8 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_apply_light_zone_cull()
-	if _spot_fallback_enabled:
-		apply_lf3_spot_fallback_for_test(
-			Lighting.AREA_LIGHT_SPOT_FALLBACK_ANGLE,
-			Lighting.AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL)
+	if _occlusion_suppression_enabled:
+		apply_lf3_occlusion_suppression_for_test(1.0, false)
 	elif _segment_guardian_enabled:
 		apply_segment_guardian_for_test()
 	elif _leak_guard_enabled:
@@ -93,7 +92,7 @@ func _input(event: InputEvent) -> void:
 		return
 	match event.keycode:
 		KEY_F:
-			toggle_spot_fallback()
+			toggle_occlusion_suppression()
 
 
 func move_partition(direction: int) -> void:
@@ -132,9 +131,10 @@ func toggle_segment_guardian() -> void:
 	_invalidate_segment_guardian()
 
 
-func toggle_spot_fallback() -> void:
-	_spot_fallback_enabled = not _spot_fallback_enabled
+func toggle_occlusion_suppression() -> void:
+	_occlusion_suppression_enabled = not _occlusion_suppression_enabled
 	reset_spot_shadow_profile_for_test()
+	reset_lf3_occlusion_suppression_for_test()
 	_invalidate_segment_guardian()
 
 
@@ -146,7 +146,7 @@ func debug_snapshot() -> Dictionary:
 		"leak_guard_enabled": _leak_guard_enabled,
 		"light_zone_cull_enabled": _light_zone_cull_enabled,
 		"segment_guardian_enabled": _segment_guardian_enabled,
-		"spot_fallback_enabled": _spot_fallback_enabled,
+		"occlusion_suppression_enabled": _occlusion_suppression_enabled,
 		"light_count": _lighting.area_bounce_lamps.size(),
 		"active_source_count": _active_source_count(),
 		"panel_count": _lighting.area_lamps.size(),
@@ -220,6 +220,7 @@ func _rebuild_lights() -> void:
 	_lighting.area_lamps.clear()
 	_lighting.area_bounce_lamps.clear()
 	_spot_bounce_lamps.clear()
+	_up_spot_bounce_lamps.clear()
 
 	var indices: Array[int] = _lighting.grid_indices(
 		Architecture.ROOM_CELLS)
@@ -283,7 +284,8 @@ func _get_player() -> Node3D:
 
 
 func _hud_text() -> String:
-	var light_state := "LF3 + SPOT FALLBACK" if _spot_fallback_enabled \
+	var light_state := "LF3 OCCLUSION SUPPRESS" \
+		if _occlusion_suppression_enabled \
 		else "LF3-11F"
 	return ("ТЕСТ СВЕТА · %s\n" \
 		+ "проём: ОТКРЫТ · источники:%d · тени:%d\n" \
@@ -303,6 +305,9 @@ func _active_shadow_count() -> int:
 	for spot: SpotLight3D in _spot_bounce_lamps:
 		if spot.visible and spot.shadow_enabled and spot.shadow_opacity > 0.001:
 			count += 1
+	for spot: SpotLight3D in _up_spot_bounce_lamps:
+		if spot.visible and spot.shadow_enabled and spot.shadow_opacity > 0.001:
+			count += 1
 	return count
 
 
@@ -312,6 +317,9 @@ func _active_source_count() -> int:
 		if light.visible and light.light_energy > 0.0001:
 			count += 1
 	for spot: SpotLight3D in _spot_bounce_lamps:
+		if spot.visible and spot.light_energy > 0.0001:
+			count += 1
+	for spot: SpotLight3D in _up_spot_bounce_lamps:
 		if spot.visible and spot.light_energy > 0.0001:
 			count += 1
 	return count
@@ -335,6 +343,57 @@ func apply_leak_guard(curve: StringName = &"smooth",
 			* transfer_weight * angular_weight
 		_lighting.set_lf3_shadow_opacity(light,
 			maxf(light.shadow_opacity, guard_weight))
+
+
+func apply_lf3_occlusion_suppression_for_test(strength := 1.0,
+		freeze_shadow_set := true) -> void:
+	_lighting.lf3_player_receiver_only_enabled = true
+	if freeze_shadow_set:
+		apply_segment_guardian_for_test()
+	else:
+		_lighting.update_level_e_area_lighting(_player)
+		apply_leak_guard()
+	var receiver := _player.global_position + Vector3(0.0, 0.45, 0.0)
+	var probe_offset := Architecture.CELL * 0.35
+	var receiver_offsets := [
+		Vector3.ZERO,
+		Vector3(probe_offset, 0.0, probe_offset),
+		Vector3(probe_offset, 0.0, -probe_offset),
+		Vector3(-probe_offset, 0.0, probe_offset),
+		Vector3(-probe_offset, 0.0, -probe_offset),
+	]
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		if not bool(light.get_meta("pool_want", light.visible)):
+			continue
+		var blocked_probes := 0
+		for offset: Vector3 in receiver_offsets:
+			if _lighting.lf3_occupancy_blocks_segment(
+					light.global_position, receiver + offset):
+				blocked_probes += 1
+		var blocked_weight := float(blocked_probes) \
+			/ float(receiver_offsets.size())
+		var blocked_guard := smoothstep(0.0, 0.8, blocked_weight)
+		if light.shadow_enabled:
+			var transfer_weight := clampf(float(
+				light.get_meta("lf3_transfer_weight", 1.0)), 0.0, 1.0)
+			_lighting.set_lf3_shadow_opacity(light, maxf(
+				light.shadow_opacity, blocked_guard * transfer_weight))
+		var shadow_coverage := clampf(light.shadow_opacity, 0.0, 1.0) \
+			if light.shadow_enabled else 0.0
+		var suppression := blocked_guard \
+			* (1.0 - shadow_coverage) * clampf(strength, 0.0, 1.0)
+		light.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY \
+			* (1.0 - suppression)
+		light.visible = light.light_energy > 0.0001
+
+
+func reset_lf3_occlusion_suppression_for_test() -> void:
+	_lighting.lf3_player_receiver_only_enabled = false
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		var source_allowed := bool(light.get_meta("pool_want", true))
+		light.visible = source_allowed
+		light.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY \
+			if source_allowed else 0.0
 
 
 func apply_segment_guardian_for_test() -> void:
@@ -394,24 +453,81 @@ func apply_spot_shadow_profile_for_test(angle_degrees: float,
 		spot.shadow_opacity = Lighting.LF3_SHADOW_OPACITY
 
 
-func apply_lf3_spot_fallback_for_test(angle_degrees: float,
-		energy_multiplier: float) -> void:
-	_ensure_spot_test_lights(angle_degrees, energy_multiplier)
-	apply_segment_guardian_for_test()
-	for index in range(_lighting.area_bounce_lamps.size()):
-		var bounce: OmniLight3D = _lighting.area_bounce_lamps[index]
-		var spot: SpotLight3D = _spot_bounce_lamps[index]
-		if not bool(bounce.get_meta("pool_want", bounce.visible)):
-			spot.visible = false
-			spot.shadow_enabled = false
-			continue
-		if bounce.shadow_enabled and bounce.shadow_opacity > 0.001:
-			spot.visible = false
-			spot.shadow_enabled = false
-			continue
+func apply_bidirectional_spot_profile_for_test(angle_degrees: float,
+		down_energy_multiplier: float,
+		up_energy_multiplier: float,
+		up_angle_degrees := 35.0) -> void:
+	_ensure_spot_test_lights(angle_degrees, down_energy_multiplier)
+	_ensure_up_spot_test_lights(angle_degrees, up_energy_multiplier)
+	var source_allowed: Array[bool] = []
+	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
+		source_allowed.append(bool(
+			bounce.get_meta("pool_want", bounce.visible)))
 		bounce.visible = false
 		bounce.set_meta("pool_want", false)
 		bounce.light_energy = 0.0
+		bounce.shadow_enabled = false
+		bounce.shadow_opacity = 0.0
+	for index in range(_spot_bounce_lamps.size()):
+		var spot: SpotLight3D = _spot_bounce_lamps[index]
+		var enabled := source_allowed[index] \
+			and down_energy_multiplier > 0.0
+		spot.spot_angle = clampf(angle_degrees, 1.0, 89.0)
+		spot.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY * maxf(
+			down_energy_multiplier, 0.0) if enabled else 0.0
+		spot.visible = enabled
+		spot.shadow_enabled = enabled
+		spot.shadow_opacity = Lighting.LF3_SHADOW_OPACITY
+	for index in range(_up_spot_bounce_lamps.size()):
+		var spot: SpotLight3D = _up_spot_bounce_lamps[index]
+		var enabled := source_allowed[index] and up_energy_multiplier > 0.0
+		spot.spot_angle = clampf(up_angle_degrees, 1.0, 89.0)
+		spot.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY * maxf(
+			up_energy_multiplier, 0.0) if enabled else 0.0
+		spot.visible = enabled
+		spot.shadow_enabled = enabled
+		spot.shadow_opacity = Lighting.LF3_SHADOW_OPACITY
+
+
+func apply_lf3_spot_fallback_for_test(angle_degrees: float,
+		energy_multiplier: float) -> void:
+	_ensure_spot_test_lights(angle_degrees, energy_multiplier)
+	for index in range(_lighting.area_bounce_lamps.size()):
+		var bounce: OmniLight3D = _lighting.area_bounce_lamps[index]
+		var spot: SpotLight3D = _spot_bounce_lamps[index]
+		var source_allowed := bool(bounce.get_meta("pool_want", bounce.visible))
+		if not source_allowed:
+			bounce.visible = false
+			bounce.light_energy = 0.0
+			bounce.shadow_enabled = false
+			bounce.shadow_opacity = 0.0
+			spot.visible = false
+			spot.light_energy = 0.0
+			spot.shadow_enabled = false
+			continue
+		var cell_x := floori(bounce.position.x / Architecture.CELL)
+		var cell_z := floori(bounce.position.z / Architecture.CELL)
+		var source_index_x := floori(
+			float(cell_x) / float(Lighting.LIGHT_STEP))
+		var source_index_z := floori(
+			float(cell_z) / float(Lighting.LIGHT_STEP))
+		var omni_role := (source_index_x + 2 * source_index_z) \
+			% Lighting.AREA_LIGHT_HYBRID_OMNI_MODULUS == 0
+		bounce.set_meta("pool_want", false)
+		if omni_role:
+			bounce.visible = true
+			bounce.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY
+			bounce.omni_range = Lighting.AREA_LIGHT_BOUNCE_RANGE
+			_lighting.set_lf3_shadow_opacity(
+				bounce, Lighting.LF3_SHADOW_OPACITY)
+			spot.visible = false
+			spot.light_energy = 0.0
+			spot.shadow_enabled = false
+			continue
+		bounce.visible = false
+		bounce.light_energy = 0.0
+		bounce.shadow_enabled = false
+		bounce.shadow_opacity = 0.0
 		spot.spot_angle = clampf(angle_degrees, 1.0, 89.0)
 		spot.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY * maxf(
 			energy_multiplier, 0.0)
@@ -430,15 +546,31 @@ func _ensure_spot_test_lights(angle_degrees: float,
 			energy_multiplier))
 
 
+func _ensure_up_spot_test_lights(angle_degrees: float,
+		energy_multiplier: float) -> void:
+	if not _up_spot_bounce_lamps.is_empty():
+		return
+	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
+		_up_spot_bounce_lamps.append(_lighting.add_area_bounce_spot_test(
+			_lights_root, bounce.position, angle_degrees,
+			energy_multiplier, true))
+
+
 func reset_spot_shadow_profile_for_test() -> void:
 	for spot: SpotLight3D in _spot_bounce_lamps:
+		spot.visible = false
+		spot.light_energy = 0.0
+		spot.shadow_enabled = false
+	for spot: SpotLight3D in _up_spot_bounce_lamps:
 		spot.visible = false
 		spot.light_energy = 0.0
 		spot.shadow_enabled = false
 
 
 func spot_test_lights() -> Array[SpotLight3D]:
-	return _spot_bounce_lamps
+	var lights: Array[SpotLight3D] = _spot_bounce_lamps.duplicate()
+	lights.append_array(_up_spot_bounce_lamps)
+	return lights
 
 
 func apply_light_zone_cull_for_test() -> void:

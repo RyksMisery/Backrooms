@@ -30,6 +30,8 @@ const ALL_VARIANTS := [
 	"risk_all_shadow_dp",
 	"spot_shadow",
 	"lf3_spot_fallback",
+	"bidirectional_spot",
+	"lf3_occlusion_suppress",
 	"zone_cull",
 ]
 const FINALIST_VARIANTS := [
@@ -221,6 +223,7 @@ func _place_view(partition_cell: int, side: String) -> void:
 
 func _apply_variant(variant: String, partition_cell: int) -> void:
 	_lab.reset_spot_shadow_profile_for_test()
+	_lab.reset_lf3_occlusion_suppression_for_test()
 	var snapshot: Dictionary = _lab.debug_snapshot()
 	var wants_zone := variant == "zone_cull"
 	if bool(snapshot["light_zone_cull_enabled"]) != wants_zone:
@@ -274,13 +277,19 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 		_lab.apply_lf3_spot_fallback_for_test(
 			_spot_angle(), _spot_energy_multiplier())
 		return
+	if variant == "bidirectional_spot":
+		_lab.apply_bidirectional_spot_profile_for_test(
+			_spot_angle(), _spot_energy_multiplier(),
+			_spot_up_energy_multiplier(), _spot_up_angle())
+		return
 	if variant in ["lf3_default", "lf3_low_bias",
 			"lf3_selected_full_opacity", "lf3_risk_full_opacity",
 			"lf3_risk_weighted_opacity",
 			"range_7_lf3", "range_6_lf3", "range_5_lf3",
 			"far_row_off_lf3", "checker_sources_lf3",
 			"boundary_range_6_lf3", "boundary_two_rows_6_lf3",
-			"risk_all_shadow", "risk_all_shadow_dp"]:
+			"risk_all_shadow", "risk_all_shadow_dp",
+			"lf3_occlusion_suppress"]:
 		_lighting.update_level_e_area_lighting(_player)
 		if variant == "lf3_low_bias":
 			_apply_low_bias()
@@ -294,6 +303,8 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 			_enable_all_risk_shadows()
 		elif variant == "risk_all_shadow_dp":
 			_enable_all_dual_paraboloid_shadows()
+		elif variant == "lf3_occlusion_suppress":
+			_lab.apply_lf3_occlusion_suppression_for_test(1.0, false)
 	elif variant in ["all_shadow", "all_shadow_low_bias"]:
 		for bounce: OmniLight3D in _lighting.area_bounce_lamps:
 			if bounce.visible and bounce.global_position.distance_to(
@@ -353,6 +364,14 @@ func _spot_energy_multiplier() -> float:
 
 func _spot_fill_energy_multiplier() -> float:
 	return _float_argument("--spot-fill-energy=", 0.0)
+
+
+func _spot_up_energy_multiplier() -> float:
+	return _float_argument("--spot-up-energy=", 0.0)
+
+
+func _spot_up_angle() -> float:
+	return _float_argument("--spot-up-angle=", 35.0)
 
 
 func _float_argument(prefix: String, fallback: float) -> float:
