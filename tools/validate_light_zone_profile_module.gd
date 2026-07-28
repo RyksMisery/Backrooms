@@ -74,6 +74,15 @@ func _initialize() -> void:
 		"separated passage cells must form independent portals")
 	_expect((multiple["zones"] as Array).size() == 2,
 		"multiple portals must connect the same two stable zones")
+	var eligible: Array[bool] = []
+	eligible.resize(sources.size())
+	eligible.fill(false)
+	for index in [1, 3, 5]:
+		eligible[index] = true
+	var filtered := LightZones.build(
+		grid, Vector2i.ZERO, Vector2i(8, 8), sources, 5, eligible)
+	_expect(filtered["caster_indices"] == [3, 5, 1],
+		"caster eligibility must exclude emissive-only sources")
 
 	if _failures.is_empty():
 		print("LIGHT_ZONE_PROFILE_MODULE_OK")

@@ -14,7 +14,9 @@ const NEIGHBORS := [
 
 
 static func build(grid: Dictionary, gmin: Vector2i, gmax: Vector2i,
-		source_cells: Array[Vector2i], shadow_budget := 11) -> Dictionary:
+		source_cells: Array[Vector2i], shadow_budget := 11,
+		caster_eligible: Array[bool] = [],
+		caster_focus := Vector2(INF, INF)) -> Dictionary:
 	var cell_zone := {}
 	var zones: Array[Dictionary] = []
 	for x in range(gmin.x, gmax.x + 1):
@@ -72,7 +74,7 @@ static func build(grid: Dictionary, gmin: Vector2i, gmax: Vector2i,
 		source_zones.append(_source_zone(source_cell, cell_zone, zones))
 
 	var caster_indices := _select_caster_indices(source_cells, source_zones,
-		portals, zones, shadow_budget)
+		portals, zones, shadow_budget, caster_eligible, caster_focus)
 	var caster_set := {}
 	for index: int in caster_indices:
 		caster_set[index] = true
@@ -266,16 +268,54 @@ static func _caster_score(source_cell: Vector2i, source_zone: int,
 
 static func _select_caster_indices(source_cells: Array[Vector2i],
 		source_zones: Array[int], portals: Array[Dictionary],
-		zones: Array[Dictionary], shadow_budget: int) -> Array[int]:
-	var limit := mini(maxi(shadow_budget, 0), source_cells.size())
+		zones: Array[Dictionary], shadow_budget: int,
+		caster_eligible: Array[bool], caster_focus: Vector2) -> Array[int]:
+	var eligible_count := 0
+	for index in range(source_cells.size()):
+		if caster_eligible.is_empty() or (
+				index < caster_eligible.size() and caster_eligible[index]):
+			eligible_count += 1
+	var limit := mini(maxi(shadow_budget, 0), eligible_count)
 	var selected: Array[int] = []
 	var selected_set := {}
-	if not portals.is_empty():
+	if is_finite(caster_focus.x) and is_finite(caster_focus.y):
+		var focused: Array[int] = []
+		for index in range(source_cells.size()):
+			if caster_eligible.is_empty() or (
+					index < caster_eligible.size() and caster_eligible[index]):
+				focused.append(index)
+		focused.sort_custom(func(a: int, b: int) -> bool:
+			var distance_a := (
+				Vector2(source_cells[a]) + Vector2(0.5, 0.5)
+			).distance_squared_to(caster_focus)
+			var distance_b := (
+				Vector2(source_cells[b]) + Vector2(0.5, 0.5)
+			).distance_squared_to(caster_focus)
+			if not is_equal_approx(distance_a, distance_b):
+				return distance_a < distance_b
+			var cell_a := source_cells[a]
+			var cell_b := source_cells[b]
+			if cell_a.y != cell_b.y:
+				return cell_a.y < cell_b.y
+			return cell_a.x < cell_b.x
+		)
+		for index: int in focused:
+			selected.append(index)
+			if selected.size() >= limit:
+				break
+		return selected
+	var effective_portals: Array[Dictionary] = []
+	for portal: Dictionary in portals:
+		if (portal["zone_ids"] as Array).size() >= 2:
+			effective_portals.append(portal)
+	if not effective_portals.is_empty():
 		var portal_orders: Array[Array] = []
-		for portal: Dictionary in portals:
+		for portal: Dictionary in effective_portals:
 			var order: Array[int] = []
 			for index in range(source_cells.size()):
-				order.append(index)
+				if caster_eligible.is_empty() or (
+						index < caster_eligible.size() and caster_eligible[index]):
+					order.append(index)
 			var portal_cells: Array = portal["cells"]
 			order.sort_custom(func(a: int, b: int) -> bool:
 				var point_a := Vector2(source_cells[a]) + Vector2(0.5, 0.5)
@@ -308,13 +348,16 @@ static func _select_caster_indices(source_cells: Array[Vector2i],
 	if selected.size() < limit:
 		var fallback: Array[int] = []
 		for index in range(source_cells.size()):
-			if not selected_set.has(index):
+			if not selected_set.has(index) and (
+					caster_eligible.is_empty() or (
+						index < caster_eligible.size()
+						and caster_eligible[index])):
 				fallback.append(index)
 		fallback.sort_custom(func(a: int, b: int) -> bool:
 			var score_a := _caster_score(source_cells[a], source_zones[a],
-				portals, zones)
+				effective_portals, zones)
 			var score_b := _caster_score(source_cells[b], source_zones[b],
-				portals, zones)
+				effective_portals, zones)
 			if not is_equal_approx(score_a, score_b):
 				return score_a < score_b
 			var cell_a := source_cells[a]

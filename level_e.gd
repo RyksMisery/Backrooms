@@ -12,6 +12,7 @@ const LIGHTING := preload("res://modules/lighting_module.gd")
 const AUDIO := preload("res://modules/audio_module.gd")
 const HUD := preload("res://modules/hud_module.gd")
 const MAP := preload("res://modules/map_module.gd")
+const LIGHT_ZONES := preload("res://modules/light_zone_profile_module.gd")
 const CELL := ARCHITECTURE.CELL
 const ROOM_CELLS := ARCHITECTURE.ROOM_CELLS
 const WALL_CELLS := ARCHITECTURE.WALL_CELLS
@@ -695,6 +696,12 @@ var _lf3_guardian_test_requested := false
 var _lf3_guardian_segment_cache := {}
 var _lf3_test_shadow_pool_frozen := false
 var _lf3_test_shadow_blur_override := -1.0
+var _light_zones_ab_requested := false
+var _light_zones_enabled := false
+var _light_zone_plans: Dictionary = {}
+var _light_zone_plan: Dictionary = {}
+var _light_zone_state: Dictionary = {}
+var _light_zone_active_group := ""
 var _final_lamp_audio_enabled := true
 var _level_e_reference_audio_requested := false
 var _final_hum_audio_player: AudioStreamPlayer
@@ -5133,6 +5140,8 @@ func _update_light_pool() -> void:
 		l.set_meta("far_bounce", full_weight <= 0.001)
 		_apply_area_bounce_runtime(l)
 		l.visible = visibility_weight > 0.001
+	if _light_zones_enabled:
+		_apply_level_e_light_zone_profile(p)
 	_update_bounce_shadow_pool(p)
 
 
@@ -5422,6 +5431,8 @@ func _ready() -> void:
 		in OS.get_cmdline_user_args()
 	_lf3_guardian_test_requested = "--lf3-guardian-shadow-test" \
 		in OS.get_cmdline_user_args()
+	_light_zones_ab_requested = "--level-e-light-zones-ab" \
+		in OS.get_cmdline_user_args()
 	if _stream_ab_requested or _stream_background_stress_requested \
 			or _stream_infinite_integration_requested:
 		randomize_maze_seed = false
@@ -5441,6 +5452,9 @@ func _ready() -> void:
 		_setup_model_fill_system()
 	_lf3_capture_reference_shadow_profiles()
 	lf3_set_shadow_mode(true)
+	if _light_zones_ab_requested:
+		_rebuild_level_e_light_zone_plan()
+		_light_zones_enabled = not _light_zone_plan.is_empty()
 	if _lf3_angular_test_requested and not _lf3_smooth_capture_requested:
 		lf3_set_angular_visibility(true)
 	elif _lf3_guardian_test_requested and not _lf3_smooth_capture_requested:
@@ -6101,7 +6115,8 @@ func _level_e_hud_text() -> String:
 		LEVEL_NAME, _current_area_name(), Engine.get_frames_per_second(),
 		("ON" if _stream_on else "OFF"), _block_holder.size(),
 		("FLOOR1" if _comparison_floor_enabled else "CLASSIC"),
-		(_lf3_profile_label() if _lf3_shadow_mode else "REFERENCE TEST"),
+		("ZONE-11 (V)" if _light_zones_enabled else
+			(_lf3_profile_label() if _lf3_shadow_mode else "REFERENCE TEST")),
 		("FINAL WAV" if _final_lamp_audio_enabled else "REFERENCE TEST"),
 		("ON" if _model_fill_enabled else "OFF"), _model_fill_energy,
 		_model_fill_receiver_count,
@@ -6127,6 +6142,8 @@ func _input(event: InputEvent) -> void:
 		_apply_model_fill_profile()
 	elif ke.keycode == KEY_0:
 		lf3_toggle_guardian_test()
+	elif ke.keycode == KEY_V and _light_zones_ab_requested:
+		set_level_e_light_zones_enabled(not _light_zones_enabled)
 	elif ke.keycode == KEY_1:
 		_model_fill_energy = maxf(0.0, _model_fill_energy - MODEL_FILL_ENERGY_STEP)
 		_apply_model_fill_profile()
@@ -6508,6 +6525,9 @@ func _update_shadow_pool() -> void:
 func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
 	if _lf3_test_shadow_pool_frozen:
 		return
+	if _light_zones_enabled:
+		_apply_level_e_light_zone_shadow_pool(player_pos)
+		return
 	if not _lf3_shadow_mode:
 		for l: OmniLight3D in _area_bounce_lamps:
 			_lf3_restore_reference_shadow_profile(l)
@@ -6519,6 +6539,315 @@ func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
 			_lf3_set_shadow(l, false)
 		return
 	_lf3_apply_stable_shadow_pool(_area_bounce_lamps, player_pos, true)
+
+
+func set_level_e_light_zones_enabled(enabled: bool) -> void:
+	if enabled and _light_zone_plan.is_empty():
+		_rebuild_level_e_light_zone_plan()
+	_light_zones_enabled = enabled and not _light_zone_plan.is_empty()
+	if _player_ref != null:
+		_update_light_pool()
+	print("[level_e] light zones: ",
+		"ZONE-11" if _light_zones_enabled else "LF3-11F")
+
+
+func _rebuild_level_e_light_zone_plan() -> void:
+	_light_zone_plans.clear()
+	_light_zone_plan.clear()
+	_light_zone_state.clear()
+	_light_zone_active_group = ""
+	if _grid.is_empty() or _area_bounce_lamps.is_empty():
+		return
+	var clusters := {}
+	for area: Dictionary in _areas:
+		var key := _level_e_light_zone_group_for_area(String(area["id"]))
+		if not clusters.has(key):
+			clusters[key] = {
+				"areas": [],
+				"source_indices": [],
+			}
+		(clusters[key]["areas"] as Array).append(area)
+	for index in range(_area_bounce_lamps.size()):
+		var light: OmniLight3D = _area_bounce_lamps[index]
+		var area_id := String(light.get_meta("area_id", ""))
+		if area_id.is_empty():
+			continue
+		var key := _level_e_light_zone_group_for_area(area_id)
+		if clusters.has(key):
+			(clusters[key]["source_indices"] as Array).append(index)
+	var own_clusters: Dictionary = clusters.duplicate(true)
+	for anchor_value in own_clusters.keys():
+		var anchor := String(anchor_value)
+		var included := {anchor: true}
+		for area: Dictionary in own_clusters[anchor]["areas"]:
+			var area_cell: Vector2i = area["cell"]
+			for direction: Vector2i in [
+					Vector2i.LEFT, Vector2i.RIGHT,
+					Vector2i.UP, Vector2i.DOWN]:
+				var neighbor_cell := area_cell + direction
+				if not _area_by_cell.has(neighbor_cell) \
+						or not _cells_connected(area_cell, neighbor_cell):
+					continue
+				var neighbor: Dictionary = _area_by_cell[neighbor_cell]
+				included[_level_e_light_zone_group_for_area(
+					String(neighbor["id"]))] = true
+		var expanded_areas := []
+		var expanded_sources := []
+		for group_value in included.keys():
+			var group := String(group_value)
+			if not own_clusters.has(group):
+				continue
+			expanded_areas.append_array(
+				own_clusters[group]["areas"] as Array)
+			expanded_sources.append_array(
+				own_clusters[group]["source_indices"] as Array)
+		clusters[anchor] = {
+			"areas": expanded_areas,
+			"source_indices": expanded_sources,
+		}
+	for key_value in clusters.keys():
+		var key := String(key_value)
+		var cluster: Dictionary = clusters[key]
+		var areas: Array = cluster["areas"]
+		var source_indices: Array = cluster["source_indices"]
+		if areas.is_empty() or source_indices.is_empty():
+			continue
+		var cluster_min := Vector2i(2147483647, 2147483647)
+		var cluster_max := Vector2i(-2147483648, -2147483648)
+		for area: Dictionary in areas:
+			var base := _area_base_cell(area)
+			cluster_min.x = mini(cluster_min.x, base.x)
+			cluster_min.y = mini(cluster_min.y, base.y)
+			cluster_max.x = maxi(cluster_max.x, base.x + PITCH - 1)
+			cluster_max.y = maxi(cluster_max.y, base.y + PITCH - 1)
+		var allowed_cells := {}
+		for area: Dictionary in areas:
+			var base := _area_base_cell(area)
+			for x in range(base.x, base.x + PITCH):
+				for z in range(base.y, base.y + PITCH):
+					allowed_cells[Vector2i(x, z)] = true
+		var zone_grid := {}
+		var merge_cells := _level_e_light_zone_merge_cells(areas)
+		for x in range(cluster_min.x, cluster_max.x + 1):
+			for z in range(cluster_min.y, cluster_max.y + 1):
+				var cell := Vector2i(x, z)
+				if not allowed_cells.has(cell):
+					continue
+				var kind := int(_grid.get(cell, K_SOLID))
+				if kind == K_FLOOR or (kind == K_PASSAGE \
+						and merge_cells.has(cell)):
+					zone_grid[cell] = "floor"
+				elif kind == K_PASSAGE:
+					zone_grid[cell] = "passage"
+		var source_cells: Array[Vector2i] = []
+		var global_indices: Array[int] = []
+		var caster_eligible: Array[bool] = []
+		for index_value in source_indices:
+			var global_index := int(index_value)
+			var light: OmniLight3D = _area_bounce_lamps[global_index]
+			source_cells.append(Vector2i(
+				floori(light.global_position.x / CELL),
+				floori(light.global_position.z / CELL)))
+			global_indices.append(global_index)
+			caster_eligible.append(bool(
+				light.get_meta("bounce_shadow_allowed", true)))
+		var caster_focus := Vector2.ZERO
+		var anchor_areas: Array = own_clusters[key]["areas"]
+		for area: Dictionary in anchor_areas:
+			var interior := _area_base_cell(area) \
+				+ Vector2i(WALL_CELLS, WALL_CELLS)
+			caster_focus += Vector2(interior) \
+				+ Vector2.ONE * (float(ROOM_CELLS) * 0.5)
+		caster_focus /= float(maxi(anchor_areas.size(), 1))
+		var plan := LIGHT_ZONES.build(
+			zone_grid, cluster_min, cluster_max, source_cells,
+			LF3_SHADOW_TRANSIENT_CASTERS, caster_eligible, caster_focus)
+		plan["global_indices"] = global_indices
+		plan["group"] = key
+		_light_zone_plans[key] = plan
+	_select_level_e_light_zone_plan(
+		_level_e_light_zone_group(_player_ref.position)
+		if _player_ref != null else "")
+
+
+func _level_e_light_zone_merge_cells(areas: Array) -> Dictionary:
+	var result := {}
+	var cells := {}
+	for area: Dictionary in areas:
+		cells[area["cell"]] = area
+	for area: Dictionary in areas:
+		var area_cell: Vector2i = area["cell"]
+		var base := _area_base_cell(area)
+		for direction_value in [Vector2i.RIGHT, Vector2i.DOWN]:
+			var direction: Vector2i = direction_value
+			var neighbor_cell: Vector2i = area_cell + direction
+			if not cells.has(neighbor_cell):
+				continue
+			var neighbor: Dictionary = cells[neighbor_cell]
+			if _level_e_light_zone_group_for_area(String(area["id"])) \
+					!= _level_e_light_zone_group_for_area(
+						String(neighbor["id"])):
+				continue
+			if direction == Vector2i.RIGHT:
+				var x0 := base.x + WALL_CELLS + ROOM_CELLS
+				for gx in range(x0, x0 + WALL_CELLS):
+					for gz in range(base.y + WALL_CELLS,
+							base.y + WALL_CELLS + ROOM_CELLS):
+						var cell := Vector2i(gx, gz)
+						if int(_grid.get(cell, K_SOLID)) == K_PASSAGE:
+							result[cell] = true
+			else:
+				var z0 := base.y + WALL_CELLS + ROOM_CELLS
+				for gz in range(z0, z0 + WALL_CELLS):
+					for gx in range(base.x + WALL_CELLS,
+							base.x + WALL_CELLS + ROOM_CELLS):
+						var cell := Vector2i(gx, gz)
+						if int(_grid.get(cell, K_SOLID)) == K_PASSAGE:
+							result[cell] = true
+	return result
+
+
+func _level_e_light_zone_group_for_area(area_id: String) -> String:
+	var area := _area_by_id(area_id)
+	if area.is_empty():
+		return area_id
+	return String(area.get("area_group", area_id))
+
+
+func _level_e_light_zone_group(player_pos: Vector3) -> String:
+	var player_cell := Vector2i(
+		floori(player_pos.x / CELL), floori(player_pos.z / CELL))
+	var candidates := {}
+	for area_id_value in _player_area_ids(player_cell):
+		var key := _level_e_light_zone_group_for_area(String(area_id_value))
+		if _light_zone_plans.has(key):
+			candidates[key] = true
+	if candidates.is_empty():
+		return ""
+	var keys := candidates.keys()
+	keys.sort()
+	var best := String(keys[0])
+	var best_distance := _distance_to_light_zone_group_interior(best, player_pos)
+	for key_value in keys:
+		var key := String(key_value)
+		var distance := _distance_to_light_zone_group_interior(key, player_pos)
+		if distance < best_distance:
+			best = key
+			best_distance = distance
+	return best
+
+
+func _distance_to_light_zone_group_interior(group: String,
+		player_pos: Vector3) -> float:
+	var best := INF
+	for area: Dictionary in _areas:
+		if _level_e_light_zone_group_for_area(String(area["id"])) != group:
+			continue
+		var base := _area_base_cell(area) + Vector2i(WALL_CELLS, WALL_CELLS)
+		var min_x := float(base.x) * CELL
+		var min_z := float(base.y) * CELL
+		var max_x := float(base.x + ROOM_CELLS) * CELL
+		var max_z := float(base.y + ROOM_CELLS) * CELL
+		var dx := maxf(maxf(min_x - player_pos.x, 0.0), player_pos.x - max_x)
+		var dz := maxf(maxf(min_z - player_pos.z, 0.0), player_pos.z - max_z)
+		best = minf(best, Vector2(dx, dz).length())
+	return best
+
+
+func _select_level_e_light_zone_plan(group: String) -> void:
+	if group == _light_zone_active_group:
+		return
+	_light_zone_active_group = group
+	_light_zone_plan = _light_zone_plans.get(group, {})
+	_light_zone_state.clear()
+
+
+func _apply_level_e_light_zone_profile(player_pos: Vector3) -> void:
+	_select_level_e_light_zone_plan(_level_e_light_zone_group(player_pos))
+	if _light_zone_plan.is_empty():
+		return
+	_light_zone_state = LIGHT_ZONES.sample(
+		_light_zone_plan,
+		Vector2(player_pos.x, player_pos.z) / CELL,
+		1.0)
+	var energies: Array = _light_zone_state.get("energy", [])
+	var global_indices: Array = _light_zone_plan.get("global_indices", [])
+	for light: OmniLight3D in _area_bounce_lamps:
+		light.set_meta("light_zone_energy_weight", 1.0)
+	for local_index in range(global_indices.size()):
+		var global_index := int(global_indices[local_index])
+		var light: OmniLight3D = _area_bounce_lamps[global_index]
+		var zone_weight := float(energies[local_index]) \
+			if local_index < energies.size() else 0.0
+		light.light_energy *= zone_weight
+		light.visible = light.visible and light.light_energy > 0.0001
+		light.set_meta("light_zone_energy_weight", zone_weight)
+
+
+func _apply_level_e_light_zone_shadow_pool(player_pos: Vector3) -> void:
+	if _light_zone_plan.is_empty() or _light_zone_state.is_empty():
+		for light: OmniLight3D in _area_bounce_lamps:
+			_lf3_set_shadow(light, false)
+		return
+	var caster_set := {}
+	for source_index: int in _light_zone_plan.get("caster_indices", []):
+		caster_set[source_index] = true
+	var opacities: Array = _light_zone_state.get("opacity", [])
+	var global_indices: Array = _light_zone_plan.get("global_indices", [])
+	var local_by_global := {}
+	for local_index in range(global_indices.size()):
+		local_by_global[int(global_indices[local_index])] = local_index
+	for index in range(_area_bounce_lamps.size()):
+		var light: OmniLight3D = _area_bounce_lamps[index]
+		var local_index := int(local_by_global.get(index, -1))
+		var selected := local_index >= 0 and caster_set.has(local_index)
+		var allowed := bool(light.get_meta("bounce_shadow_allowed", true))
+		var pool_on := bool(light.get_meta("pool_want", light.visible))
+		var far := bool(light.get_meta("far_bounce", false))
+		if not selected or not allowed or not pool_on or far \
+				or not light.visible or light.light_energy <= 0.0001:
+			_lf3_set_shadow(light, false)
+			continue
+		var distance := light.global_position.distance_to(player_pos)
+		var shadow_off_distance := LF3_FRUSTUM_RECEIVER_DISTANCE
+		var distance_weight := 1.0 - smoothstep(
+			LF3_SHADOW_FULL_DISTANCE, shadow_off_distance, distance)
+		var pool_weight := clampf(float(
+			light.get_meta("pool_shadow_weight", 1.0)), 0.0, 1.0)
+		var zone_opacity := float(opacities[local_index]) \
+			if local_index >= 0 and local_index < opacities.size() else 0.0
+		_lf3_set_shadow_opacity(
+			light, zone_opacity * distance_weight * pool_weight)
+
+
+func level_e_light_zone_debug_state() -> Dictionary:
+	var active_shadows := 0
+	var caster_signature := []
+	var energy_signature := []
+	for index in range(_area_bounce_lamps.size()):
+		var light: OmniLight3D = _area_bounce_lamps[index]
+		if light.shadow_enabled and light.shadow_opacity > 0.001:
+			active_shadows += 1
+			caster_signature.append(index)
+		energy_signature.append(snappedf(
+			float(light.get_meta("light_zone_energy_weight", 1.0)), 0.000001))
+	return {
+		"requested": _light_zones_ab_requested,
+		"enabled": _light_zones_enabled,
+		"profile": "ZONE-11" if _light_zones_enabled else _lf3_profile_label(),
+		"active_group": _light_zone_active_group,
+		"plan_count": _light_zone_plans.size(),
+		"zone_count": (_light_zone_plan.get("zones", []) as Array).size(),
+		"portal_count": (_light_zone_plan.get("portals", []) as Array).size(),
+		"caster_count": (
+			_light_zone_plan.get("caster_indices", []) as Array).size(),
+		"plan_caster_indices": (
+			_light_zone_plan.get("caster_indices", []) as Array).duplicate(),
+		"active_shadows": active_shadows,
+		"caster_signature": caster_signature,
+		"energy_signature": energy_signature,
+		"zone_weights": _light_zone_state.get("weights", {}).duplicate(),
+	}
 
 
 func _lf3_apply_stable_shadow_pool(lights: Array[OmniLight3D],
