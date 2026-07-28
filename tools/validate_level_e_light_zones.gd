@@ -22,10 +22,7 @@ func _run() -> void:
 			or not level.has_method("level_e_light_zone_debug_state"):
 		_fail("level_e light-zone A/B API is missing")
 		return
-	var toggle := InputEventKey.new()
-	toggle.keycode = KEY_V
-	toggle.pressed = true
-	level.call("_input", toggle)
+	level.call("set_level_e_light_zones_enabled", true)
 	for _frame in range(4):
 		await process_frame
 	var initial: Dictionary = level.call("level_e_light_zone_debug_state")
@@ -121,7 +118,7 @@ func _run() -> void:
 		if signature != String(group_states[group]):
 			_fail("cluster state depends on traversal direction in %s" % group)
 			return
-	level.call("_input", toggle)
+	level.call("set_level_e_light_zones_enabled", false)
 	for _frame in range(4):
 		await process_frame
 	var restored: Dictionary = level.call("level_e_light_zone_debug_state")
@@ -129,6 +126,15 @@ func _run() -> void:
 	if bool(restored.get("enabled", true)) \
 			or String(lf3.get("profile", "")) != "LF3-11F":
 		_fail("A/B toggle did not restore LF3-11F")
+		return
+	var retired_toggle := InputEventKey.new()
+	retired_toggle.keycode = KEY_V
+	retired_toggle.pressed = true
+	level.call("_input", retired_toggle)
+	await process_frame
+	var after_v: Dictionary = level.call("level_e_light_zone_debug_state")
+	if bool(after_v.get("enabled", false)):
+		_fail("retired player V toggle re-enabled ZONE-11")
 		return
 	print("LEVEL_E_LIGHT_ZONES_OK: ", JSON.stringify({
 		"initial": initial,

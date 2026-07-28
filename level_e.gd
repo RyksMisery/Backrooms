@@ -696,7 +696,6 @@ var _lf3_guardian_test_requested := false
 var _lf3_guardian_segment_cache := {}
 var _lf3_test_shadow_pool_frozen := false
 var _lf3_test_shadow_blur_override := -1.0
-var _light_zones_ab_requested := false
 var _light_zones_enabled := false
 var _light_zone_plans: Dictionary = {}
 var _light_zone_plan: Dictionary = {}
@@ -5431,8 +5430,6 @@ func _ready() -> void:
 		in OS.get_cmdline_user_args()
 	_lf3_guardian_test_requested = "--lf3-guardian-shadow-test" \
 		in OS.get_cmdline_user_args()
-	_light_zones_ab_requested = "--level-e-light-zones-ab" \
-		in OS.get_cmdline_user_args()
 	if _stream_ab_requested or _stream_background_stress_requested \
 			or _stream_infinite_integration_requested:
 		randomize_maze_seed = false
@@ -5452,9 +5449,6 @@ func _ready() -> void:
 		_setup_model_fill_system()
 	_lf3_capture_reference_shadow_profiles()
 	lf3_set_shadow_mode(true)
-	if _light_zones_ab_requested:
-		_rebuild_level_e_light_zone_plan()
-		_light_zones_enabled = not _light_zone_plan.is_empty()
 	if _lf3_angular_test_requested and not _lf3_smooth_capture_requested:
 		lf3_set_angular_visibility(true)
 	elif _lf3_guardian_test_requested and not _lf3_smooth_capture_requested:
@@ -6115,9 +6109,7 @@ func _level_e_hud_text() -> String:
 		LEVEL_NAME, _current_area_name(), Engine.get_frames_per_second(),
 		("ON" if _stream_on else "OFF"), _block_holder.size(),
 		("FLOOR1" if _comparison_floor_enabled else "CLASSIC"),
-		("ZONE-11 (V)" if _light_zones_enabled else
-			("%s (V)" % _lf3_profile_label()
-				if _lf3_shadow_mode else "REFERENCE TEST")),
+		(_lf3_profile_label() if _lf3_shadow_mode else "REFERENCE TEST"),
 		("FINAL WAV" if _final_lamp_audio_enabled else "REFERENCE TEST"),
 		("ON" if _model_fill_enabled else "OFF"), _model_fill_energy,
 		_model_fill_receiver_count,
@@ -6143,8 +6135,6 @@ func _input(event: InputEvent) -> void:
 		_apply_model_fill_profile()
 	elif ke.keycode == KEY_0:
 		lf3_toggle_guardian_test()
-	elif ke.keycode == KEY_V:
-		set_level_e_light_zones_enabled(not _light_zones_enabled)
 	elif ke.keycode == KEY_1:
 		_model_fill_energy = maxf(0.0, _model_fill_energy - MODEL_FILL_ENERGY_STEP)
 		_apply_model_fill_profile()
@@ -6833,7 +6823,6 @@ func level_e_light_zone_debug_state() -> Dictionary:
 		energy_signature.append(snappedf(
 			float(light.get_meta("light_zone_energy_weight", 1.0)), 0.000001))
 	return {
-		"requested": _light_zones_ab_requested,
 		"enabled": _light_zones_enabled,
 		"profile": "ZONE-11" if _light_zones_enabled else _lf3_profile_label(),
 		"active_group": _light_zone_active_group,
