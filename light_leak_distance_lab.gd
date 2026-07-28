@@ -37,7 +37,8 @@ var _segment_guardian_key := ""
 var _segment_guardian_opacity := {}
 var _spot_bounce_lamps: Array[SpotLight3D] = []
 var _up_spot_bounce_lamps: Array[SpotLight3D] = []
-var _occlusion_suppression_enabled := false
+var _zone_static_enabled := false
+var _zone_static_shadow_ids := {}
 var _grid: Dictionary = {}
 var _gmin := Vector2i.ZERO
 var _gmax := Vector2i.ZERO
@@ -73,8 +74,8 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_apply_light_zone_cull()
-	if _occlusion_suppression_enabled:
-		apply_lf3_occlusion_suppression_for_test(1.0, false)
+	if _zone_static_enabled:
+		apply_zone_static_11_for_test()
 	elif _segment_guardian_enabled:
 		apply_segment_guardian_for_test()
 	elif _leak_guard_enabled:
@@ -92,7 +93,7 @@ func _input(event: InputEvent) -> void:
 		return
 	match event.keycode:
 		KEY_F:
-			toggle_occlusion_suppression()
+			toggle_zone_static()
 
 
 func move_partition(direction: int) -> void:
@@ -131,8 +132,8 @@ func toggle_segment_guardian() -> void:
 	_invalidate_segment_guardian()
 
 
-func toggle_occlusion_suppression() -> void:
-	_occlusion_suppression_enabled = not _occlusion_suppression_enabled
+func toggle_zone_static() -> void:
+	_zone_static_enabled = not _zone_static_enabled
 	reset_spot_shadow_profile_for_test()
 	reset_lf3_occlusion_suppression_for_test()
 	_invalidate_segment_guardian()
@@ -146,7 +147,7 @@ func debug_snapshot() -> Dictionary:
 		"leak_guard_enabled": _leak_guard_enabled,
 		"light_zone_cull_enabled": _light_zone_cull_enabled,
 		"segment_guardian_enabled": _segment_guardian_enabled,
-		"occlusion_suppression_enabled": _occlusion_suppression_enabled,
+		"zone_static_enabled": _zone_static_enabled,
 		"light_count": _lighting.area_bounce_lamps.size(),
 		"active_source_count": _active_source_count(),
 		"panel_count": _lighting.area_lamps.size(),
@@ -221,6 +222,7 @@ func _rebuild_lights() -> void:
 	_lighting.area_bounce_lamps.clear()
 	_spot_bounce_lamps.clear()
 	_up_spot_bounce_lamps.clear()
+	_zone_static_shadow_ids.clear()
 
 	var indices: Array[int] = _lighting.grid_indices(
 		Architecture.ROOM_CELLS)
@@ -284,8 +286,8 @@ func _get_player() -> Node3D:
 
 
 func _hud_text() -> String:
-	var light_state := "LF3 OCCLUSION SUPPRESS" \
-		if _occlusion_suppression_enabled \
+	var light_state := "LF3 ZONE STATIC 11" \
+		if _zone_static_enabled \
 		else "LF3-11F"
 	return ("ТЕСТ СВЕТА · %s\n" \
 		+ "проём: ОТКРЫТ · источники:%d · тени:%d\n" \
@@ -394,6 +396,55 @@ func reset_lf3_occlusion_suppression_for_test() -> void:
 		light.visible = source_allowed
 		light.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY \
 			if source_allowed else 0.0
+
+
+func apply_zone_static_11_for_test() -> void:
+	_ensure_zone_static_shadow_ids()
+	var local_player := to_local(_player.global_position)
+	var partition_z := (float(_partition_cell) + 0.5) * Architecture.CELL
+	var fade_begin := partition_z + Architecture.CELL * 0.25
+	var fade_end := partition_z + Architecture.CELL
+	var dark_weight := smoothstep(fade_begin, fade_end, local_player.z)
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		var selected := _zone_static_shadow_ids.has(light.get_instance_id())
+		light.set_meta("pool_want", true)
+		light.visible = true
+		light.light_energy = Lighting.AREA_LIGHT_BOUNCE_ENERGY * (
+			1.0 if selected else 1.0 - dark_weight)
+		light.visible = light.light_energy > 0.0001
+		if selected:
+			light.set_meta("lf3_transfer_weight", 1.0)
+			_lighting.set_lf3_shadow_opacity(light,
+				lerpf(Lighting.LF3_SHADOW_OPACITY, 1.0, dark_weight))
+		else:
+			_lighting.set_lf3_shadow(light, false)
+
+
+func _ensure_zone_static_shadow_ids() -> void:
+	if not _zone_static_shadow_ids.is_empty():
+		return
+	var partition_z := (float(_partition_cell) + 0.5) * Architecture.CELL
+	var opening_x := (float(OPENING_CELL) + 0.5) * Architecture.CELL
+	var ranked: Array[Dictionary] = []
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		var local := light.position
+		ranked.append({
+			"light": light,
+			"score": absf(partition_z - local.z) * 10.0
+				+ absf(opening_x - local.x),
+			"id": light.get_instance_id(),
+		})
+	ranked.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var score_a := float(a["score"])
+		var score_b := float(b["score"])
+		if not is_equal_approx(score_a, score_b):
+			return score_a < score_b
+		return int(a["id"]) < int(b["id"])
+	)
+	for index in range(mini(Lighting.LF3_SHADOW_TRANSIENT_CASTERS,
+			ranked.size())):
+		var light := ranked[index]["light"] as OmniLight3D
+		_zone_static_shadow_ids[light.get_instance_id()] = true
 
 
 func apply_segment_guardian_for_test() -> void:

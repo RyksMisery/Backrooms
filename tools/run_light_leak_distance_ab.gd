@@ -32,6 +32,7 @@ const ALL_VARIANTS := [
 	"lf3_spot_fallback",
 	"bidirectional_spot",
 	"lf3_occlusion_suppress",
+	"zone_static_11",
 	"zone_cull",
 ]
 const FINALIST_VARIANTS := [
@@ -281,6 +282,9 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 		_lab.apply_bidirectional_spot_profile_for_test(
 			_spot_angle(), _spot_energy_multiplier(),
 			_spot_up_energy_multiplier(), _spot_up_angle())
+		return
+	if variant == "zone_static_11":
+		_lab.apply_zone_static_11_for_test()
 		return
 	if variant in ["lf3_default", "lf3_low_bias",
 			"lf3_selected_full_opacity", "lf3_risk_full_opacity",

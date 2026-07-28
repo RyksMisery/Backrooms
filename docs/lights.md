@@ -658,6 +658,12 @@ topology-guard поднимает opacity с учётом штатного `tran
 Это комплементарный crossfade: смена штатного LF3 caster не выключает Omni
 скачком, а передаёт вклад одновременно с opacity тени.
 
+Повторный ручной тест показал, что даже комплементарный вес заметен при
+движении вдоль стены. Следующий лабораторный профиль `zone_static_11`
+фиксирует один topology-набор из 11 Omni для всей зоны. Дополнительные Omni
+не меняют тип или роль; их энергия зависит только от непрерывного расстояния
+до границы светлой/тёмной зоны.
+
 Unlike legacy omni sources, ceiling `AreaLight3D` panels are the light surface
 itself. Do not apply the `level_d` vertical source-drop rule to them: keep the
 area light close to the visible panel underside. The source-drop rule remains

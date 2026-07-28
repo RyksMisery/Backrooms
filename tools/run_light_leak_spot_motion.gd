@@ -25,12 +25,19 @@ func _run() -> void:
 		return
 	var side := _argument("--side=", "dark")
 	var variant := _argument("--variant=", "hybrid")
+	var route := _argument("--route=", "default")
 	if side not in ["dark", "lit"]:
 		_fail("unknown side: %s" % side)
 		return
-	if variant not in ["lf3", "hybrid", "bidirectional", "occlusion"]:
+	if variant not in ["lf3", "hybrid", "bidirectional", "occlusion",
+			"zone_static"]:
 		_fail("unknown variant: %s" % variant)
 		return
+	if route not in ["default", "dark_wall_opening"]:
+		_fail("unknown route: %s" % route)
+		return
+	if route == "dark_wall_opening":
+		side = "dark"
 
 	root.size = CAPTURE_SIZE
 	var packed := load("res://light_leak_distance_lab.tscn") as PackedScene
@@ -61,14 +68,15 @@ func _run() -> void:
 		_fail("cannot create %s" % _absolute_dir)
 		return
 
-	var forward := await _capture_route(side, variant, false)
-	var reverse := await _capture_route(side, variant, true)
+	var forward := await _capture_route(side, variant, route, false)
+	var reverse := await _capture_route(side, variant, route, true)
 	var report := {
 		"timestamp": timestamp,
 		"engine": Engine.get_version_info(),
 		"renderer": RenderingServer.get_current_rendering_method(),
 		"side": side,
 		"variant": variant,
+		"route": route,
 		"sample_count": SAMPLE_COUNT,
 		"forward": forward,
 		"reverse": reverse,
@@ -86,7 +94,7 @@ func _run() -> void:
 	quit(0)
 
 
-func _capture_route(side: String, variant: String,
+func _capture_route(side: String, variant: String, route: String,
 		reverse: bool) -> Array[Dictionary]:
 	var samples: Array[Dictionary] = []
 	var previous_image: Image
@@ -95,8 +103,8 @@ func _capture_route(side: String, variant: String,
 	for sample_index in range(SAMPLE_COUNT):
 		var raw_t := float(sample_index) / float(SAMPLE_COUNT - 1)
 		var t := 1.0 - raw_t if reverse else raw_t
-		var eye := _route_eye(side, t)
-		var target := _route_target(side)
+		var eye := _route_eye(side, t, route)
+		var target := _route_target(side, route)
 		var base_direction := (target - eye).normalized()
 		var yaw := sin(t * TAU * 1.5) * 25.0
 		var direction := base_direction.rotated(Vector3.UP, deg_to_rad(yaw))
@@ -143,6 +151,7 @@ func _capture_route(side: String, variant: String,
 			"active_spot": _active_spot_count(),
 			"signature": signature,
 			"caster_roles": caster_roles,
+			"energy_weights": _energy_weights(),
 			"signature_changed": signature_changed,
 			"cell_changed": cell_changed,
 			"filename": filename,
@@ -164,7 +173,9 @@ func _apply_variant(variant: String) -> void:
 		bounce.omni_shadow_mode = OmniLight3D.SHADOW_CUBE
 		bounce.shadow_enabled = false
 		bounce.shadow_opacity = 0.0
-	if variant == "hybrid":
+	if variant == "zone_static":
+		_lab.apply_zone_static_11_for_test()
+	elif variant == "hybrid":
 		_lab.apply_lf3_spot_fallback_for_test(
 			Lighting.AREA_LIGHT_SPOT_FALLBACK_ANGLE,
 			Lighting.AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL)
@@ -181,7 +192,11 @@ func _apply_variant(variant: String) -> void:
 			_lab.apply_lf3_occlusion_suppression_for_test(1.0, false)
 
 
-func _route_eye(side: String, t: float) -> Vector3:
+func _route_eye(side: String, t: float, route: String) -> Vector3:
+	if route == "dark_wall_opening":
+		var cells := Vector2(13.5, 13.5).lerp(Vector2(13.5, 8.75), t)
+		return Vector3(cells.x * Architecture.CELL, 1.65,
+			cells.y * Architecture.CELL)
 	var start_cells := Vector2(13.5, 13.5) if side == "dark" \
 		else Vector2(1.5, 3.5)
 	var end_cells := Vector2(1.5, 9.5) if side == "dark" \
@@ -191,7 +206,10 @@ func _route_eye(side: String, t: float) -> Vector3:
 		cells.y * Architecture.CELL)
 
 
-func _route_target(side: String) -> Vector3:
+func _route_target(side: String, route: String) -> Vector3:
+	if route == "dark_wall_opening":
+		return Vector3(7.5 * Architecture.CELL, 1.55,
+			7.5 * Architecture.CELL)
 	var cells := Vector2(0.5, 7.5) if side == "dark" \
 		else Vector2(7.5, 7.5)
 	return Vector3(cells.x * Architecture.CELL, 1.35,
@@ -255,6 +273,19 @@ func _active_spot_count() -> int:
 	return count
 
 
+func _energy_weights() -> Dictionary:
+	var weights := {}
+	for bounce: OmniLight3D in _lighting.area_bounce_lamps:
+		var local: Vector3 = _lab.to_local(bounce.global_position)
+		var key := "%d,%d" % [
+			floori(local.x / Architecture.CELL),
+			floori(local.z / Architecture.CELL),
+		]
+		weights[key] = bounce.light_energy \
+			/ maxf(Lighting.AREA_LIGHT_BOUNCE_ENERGY, 0.001)
+	return weights
+
+
 func _summarize(forward: Array[Dictionary],
 		reverse: Array[Dictionary]) -> Dictionary:
 	var all_samples: Array[Dictionary] = []
@@ -272,7 +303,9 @@ func _summarize(forward: Array[Dictionary],
 	var max_frame_ms := 0.0
 	var frame_ms_total := 0.0
 	var min_fps := INF
+	var max_source_energy_step := 0.0
 	var previous_roles: Array = []
+	var previous_energy_weights := {}
 	for sample: Dictionary in all_samples:
 		var signature_changed := bool(sample["signature_changed"])
 		var cell_changed := bool(sample["cell_changed"])
@@ -292,6 +325,13 @@ func _summarize(forward: Array[Dictionary],
 			else:
 				role_changes_without_cell += 1
 		previous_roles = roles
+		var energy_weights: Dictionary = sample["energy_weights"]
+		if int(sample["sample"]) > 0:
+			for key: String in energy_weights:
+				max_source_energy_step = maxf(max_source_energy_step,
+					absf(float(energy_weights[key])
+						- float(previous_energy_weights.get(key, 0.0))))
+		previous_energy_weights = energy_weights
 		var mae := float(sample["adjacent_rgb_mae"])
 		if signature_changed:
 			max_mae_on_signature_change = maxf(
@@ -319,6 +359,9 @@ func _summarize(forward: Array[Dictionary],
 		"mirror_signature_mismatches": _mirror_signature_mismatches(
 			forward, reverse),
 		"mirror_role_mismatches": _mirror_role_mismatches(forward, reverse),
+		"mirror_energy_mismatches": _mirror_energy_mismatches(
+			forward, reverse),
+		"max_source_energy_step": max_source_energy_step,
 	}
 
 
@@ -348,6 +391,26 @@ func _mirror_role_mismatches(forward: Array[Dictionary],
 		if reverse_by_t.has(key) \
 				and sample["caster_roles"] != reverse_by_t[key]:
 			mismatches += 1
+	return mismatches
+
+
+func _mirror_energy_mismatches(forward: Array[Dictionary],
+		reverse: Array[Dictionary]) -> int:
+	var reverse_by_t := {}
+	for sample: Dictionary in reverse:
+		reverse_by_t[roundi(float(sample["path_t"]) * 1000.0)] = \
+			sample["energy_weights"]
+	var mismatches := 0
+	for sample: Dictionary in forward:
+		var key := roundi(float(sample["path_t"]) * 1000.0)
+		if not reverse_by_t.has(key):
+			continue
+		var other: Dictionary = reverse_by_t[key]
+		for light_key: String in sample["energy_weights"]:
+			if absf(float(sample["energy_weights"][light_key])
+					- float(other.get(light_key, 0.0))) > 0.001:
+				mismatches += 1
+				break
 	return mismatches
 
 
