@@ -32,6 +32,9 @@ var _door_present := false
 var _opening_sealed := false
 var _leak_guard_enabled := false
 var _light_zone_cull_enabled := false
+var _segment_guardian_enabled := false
+var _segment_guardian_key := ""
+var _segment_guardian_opacity := {}
 var _grid: Dictionary = {}
 var _gmin := Vector2i.ZERO
 var _gmax := Vector2i.ZERO
@@ -67,9 +70,13 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_apply_light_zone_cull()
-	_lighting.update_level_e_area_lighting(_player)
-	if _leak_guard_enabled:
+	if _segment_guardian_enabled:
+		apply_segment_guardian_for_test()
+	elif _leak_guard_enabled:
+		_lighting.update_level_e_area_lighting(_player)
 		apply_leak_guard()
+	else:
+		_lighting.update_level_e_area_lighting(_player)
 	_audio.update(delta)
 	_map.update()
 	_hud.update(_hud_text())
@@ -91,6 +98,8 @@ func _input(event: InputEvent) -> void:
 			toggle_leak_guard()
 		KEY_B:
 			toggle_light_zone_cull()
+		KEY_N:
+			toggle_segment_guardian()
 		KEY_M:
 			_map.toggle()
 
@@ -126,6 +135,11 @@ func toggle_light_zone_cull() -> void:
 	_light_zone_cull_enabled = not _light_zone_cull_enabled
 
 
+func toggle_segment_guardian() -> void:
+	_segment_guardian_enabled = not _segment_guardian_enabled
+	_invalidate_segment_guardian()
+
+
 func debug_snapshot() -> Dictionary:
 	return {
 		"partition_cell": _partition_cell,
@@ -133,6 +147,7 @@ func debug_snapshot() -> Dictionary:
 		"opening_sealed": _opening_sealed,
 		"leak_guard_enabled": _leak_guard_enabled,
 		"light_zone_cull_enabled": _light_zone_cull_enabled,
+		"segment_guardian_enabled": _segment_guardian_enabled,
 		"light_count": _lighting.area_bounce_lamps.size(),
 		"active_source_count": _active_source_count(),
 		"panel_count": _lighting.area_lamps.size(),
@@ -193,6 +208,7 @@ func _rebuild_partition() -> void:
 			"wall", true, true)
 	_rebuild_grid()
 	_lighting.invalidate_lf3_guardian_cache()
+	_invalidate_segment_guardian()
 
 
 func _rebuild_lights() -> void:
@@ -219,6 +235,7 @@ func _rebuild_lights() -> void:
 					(float(cell_z) + 0.5) * Architecture.CELL),
 				"light_leak_lit_side")
 	_lighting.invalidate_lf3_guardian_cache()
+	_invalidate_segment_guardian()
 	if _audio != null:
 		_audio.refresh_lamps(_lighting.area_bounce_lamps)
 
@@ -272,13 +289,16 @@ func _hud_text() -> String:
 		else ("ДВЕРЬ" if _door_present else "ОТКРЫТ")
 	var guard_state := "GUARD ON" if _leak_guard_enabled else "GUARD OFF"
 	var zone_state := "ZONE ON" if _light_zone_cull_enabled else "ZONE OFF"
-	return ("ТЕСТ ЗАСВЕТА · %s · %s · %s\n" \
+	var segment_state := "SEGMENT ON" if _segment_guardian_enabled \
+		else "SEGMENT OFF"
+	return ("ТЕСТ ЗАСВЕТА · %s · %s · %s · %s\n" \
 		+ "светлая:%d клеток  тёмная:%d  ряд:%d/15\n" \
 		+ "источники:%d  тени:%d  %s\n" \
-		+ "←/→ перегородка · Z дверь · X заглушка · V guard · B zone · M карта\n%d fps") % [
+		+ "←/→ перегородка · Z дверь · X заглушка · V guard · N segment · B zone · M карта\n%d fps") % [
 			opening_state,
 			guard_state,
 			zone_state,
+			segment_state,
 			lit_cells,
 			dark_cells,
 			_partition_cell + 1,
@@ -321,7 +341,44 @@ func apply_leak_guard(curve: StringName = &"smooth",
 			else smoothstep(0.0, 0.20, risk)
 		var guard_weight := risk_weight * clampf(strength, 0.0, 1.0) \
 			* transfer_weight * angular_weight
-		light.shadow_opacity = maxf(light.shadow_opacity, guard_weight)
+		_lighting.set_lf3_shadow_opacity(light,
+			maxf(light.shadow_opacity, guard_weight))
+
+
+func apply_segment_guardian_for_test() -> void:
+	var local_player := to_local(_player.global_position)
+	var player_cell := Vector2i(
+		floori(local_player.x / Architecture.CELL),
+		floori(local_player.z / Architecture.CELL))
+	var cache_key := "%d:%d:%d:%d:%d:%d" % [
+		player_cell.x,
+		player_cell.y,
+		_partition_cell,
+		int(_door_present),
+		int(_opening_sealed),
+		_lighting.area_bounce_lamps.size(),
+	]
+	if cache_key != _segment_guardian_key:
+		_lighting.update_level_e_area_lighting(_player)
+		apply_leak_guard()
+		_segment_guardian_opacity.clear()
+		for light: OmniLight3D in _lighting.area_bounce_lamps:
+			if light.shadow_enabled and light.shadow_opacity > 0.001:
+				_segment_guardian_opacity[light.get_instance_id()] = \
+					light.shadow_opacity
+		_segment_guardian_key = cache_key
+	for light: OmniLight3D in _lighting.area_bounce_lamps:
+		var light_id := light.get_instance_id()
+		if _segment_guardian_opacity.has(light_id):
+			_lighting.set_lf3_shadow_opacity(light,
+				float(_segment_guardian_opacity[light_id]))
+		else:
+			_lighting.set_lf3_shadow(light, false)
+
+
+func _invalidate_segment_guardian() -> void:
+	_segment_guardian_key = ""
+	_segment_guardian_opacity.clear()
 
 
 func apply_light_zone_cull_for_test() -> void:

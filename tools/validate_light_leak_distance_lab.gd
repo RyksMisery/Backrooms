@@ -57,6 +57,12 @@ func _run() -> void:
 	lab.toggle_light_zone_cull()
 	_expect(bool(lab.debug_snapshot()["light_zone_cull_enabled"]),
 		"laboratory light-zone cull must toggle on")
+	lab.toggle_segment_guardian()
+	_expect(bool(lab.debug_snapshot()["segment_guardian_enabled"]),
+		"laboratory segment guardian must toggle on")
+	lab.apply_segment_guardian_for_test()
+	_expect(_active_shadows(lab) <= 11,
+		"segment guardian must preserve the LF3 10+1 shadow budget")
 	lab.toggle_seal()
 	lab.apply_light_zone_cull_for_test()
 	_expect(int(lab.debug_snapshot()["active_source_count"]) == 0,
@@ -76,6 +82,15 @@ func _run() -> void:
 func _families_match(snapshot: Dictionary) -> bool:
 	return int(snapshot["light_count"]) == int(snapshot["panel_count"]) \
 		and int(snapshot["light_count"]) == int(snapshot["legacy_count"])
+
+
+func _active_shadows(lab: Node) -> int:
+	var count := 0
+	var lighting = lab.get("_lighting")
+	for light: OmniLight3D in lighting.area_bounce_lamps:
+		if light.shadow_enabled and light.shadow_opacity > 0.001:
+			count += 1
+	return count
 
 
 func _expect(condition: bool, message: String) -> void:

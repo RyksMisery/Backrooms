@@ -22,6 +22,7 @@ const VARIANTS := [
 	"boundary_range_7_lf3",
 	"boundary_range_6_lf3",
 	"boundary_two_rows_6_lf3",
+	"segment_guardian",
 	"zone_cull",
 ]
 
@@ -194,6 +195,9 @@ func _apply_variant(variant: String) -> void:
 	if variant == "zone_cull":
 		_lab.apply_light_zone_cull_for_test()
 		_lighting.update_level_e_area_lighting(_player)
+		return
+	if variant == "segment_guardian":
+		_lab.apply_segment_guardian_for_test()
 		return
 	if variant in ["ambient", "bounce_no_shadow"]:
 		return

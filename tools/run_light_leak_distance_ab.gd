@@ -25,6 +25,7 @@ const ALL_VARIANTS := [
 	"checker_sources_lf3",
 	"boundary_range_6_lf3",
 	"boundary_two_rows_6_lf3",
+	"segment_guardian",
 	"zone_cull",
 ]
 const FINALIST_VARIANTS := [
@@ -40,6 +41,7 @@ const FINALIST_VARIANTS := [
 	"checker_sources_lf3",
 	"boundary_range_6_lf3",
 	"boundary_two_rows_6_lf3",
+	"segment_guardian",
 	"zone_cull",
 ]
 
@@ -111,6 +113,7 @@ func _run() -> void:
 			"range_6_lf3",
 			"boundary_range_6_lf3",
 			"boundary_two_rows_6_lf3",
+			"segment_guardian",
 			"zone_cull",
 		]
 	var report := {
@@ -251,6 +254,9 @@ func _apply_variant(variant: String, partition_cell: int) -> void:
 	if variant == "zone_cull":
 		_lab.apply_light_zone_cull_for_test()
 		_lighting.update_level_e_area_lighting(_player)
+		return
+	if variant == "segment_guardian":
+		_lab.apply_segment_guardian_for_test()
 		return
 	if variant in ["lf3_default", "lf3_low_bias",
 			"lf3_selected_full_opacity", "lf3_risk_full_opacity",
