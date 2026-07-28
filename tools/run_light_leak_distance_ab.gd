@@ -212,6 +212,10 @@ func _place_view(partition_cell: int, side: String) -> void:
 
 
 func _apply_variant(variant: String, partition_cell: int) -> void:
+	var snapshot: Dictionary = _lab.debug_snapshot()
+	var wants_zone := variant == "zone_cull"
+	if bool(snapshot["light_zone_cull_enabled"]) != wants_zone:
+		_lab.toggle_light_zone_cull()
 	var bounce_on := variant not in ["ambient", "panels_only"]
 	for panel: Light3D in _lighting.area_lamps:
 		panel.light_energy = 0.0 if variant == "ambient" else (

@@ -37,6 +37,12 @@ light-zone cull. Закрытая дверь или сплошная перег�
 `docs/light_leak_distance_lab.md`. До общего контракта light-zone graph это
 не является продуктовым изменением `level_e`.
 
+Portal-aware receiver-layer вариант для открытого проёма отклонён:
+два коротких Forward+ запуска завершились воспроизводимым SIGSEGV при
+renderer-cleanup (`indexing did not unpair geometries from light`). Код
+кандидата снят; `level_e` не менялся. Подробности и артефакты — в
+`docs/light_leak_distance_lab.md`.
+
 ## Пространственное включение света областей
 
 Пул света `level_e` не использует таймер для появления или гашения области.

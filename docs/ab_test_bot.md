@@ -281,6 +281,11 @@ Godot --path . --script res://tools/run_light_leak_corner_sweep.gd
 transform означают зависший framebuffer и делают остаток длинного прогона
 недействительным.
 
+Для связного открытого проёма используется `--open-control`; `--fine` проходит
+ту же дугу с шагом `1°`. Отчёт отдельно считает luma-step на смене
+shadow-signature и без неё, чтобы перспективное появление яркого проёма в ROI
+не считалось мерцанием shadow-pool.
+
 Результат `2026-07-28`: opacity-guard уменьшает засвет, но усиливает шаг при
 view-dependent смене caster. Для закрытой двери/заглушки принят лабораторный
 кандидат occupancy light-zone cull: dark-кадр совпадает с ambient, смен

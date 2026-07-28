@@ -56,7 +56,8 @@ func _run() -> void:
 	_lab.get("_hud").set_visible(false)
 	_lab.get("_map").set_visible(false)
 	_set_partition(PARTITION_CELL)
-	if not bool(_lab.debug_snapshot()["opening_sealed"]):
+	var open_control := "--open-control" in OS.get_cmdline_user_args()
+	if not open_control and not bool(_lab.debug_snapshot()["opening_sealed"]):
 		_lab.toggle_seal()
 
 	_camera = Camera3D.new()
@@ -78,22 +79,24 @@ func _run() -> void:
 		_fail("cannot create %s" % _absolute_dir)
 		return
 
+	var angles: Array = _sweep_angles()
 	var report := {
 		"timestamp": timestamp,
 		"engine": Engine.get_version_info(),
 		"renderer": RenderingServer.get_current_rendering_method(),
 		"partition_cell": PARTITION_CELL,
+		"sealed": not open_control,
 		"eye": eye,
 		"target": target,
-		"angles": ANGLES,
+		"angles": angles,
 		"variants": [],
 	}
 	var variants := _selected_variants()
 	for variant_value in variants:
 		var variant := String(variant_value)
 		var forward := await _capture_sweep(
-			variant, "forward", ANGLES, eye, target)
-		var reverse_angles := ANGLES.duplicate()
+			variant, "forward", angles, eye, target)
+		var reverse_angles := angles.duplicate()
 		reverse_angles.reverse()
 		var reverse := await _capture_sweep(
 			variant, "reverse", reverse_angles, eye, target)
@@ -156,6 +159,10 @@ func _capture_sweep(variant: String, direction_name: String,
 
 
 func _apply_variant(variant: String) -> void:
+	var snapshot: Dictionary = _lab.debug_snapshot()
+	var wants_zone := variant == "zone_cull"
+	if bool(snapshot["light_zone_cull_enabled"]) != wants_zone:
+		_lab.toggle_light_zone_cull()
 	_lighting.lf3_guardian_view_enabled = false
 	_lighting.lf3_angular_visibility_enabled = false
 	_lighting.lf3_receiver_priority_enabled = false
@@ -258,6 +265,8 @@ func _summarize_variant(forward: Dictionary, reverse: Dictionary) -> Dictionary:
 	var luma_min := INF
 	var luma_max := -INF
 	var max_step := 0.0
+	var max_step_on_signature_change := 0.0
+	var max_step_without_signature_change := 0.0
 	var signature_changes := 0
 	var mirror_signature_mismatches := 0
 	var mirror_max_luma_delta := 0.0
@@ -269,10 +278,18 @@ func _summarize_variant(forward: Dictionary, reverse: Dictionary) -> Dictionary:
 		luma_min = minf(luma_min, luma)
 		luma_max = maxf(luma_max, luma)
 		if not previous.is_empty():
-			max_step = maxf(max_step, absf(
-				luma - float(previous["center_luma"])))
-			if sample["signature"] != previous["signature"]:
+			var adjacent_step := absf(
+				luma - float(previous["center_luma"]))
+			max_step = maxf(max_step, adjacent_step)
+			var signature_changed: bool = (
+				sample["signature"] != previous["signature"])
+			if signature_changed:
 				signature_changes += 1
+				max_step_on_signature_change = maxf(
+					max_step_on_signature_change, adjacent_step)
+			else:
+				max_step_without_signature_change = maxf(
+					max_step_without_signature_change, adjacent_step)
 		previous = sample
 		var key := _angle_key(float(sample["angle"]))
 		var mirrored: Dictionary = reverse_by_angle[key]
@@ -287,11 +304,22 @@ func _summarize_variant(forward: Dictionary, reverse: Dictionary) -> Dictionary:
 		"luma_max": luma_max,
 		"luma_span": luma_max - luma_min,
 		"max_adjacent_luma_step": max_step,
+		"max_step_on_signature_change": max_step_on_signature_change,
+		"max_step_without_signature_change": max_step_without_signature_change,
 		"signature_changes": signature_changes,
 		"mirror_signature_mismatches": mirror_signature_mismatches,
 		"mirror_max_luma_delta": mirror_max_luma_delta,
 		"mirror_max_rgb_mae": mirror_max_rgb_mae,
 	}
+
+
+func _sweep_angles() -> Array:
+	if "--fine" not in OS.get_cmdline_user_args():
+		return ANGLES.duplicate()
+	var result: Array = []
+	for angle in range(-24, 25):
+		result.append(float(angle))
+	return result
 
 
 func _angle_key(angle: float) -> String:
