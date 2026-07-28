@@ -92,24 +92,8 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey) or not event.pressed or event.echo:
 		return
 	match event.keycode:
-		KEY_LEFT:
-			move_partition(-1)
-		KEY_RIGHT:
-			move_partition(1)
-		KEY_Z:
-			toggle_door()
-		KEY_X:
-			toggle_seal()
-		KEY_V:
-			toggle_leak_guard()
-		KEY_B:
-			toggle_light_zone_cull()
-		KEY_N:
-			toggle_segment_guardian()
-		KEY_C:
+		KEY_F:
 			toggle_spot_fallback()
-		KEY_M:
-			_map.toggle()
 
 
 func move_partition(direction: int) -> void:
@@ -299,30 +283,14 @@ func _get_player() -> Node3D:
 
 
 func _hud_text() -> String:
-	var lit_cells := _partition_cell
-	var dark_cells := Architecture.ROOM_CELLS - _partition_cell - 1
-	var opening_state := "ЗАГЛУШКА" if _opening_sealed \
-		else ("ДВЕРЬ" if _door_present else "ОТКРЫТ")
-	var guard_state := "GUARD ON" if _leak_guard_enabled else "GUARD OFF"
-	var zone_state := "ZONE ON" if _light_zone_cull_enabled else "ZONE OFF"
-	var segment_state := "SEGMENT ON" if _segment_guardian_enabled \
-		else "SEGMENT OFF"
-	var spot_state := "SPOT ON" if _spot_fallback_enabled else "SPOT OFF"
-	return ("ТЕСТ ЗАСВЕТА · %s · %s · %s · %s · %s\n" \
-		+ "светлая:%d клеток  тёмная:%d  ряд:%d/15\n" \
-		+ "источники:%d  тени:%d  %s\n" \
-		+ "←/→ перегородка · Z дверь · X заглушка · V guard · N segment · C spot · B zone · M карта\n%d fps") % [
-			opening_state,
-			guard_state,
-			zone_state,
-			segment_state,
-			spot_state,
-			lit_cells,
-			dark_cells,
-			_partition_cell + 1,
-			_lighting.area_bounce_lamps.size(),
+	var light_state := "LF3 + SPOT FALLBACK" if _spot_fallback_enabled \
+		else "LF3-11F"
+	return ("ТЕСТ СВЕТА · %s\n" \
+		+ "проём: ОТКРЫТ · источники:%d · тени:%d\n" \
+		+ "F сравнить свет · C/Ctrl присед\n%d fps") % [
+			light_state,
+			_active_source_count(),
 			_active_shadow_count(),
-			_lighting.lf3_profile_label(),
 			Engine.get_frames_per_second(),
 		]
 
@@ -332,6 +300,9 @@ func _active_shadow_count() -> int:
 	for light: OmniLight3D in _lighting.area_bounce_lamps:
 		if light.shadow_enabled and light.shadow_opacity > 0.001:
 			count += 1
+	for spot: SpotLight3D in _spot_bounce_lamps:
+		if spot.visible and spot.shadow_enabled and spot.shadow_opacity > 0.001:
+			count += 1
 	return count
 
 
@@ -339,6 +310,9 @@ func _active_source_count() -> int:
 	var count := 0
 	for light: OmniLight3D in _lighting.area_bounce_lamps:
 		if light.visible and light.light_energy > 0.0001:
+			count += 1
+	for spot: SpotLight3D in _spot_bounce_lamps:
+		if spot.visible and spot.light_energy > 0.0001:
 			count += 1
 	return count
 
