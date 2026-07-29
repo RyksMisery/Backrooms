@@ -20,15 +20,20 @@ static func build(seed_detail: int) -> Dictionary:
 	rng.seed = seed_detail
 	var mirror := rng.randi_range(0, 1) == 1
 	var chair_x := [7.2, 5.7] if mirror else [18.8, 20.3]
+	var widths_by_cycle: Array = [[6, 6]]
+	var previous_widths := Vector2i(6, 6)
+	for _cycle in range(1, MAX_CYCLE + 1):
+		var next_widths := Vector2i(
+			_next_width(rng, previous_widths.x),
+			_next_width(rng, previous_widths.y))
+		widths_by_cycle.append([next_widths.x, next_widths.y])
+		previous_widths = next_widths
 	var plan := {
-		"schema_version": 3,
-		"id": "echo_loop_lab_v2",
+		"schema_version": 4,
+		"id": "echo_loop_lab_v3",
 		"seed_detail": seed_detail,
 		"mirror": mirror,
-		"narrow_rects": [
-			[3, 11, 4, 17],
-			[20, 11, 4, 17],
-		],
+		"widths_by_cycle": widths_by_cycle,
 		"chair_wall_cells": [
 			[chair_x[0], 3.0],
 			[chair_x[1], 3.0],
@@ -53,13 +58,23 @@ static func build(seed_detail: int) -> Dictionary:
 static func validate(plan: Dictionary) -> Dictionary:
 	var errors: Array[String] = []
 	var routes := {}
-	if int(plan.get("schema_version", -1)) != 3:
-		errors.append("schema_version должен быть 3")
-	var narrow_rects := _narrow_rects_from_plan(plan)
-	if narrow_rects != [
-		Rect2i(3, 11, 4, 17), Rect2i(20, 11, 4, 17),
-	]:
-		errors.append("narrow_rects должны сужать обе боковые ветви")
+	if int(plan.get("schema_version", -1)) != 4:
+		errors.append("schema_version должен быть 4")
+	var widths_by_cycle: Array = plan.get("widths_by_cycle", [])
+	if widths_by_cycle.size() != MAX_CYCLE + 1:
+		errors.append("widths_by_cycle должен описывать все состояния")
+	else:
+		for cycle in range(widths_by_cycle.size()):
+			var widths := widths_for_cycle(plan, cycle)
+			if widths.x < 1 or widths.x > 6 \
+					or widths.y < 1 or widths.y > 6:
+				errors.append("ширина каждой ветви должна быть 1..6")
+			if cycle > 0:
+				var previous := widths_for_cycle(plan, cycle - 1)
+				if absi(widths.x - previous.x) < 2 \
+						or absi(widths.y - previous.y) < 2:
+					errors.append(
+						"соседние ширины должны различаться минимум на 2")
 	var chair_cells: Array = plan.get("chair_wall_cells", [])
 	if chair_cells.size() != 2:
 		errors.append("должно быть ровно два соседних места для стульев")
@@ -80,21 +95,16 @@ static func validate(plan: Dictionary) -> Dictionary:
 		errors.append("у группы стульев должна быть постоянная стрелка")
 	for cycle in range(MAX_CYCLE + 1):
 		var grid := build_grid(plan, cycle)
+		var widths := widths_for_cycle(plan, cycle)
+		if _lane_width(grid, true) != widths.x \
+				or _lane_width(grid, false) != widths.y:
+			errors.append("cycle %d: occupancy не совпадает с ширинами" % cycle)
 		var to_north := find_route(grid, SPAWN_CELL, NORTH_CHECKPOINT)
 		routes[cycle] = to_north
 		if to_north.is_empty():
 			errors.append("cycle %d: противоположная сторона недостижима" % cycle)
 		if cycle >= 3 and not _pit_has_reachable_edge(grid):
 			errors.append("cycle %d: у провала нет достижимого края" % cycle)
-	var narrowed_grid := build_grid(plan, 1)
-	for lane_x_values: Array in [[7, 8], [18, 19]]:
-		for lane_x: int in lane_x_values:
-			for lane_z in range(9, 30):
-				if String(narrowed_grid.get(
-						Vector2i(lane_x, lane_z), "wall")) != "floor":
-					errors.append(
-						"обе суженные ветви должны оставаться сквозными")
-					break
 	if _stable_hash_without_hash(plan) != int(plan.get("plan_hash", 0)):
 		errors.append("plan_hash не соответствует содержимому")
 	return {
@@ -115,11 +125,10 @@ static func build_grid(plan: Dictionary, cycle: int) -> Dictionary:
 	for x in range(CORE_RECT.position.x, CORE_RECT.end.x):
 		for z in range(CORE_RECT.position.y, CORE_RECT.end.y):
 			grid[Vector2i(x, z)] = "wall"
-	if cycle == 1:
-		for narrow_rect: Rect2i in _narrow_rects_from_plan(plan):
-			for x in range(narrow_rect.position.x, narrow_rect.end.x):
-				for z in range(narrow_rect.position.y, narrow_rect.end.y):
-					grid[Vector2i(x, z)] = "wall"
+	for expansion_rect: Rect2i in core_expansion_rects(plan, cycle):
+		for x in range(expansion_rect.position.x, expansion_rect.end.x):
+			for z in range(expansion_rect.position.y, expansion_rect.end.y):
+				grid[Vector2i(x, z)] = "wall"
 	if cycle >= 3:
 		for x in range(PIT_RECT.position.x, PIT_RECT.end.x):
 			for z in range(PIT_RECT.position.y, PIT_RECT.end.y):
@@ -127,18 +136,45 @@ static func build_grid(plan: Dictionary, cycle: int) -> Dictionary:
 	return grid
 
 
-static func _rect_from_plan(value: Variant) -> Rect2i:
-	var data: Array = value if value is Array else []
-	if data.size() != 4:
-		return Rect2i()
-	return Rect2i(
-		int(data[0]), int(data[1]), int(data[2]), int(data[3]))
+static func widths_for_cycle(plan: Dictionary, cycle: int) -> Vector2i:
+	var all_widths: Array = plan.get("widths_by_cycle", [])
+	if all_widths.is_empty():
+		return Vector2i(6, 6)
+	var safe_cycle := clampi(cycle, 0, all_widths.size() - 1)
+	var widths: Array = all_widths[safe_cycle]
+	if widths.size() != 2:
+		return Vector2i(6, 6)
+	return Vector2i(int(widths[0]), int(widths[1]))
 
 
-static func _narrow_rects_from_plan(plan: Dictionary) -> Array[Rect2i]:
+static func core_expansion_rects(plan: Dictionary, cycle: int) -> Array[Rect2i]:
+	var widths := widths_for_cycle(plan, cycle)
 	var result: Array[Rect2i] = []
-	for value: Variant in plan.get("narrow_rects", []):
-		result.append(_rect_from_plan(value))
+	if widths.x < 6:
+		result.append(Rect2i(
+			3 + widths.x, CORE_RECT.position.y,
+			6 - widths.x, CORE_RECT.size.y))
+	if widths.y < 6:
+		result.append(Rect2i(
+			CORE_RECT.end.x, CORE_RECT.position.y,
+			6 - widths.y, CORE_RECT.size.y))
+	return result
+
+
+static func _next_width(rng: RandomNumberGenerator, previous: int) -> int:
+	var candidates: Array[int] = []
+	for width in range(1, 7):
+		if absi(width - previous) >= 2:
+			candidates.append(width)
+	return candidates[rng.randi_range(0, candidates.size() - 1)]
+
+
+static func _lane_width(grid: Dictionary, west: bool) -> int:
+	var result := 0
+	var range_x := range(3, 9) if west else range(18, 24)
+	for x: int in range_x:
+		if String(grid.get(Vector2i(x, 19), "wall")) == "floor":
+			result += 1
 	return result
 
 

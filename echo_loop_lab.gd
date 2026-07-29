@@ -56,6 +56,7 @@ var _static_build_count := 0
 
 
 func _ready() -> void:
+	DisplayServer.window_set_title("Echo Loop v3 — CORE WIDTH 1..6")
 	_build_plan()
 	architecture = Architecture.new(self)
 	architecture.install_environment(false)
@@ -106,11 +107,11 @@ func _build_main_lights() -> void:
 	_main_lights.name = "echo_loop_lights"
 	add_child(_main_lights)
 	for x in [5, 9, 13, 17, 21]:
-		_add_double_ceiling_light(Vector2i(x, 5), Vector2i(0, 1))
-		_add_double_ceiling_light(Vector2i(x, 33), Vector2i(0, 1))
+		_add_double_ceiling_light(Vector2i(x, 5), Vector2i(1, 0))
+		_add_double_ceiling_light(Vector2i(x, 33), Vector2i(1, 0))
 	for z in [9, 13, 17, 21, 25, 29]:
-		_add_double_ceiling_light(Vector2i(5, z), Vector2i(1, 0))
-		_add_double_ceiling_light(Vector2i(21, z), Vector2i(1, 0))
+		_add_double_ceiling_light(Vector2i(3, z), Vector2i(0, 1))
+		_add_double_ceiling_light(Vector2i(23, z), Vector2i(0, 1))
 
 
 func _add_double_ceiling_light(cell: Vector2i, cross_axis: Vector2i) -> void:
@@ -174,14 +175,12 @@ func _build_mutation_patch() -> void:
 		_add_floor_patch(_mutation_geometry, RunPlan.PIT_RECT)
 	else:
 		architecture.add_pit_shaft(_mutation_geometry, RunPlan.PIT_RECT)
-	if _cycle == 1:
-		var narrow_index := 0
-		for narrow_value: Array in _plan.get("narrow_rects", []):
-			var narrow_rect := Rect2i(
-				int(narrow_value[0]), int(narrow_value[1]),
-				int(narrow_value[2]), int(narrow_value[3]))
-			_add_wall_patch(_mutation_geometry, narrow_rect, narrow_index)
-			narrow_index += 1
+	var expansion_index := 0
+	for expansion_rect: Rect2i in RunPlan.core_expansion_rects(
+			_plan, _cycle):
+		_add_core_expansion(
+			_mutation_geometry, expansion_rect, expansion_index)
+		expansion_index += 1
 	var chair_cells: Array = _plan.get("chair_wall_cells", [])
 	var chair_count := mini(_cycle, 2)
 	for index in range(chair_count):
@@ -193,7 +192,8 @@ func _build_mutation_patch() -> void:
 				0.0,
 				float(chair[1]) * Architecture.CELL),
 			Vector3.BACK,
-			"arrow_chair_%02d" % (index + 1))
+			"arrow_chair_%02d" % (index + 1),
+			1.65)
 	_mutation_samples_ms.append(
 		float(Time.get_ticks_usec() - started) / 1000.0)
 
@@ -211,8 +211,8 @@ func _add_floor_patch(parent: Node3D, rect: Rect2i) -> void:
 		"floor", true)
 
 
-func _add_wall_patch(parent: Node3D, rect: Rect2i, index: int) -> void:
-	architecture.add_box(parent, "side_width_constriction_%02d" % index,
+func _add_core_expansion(parent: Node3D, rect: Rect2i, index: int) -> void:
+	architecture.add_box(parent, "core_expansion_%02d" % index,
 		Vector3(
 			rect.size.x * Architecture.CELL,
 			Architecture.CEIL_H,
@@ -327,14 +327,14 @@ func _mutation_region_visible() -> bool:
 	for chair_value: Array in _plan.get("chair_wall_cells", []):
 		x_values.append(float(chair_value[0]) * Architecture.CELL)
 		z_values.append(float(chair_value[1]) * Architecture.CELL)
-	for narrow_data: Array in _plan.get("narrow_rects", []):
-		if narrow_data.size() == 4:
-			x_values.append(float(narrow_data[0]) * Architecture.CELL)
-			x_values.append(float(narrow_data[0] + narrow_data[2])
-				* Architecture.CELL)
-			z_values.append(float(narrow_data[1]) * Architecture.CELL)
-			z_values.append(float(narrow_data[1] + narrow_data[3])
-				* Architecture.CELL)
+	for cycle in [_cycle, _pending_cycle]:
+		if cycle < 0:
+			continue
+		for rect: Rect2i in RunPlan.core_expansion_rects(_plan, cycle):
+			x_values.append(float(rect.position.x) * Architecture.CELL)
+			x_values.append(float(rect.end.x) * Architecture.CELL)
+			z_values.append(float(rect.position.y) * Architecture.CELL)
+			z_values.append(float(rect.end.y) * Architecture.CELL)
 	var y_values := [0.2, Architecture.CEIL_H * 0.5, Architecture.CEIL_H - 0.2]
 	for x: float in x_values:
 		for z: float in z_values:
@@ -426,8 +426,10 @@ func _hud_text() -> String:
 	var max_mutation := 0.0
 	for sample: float in _mutation_samples_ms:
 		max_mutation = maxf(max_mutation, sample)
-	return "ECHO LOOP LAB — TEST\nseed %d | cycle %d → %d | mutations %d\nnorth %s | left %s | falls %d\ncomplete %s | patch max %.2f ms | visible %d\nH — HUD | M — карта | R — новый seed" % [
-		seed_detail, _cycle, _pending_cycle, _mutation_count,
+	var widths := RunPlan.widths_for_cycle(_plan, _cycle)
+	return "ECHO LOOP LAB — TEST\nseed %d | cycle %d → %d | widths %d/%d | mutations %d\nnorth %s | left %s | falls %d\ncomplete %s | patch max %.2f ms | visible %d\nH — HUD | M — карта | R — новый seed" % [
+		seed_detail, _cycle, _pending_cycle, widths.x, widths.y,
+		_mutation_count,
 		str(_visited_north), str(_left_south), _fall_count,
 		str(_completed), max_mutation, _visible_mutation_count]
 
@@ -464,11 +466,14 @@ func _cell_center(cell: Vector2i) -> Vector3:
 
 
 func debug_snapshot() -> Dictionary:
+	var widths := RunPlan.widths_for_cycle(_plan, _cycle)
 	return {
 		"seed_detail": seed_detail,
 		"plan_valid": bool(_plan_report.get("valid", false)),
 		"plan_hash": int(_plan.get("plan_hash", 0)),
 		"cycle": _cycle,
+		"west_width_cells": widths.x,
+		"east_width_cells": widths.y,
 		"pending_cycle": _pending_cycle,
 		"mutation_count": _mutation_count,
 		"visible_mutation_count": _visible_mutation_count,

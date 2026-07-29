@@ -12,7 +12,8 @@ const WALL_ARROW_SIZE := Vector2(2.0, 2.0)
 
 
 static func spawn_painted_chair(parent: Node3D, local_floor_position: Vector3,
-		yaw: float, node_name := "painted_chair") -> Node3D:
+		yaw: float, node_name := "painted_chair",
+		target_height_m := PAINTED_CHAIR_HEIGHT_M) -> Node3D:
 	var chair := PAINTED_CHAIR_SCENE.instantiate() as Node3D
 	if chair == null:
 		return null
@@ -21,7 +22,7 @@ static func spawn_painted_chair(parent: Node3D, local_floor_position: Vector3,
 	chair.rotation.y = yaw
 	var box := world_aabb(chair)
 	if box.size.y > 0.001:
-		chair.scale = Vector3.ONE * (PAINTED_CHAIR_HEIGHT_M / box.size.y)
+		chair.scale = Vector3.ONE * (target_height_m / box.size.y)
 		box = world_aabb(chair)
 	var target := parent.to_global(local_floor_position)
 	if box.size.y > 0.001:
@@ -34,14 +35,16 @@ static func spawn_painted_chair(parent: Node3D, local_floor_position: Vector3,
 
 static func spawn_painted_chair_against_wall(parent: Node3D,
 		local_wall_position: Vector3, local_inward_normal: Vector3,
-		node_name := "painted_chair_against_wall") -> Node3D:
+		node_name := "painted_chair_against_wall",
+		target_height_m := PAINTED_CHAIR_HEIGHT_M) -> Node3D:
 	var inward := local_inward_normal.normalized()
 	var yaw := atan2(inward.x, inward.z)
 	var chair := spawn_painted_chair(
 		parent,
 		local_wall_position + inward * 0.75,
 		yaw,
-		node_name)
+		node_name,
+		target_height_m)
 	if chair == null:
 		return null
 	var box := world_aabb(chair)

@@ -9,6 +9,8 @@ func _init() -> void:
 	var failures: Array[String] = []
 	var route_lengths: Array[int] = []
 	var mirrored := 0
+	var width_values := {}
+	var width_sequences := {}
 	for seed_detail in range(1, SEED_COUNT + 1):
 		var plan := RunPlan.build(seed_detail)
 		var repeated := RunPlan.build(seed_detail)
@@ -22,6 +24,11 @@ func _init() -> void:
 			continue
 		if bool(plan.get("mirror", false)):
 			mirrored += 1
+		var sequence_key := JSON.stringify(plan.get("widths_by_cycle", []))
+		width_sequences[sequence_key] = true
+		for widths: Array in plan.get("widths_by_cycle", []):
+			width_values[int(widths[0])] = true
+			width_values[int(widths[1])] = true
 		for cycle in range(RunPlan.MAX_CYCLE + 1):
 			var route: Array = report["routes"][cycle]
 			if route.is_empty():
@@ -31,6 +38,11 @@ func _init() -> void:
 				route_lengths.append(route.size())
 	if mirrored == 0 or mirrored == SEED_COUNT:
 		failures.append("seed sweep did not vary mutation mirror")
+	for width in range(1, 7):
+		if not width_values.has(width):
+			failures.append("seed sweep never produced width %d" % width)
+	if width_sequences.size() < 2:
+		failures.append("seed sweep did not vary width sequence")
 	if not failures.is_empty():
 		for failure: String in failures.slice(0, mini(20, failures.size())):
 			push_error("ECHO_LOOP_PLAN_FAILED: %s" % failure)
@@ -47,5 +59,7 @@ func _init() -> void:
 		"route_max_cells": route_lengths.back(),
 		"mirrored": mirrored,
 		"normal": SEED_COUNT - mirrored,
+		"width_values": width_values.keys(),
+		"width_sequences": width_sequences.size(),
 	}))
 	quit(0)
