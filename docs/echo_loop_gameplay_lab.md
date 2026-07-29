@@ -181,9 +181,11 @@ godot --headless --path . --script res://tools/run_echo_loop_gameplay_lab.gd
 godot --headless --path . --script res://tools/run_echo_loop_traversal_bot.gd
 ```
 
-Ручной запуск обязан явно указывать `--scene`; позиционный аргумент после
-`--path` в desktop-запуске может быть проигнорирован, и тогда Godot запускает
-проектный `run/main_scene` (`level_e`):
+В тестовой ветке `project.godot` назначает `res://echo_loop_lab.tscn` главной
+сценой. Поэтому после открытия проекта её можно запустить обычным `F5`.
+Также можно открыть `res://echo_loop_lab.tscn` в редакторе и нажать `F6`.
+
+Для явного запуска из командной строки:
 
 ```bash
 godot --path . --scene res://echo_loop_lab.tscn
