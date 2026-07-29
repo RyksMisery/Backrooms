@@ -260,9 +260,10 @@ func build_occupancy_plan(parent: Node3D, grid: Dictionary,
 	for x in range(gmin.x, gmax.x + 1):
 		for z in range(gmin.y, gmax.y + 1):
 			var cell := Vector2i(x, z)
-			if String(grid.get(cell, "wall")) in ["floor", "passage"]:
+			var kind := String(grid.get(cell, "wall"))
+			if kind in ["floor", "passage"]:
 				floor_cells[cell] = true
-			else:
+			elif kind != "pit":
 				wall_cells[cell] = true
 	var floor_rects := _merge_cell_rects(floor_cells, gmin, gmax)
 	var wall_rects := _merge_cell_rects(wall_cells, gmin, gmax)
@@ -295,6 +296,45 @@ func build_occupancy_plan(parent: Node3D, grid: Dictionary,
 				(rect.position.y + rect.size.y * 0.5) * CELL),
 			"wall", true, true)
 	return {"floor_rects": floor_rects, "wall_rects": wall_rects}
+
+
+# Физическая шахта под прямоугольным набором occupancy-клеток `pit`.
+# Верх шахты совпадает с Y=0; функция не создаёт пол над проёмом.
+func add_pit_shaft(parent: Node3D, rect_cells: Rect2i,
+		depth := PIT_DEPTH) -> Dictionary:
+	var width := float(rect_cells.size.x) * CELL
+	var length := float(rect_cells.size.y) * CELL
+	var x0 := float(rect_cells.position.x) * CELL
+	var z0 := float(rect_cells.position.y) * CELL
+	var x1 := x0 + width
+	var z1 := z0 + length
+	var wall_t := 0.02
+	var wall_y := -depth * 0.5
+	add_box(parent, "pit_shaft_west",
+		Vector3(wall_t, depth, length),
+		Vector3(x0 - wall_t * 0.5, wall_y, (z0 + z1) * 0.5),
+		"void", true)
+	add_box(parent, "pit_shaft_east",
+		Vector3(wall_t, depth, length),
+		Vector3(x1 + wall_t * 0.5, wall_y, (z0 + z1) * 0.5),
+		"void", true)
+	add_box(parent, "pit_shaft_north",
+		Vector3(width, depth, wall_t),
+		Vector3((x0 + x1) * 0.5, wall_y, z0 - wall_t * 0.5),
+		"void", true)
+	add_box(parent, "pit_shaft_south",
+		Vector3(width, depth, wall_t),
+		Vector3((x0 + x1) * 0.5, wall_y, z1 + wall_t * 0.5),
+		"void", true)
+	add_box(parent, "pit_shaft_bottom",
+		Vector3(width, SLAB_T, length),
+		Vector3((x0 + x1) * 0.5, -depth - SLAB_T * 0.5,
+			(z0 + z1) * 0.5),
+		"void_bottom", true)
+	return {
+		"world_rect": Rect2(x0, z0, width, length),
+		"depth": depth,
+	}
 
 
 static func _merge_cell_rects(cells: Dictionary, gmin: Vector2i,
