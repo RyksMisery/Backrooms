@@ -10,24 +10,24 @@ const HUD := preload("res://modules/hud_module.gd")
 const Map := preload("res://modules/map_module.gd")
 const PLAYER_SCENE := preload("res://player.tscn")
 
-const TILE_COUNT := 5
+const TILE_COUNT := 9
 const HALF_TILE_COUNT := TILE_COUNT / 2
 const TILE_LENGTH := float(Architecture.ROOM_CELLS) * Architecture.CELL
 const ROOM_SIZE := TILE_LENGTH
 const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const PLAYER_HEIGHT := 1.2
-const START_Z_CELLS := 13.5
-const ARM_Z_CELLS := 4.0
-const TURN_ZONE_Z_CELLS := 4.0
-const NORTH_SWAP_Z_CELLS := 11.0
-const RETURN_VELOCITY := 0.25
-const WRAP_NORTH_Z := -0.5 * TILE_LENGTH
-const WRAP_SOUTH_Z := 1.5 * TILE_LENGTH
-const REVEAL_CYCLE := 3
+const NICHE_WIDTH_CELLS := 6.0
+const NICHE_DEPTH_CELLS := 2.0
+const START_Z_CELLS := float(Architecture.ROOM_CELLS) + 1.0
+const TURN_ZONE_Z_CELLS := 1.5
+const TURN_CAMERA_SOUTH_Z := 0.35
+const DOOR_PERIOD_CYCLES := 3
 const FALL_Y := -6.0
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
 const GEOMETRY_FADE_MARGIN := TILE_LENGTH * 0.75
+const RECYCLE_DISTANCE := FADE_DARK_DISTANCE + TILE_LENGTH
+const DOOR_PASSED_MARGIN := TILE_LENGTH * 0.75
 const DOOR_CENTER_TOLERANCE := Architecture.CELL * 0.5
 const EXTRA_LIGHT_POINTS_CELLS := [
 	Vector2(7.5, 3.5),
@@ -44,18 +44,25 @@ var player: CharacterBody3D
 
 var _chunks: Array[Node3D] = []
 var _north_cap: Node3D
-var _south_cap: Node3D
+var _start_niche: Node3D
+var _south_prebuilt_chunk: Node3D
 var _cycle_count := 0
 var _fall_count := 0
-var _south_infinite := false
-var _return_started := false
-var _bidirectional := false
-var _door_revealed := false
+var _reached_wall := false
+var _niche_prepared := false
+var _infinite_active := false
+var _door_chunk: Node3D
 var _door_side := ""
-var _recycling_stopped := false
+var _door_world_z := 0.0
+var _door_direction := -1.0
+var _door_reveal_count := 0
+var _next_door_cycle := DOOR_PERIOD_CYCLES
+var _last_move_sign := -1.0
 var _hud_visible := false
 var _map_grid: Dictionary = {}
 var _pit_rects: Array[Rect2] = []
+var _map_gmin := Vector2i.ZERO
+var _map_gmax := Vector2i.ZERO
 var _light_entries: Array[Dictionary] = []
 var _rng := RandomNumberGenerator.new()
 
@@ -91,16 +98,20 @@ func _build_tiles() -> void:
 		chunk.name = "hole_tile_%+d" % logical_index
 		chunk.position.z = float(logical_index) * TILE_LENGTH
 		chunk.set_meta("logical_index", logical_index)
+		chunk.set_meta("static_center", logical_index == 0)
 		add_child(chunk)
 		architecture.build_pit_tile(chunk)
 		_build_side_wall(chunk, "west")
 		_build_side_wall(chunk, "east")
+		if logical_index == 1:
+			_south_prebuilt_chunk = chunk
+			chunk.visible = false
 		_chunks.append(chunk)
 
 
 func _build_caps() -> void:
 	_north_cap = _make_cap("north_cap", 0.0)
-	_south_cap = _make_cap("south_cap", TILE_LENGTH)
+	_start_niche = _build_start_niche()
 
 
 func _make_cap(node_name: String, z_plane: float) -> Node3D:
@@ -114,6 +125,16 @@ func _make_cap(node_name: String, z_plane: float) -> Node3D:
 		Vector3(ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5,
 			z_plane + outward * WALL_DEPTH * 0.5),
 		"wall", true, true)
+	return root
+
+
+func _build_start_niche() -> Node3D:
+	var root := Node3D.new()
+	root.name = "start_niche_6x2"
+	add_child(root)
+	var niche: Dictionary = architecture.build_south_wall_niche(
+		root, NICHE_WIDTH_CELLS, NICHE_DEPTH_CELLS)
+	root.set_meta("focus_position", niche["center"])
 	return root
 
 
@@ -201,7 +222,11 @@ func _build_lights() -> void:
 
 
 func _configure_chunk_fade(chunk: Node3D) -> void:
-	for node in chunk.find_children("*", "GeometryInstance3D", true, false):
+	_configure_geometry_fade(chunk)
+
+
+func _configure_geometry_fade(root: Node3D) -> void:
+	for node in root.find_children("*", "GeometryInstance3D", true, false):
 		var geometry := node as GeometryInstance3D
 		geometry.visibility_range_end = FADE_DARK_DISTANCE
 		geometry.visibility_range_end_margin = GEOMETRY_FADE_MARGIN
@@ -228,36 +253,54 @@ func _process(delta: float) -> void:
 	audio.update(delta)
 	map.update()
 	_update_light_fade()
-	_update_reveal_phases()
-	_update_treadmill()
+	_update_infinite_reveal()
+	if _infinite_active:
+		_update_motion_direction()
+		_recycle_dynamic_tiles()
+		_update_repeating_door()
 	_update_fall()
 	hud.update(_hud_text())
 
 
-func _update_reveal_phases() -> void:
-	if not _south_infinite \
-			and player.global_position.z <= ARM_Z_CELLS * Architecture.CELL \
-			and not _cap_visible(_south_cap):
-		_arm_south_infinity()
-	if _south_infinite and not _bidirectional \
-			and player.global_position.z <= TURN_ZONE_Z_CELLS * Architecture.CELL \
-			and player.velocity.z >= RETURN_VELOCITY:
-		_return_started = true
-	if _return_started and not _bidirectional \
-			and player.global_position.z >= NORTH_SWAP_Z_CELLS \
-				* Architecture.CELL \
-			and not _cap_visible(_north_cap):
-		_enable_bidirectional()
+func _update_infinite_reveal() -> void:
+	if not _reached_wall \
+			and player.global_position.z <= TURN_ZONE_Z_CELLS \
+				* Architecture.CELL:
+		_reached_wall = true
+	if _reached_wall and not _niche_prepared \
+			and not _node_visible(_start_niche):
+		_prepare_south_infinity()
+	if not _reached_wall or not _niche_prepared or _infinite_active:
+		return
+	var camera_forward: Vector3 = -player.camera.global_basis.z \
+		if player.camera != null else Vector3.BACK
+	if camera_forward.z >= TURN_CAMERA_SOUTH_Z \
+			and not _node_visible(_north_cap):
+		_activate_infinite()
 
 
-func _cap_visible(cap: Node3D) -> bool:
-	if cap == null or not is_instance_valid(cap) \
+func _node_visible(node: Node3D) -> bool:
+	if node == null or not is_instance_valid(node) \
 			or player == null or player.camera == null:
 		return false
-	return player.camera.is_position_in_frustum(
-		cap.global_position + Vector3(
-			ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5,
-			float(cap.get_meta("z_plane", 0.0))))
+	var bounds := AABB()
+	var has_bounds := false
+	for child in node.find_children("*", "MeshInstance3D", true, false):
+		var mesh_instance := child as MeshInstance3D
+		if mesh_instance.mesh == null:
+			continue
+		var child_bounds := mesh_instance.global_transform \
+			* mesh_instance.get_aabb()
+		bounds = bounds.merge(child_bounds) if has_bounds else child_bounds
+		has_bounds = true
+	if not has_bounds:
+		return false
+	if player.camera.is_position_in_frustum(bounds.get_center()):
+		return true
+	for endpoint in range(8):
+		if player.camera.is_position_in_frustum(bounds.get_endpoint(endpoint)):
+			return true
+	return false
 
 
 func _update_light_fade() -> void:
@@ -275,72 +318,123 @@ func _update_light_fade() -> void:
 		light.visible = level > 0.001
 
 
-func _arm_south_infinity() -> void:
-	_south_infinite = true
-	if _south_cap != null and is_instance_valid(_south_cap):
-		_south_cap.free()
-		_south_cap = null
-	audio.play_flick()
+func _prepare_south_infinity() -> void:
+	_niche_prepared = true
+	if _south_prebuilt_chunk != null \
+			and is_instance_valid(_south_prebuilt_chunk):
+		_south_prebuilt_chunk.visible = true
+	if _start_niche != null and is_instance_valid(_start_niche):
+		_start_niche.free()
+		_start_niche = null
 
 
-func _enable_bidirectional() -> void:
-	_bidirectional = true
+func _activate_infinite() -> void:
+	_infinite_active = true
 	if _north_cap != null and is_instance_valid(_north_cap):
 		_north_cap.free()
 		_north_cap = null
 	audio.play_flick()
 
 
-func _update_treadmill() -> void:
-	if not _bidirectional or _recycling_stopped:
-		return
-	if player.global_position.z < WRAP_NORTH_Z:
-		player.global_position.z += TILE_LENGTH
-		_register_cycle()
-	elif player.global_position.z > WRAP_SOUTH_Z:
-		player.global_position.z -= TILE_LENGTH
-		_register_cycle()
+func _update_motion_direction() -> void:
+	if player.velocity.z > 0.1:
+		_last_move_sign = 1.0
+	elif player.velocity.z < -0.1:
+		_last_move_sign = -1.0
 
 
 func _register_cycle() -> void:
 	_cycle_count += 1
-	if _cycle_count >= REVEAL_CYCLE and not _door_revealed:
+	if _door_chunk == null and _cycle_count >= _next_door_cycle:
 		_reveal_door()
 
 
+func _recycle_dynamic_tiles() -> void:
+	var min_z := INF
+	var max_z := -INF
+	for chunk in _chunks:
+		min_z = minf(min_z, chunk.position.z)
+		max_z = maxf(max_z, chunk.position.z)
+	for chunk in _chunks:
+		if bool(chunk.get_meta("static_center", false)):
+			continue
+		if chunk.position.z > player.global_position.z + RECYCLE_DISTANCE:
+			if chunk == _door_chunk:
+				_deactivate_door()
+			chunk.position.z = min_z - TILE_LENGTH
+			min_z = chunk.position.z
+			_register_cycle()
+		elif chunk.position.z + TILE_LENGTH \
+				< player.global_position.z - RECYCLE_DISTANCE:
+			if chunk == _door_chunk:
+				_deactivate_door()
+			chunk.position.z = max_z + TILE_LENGTH
+			max_z = chunk.position.z
+			_register_cycle()
+
+
 func _reveal_door() -> void:
-	_door_revealed = true
-	_recycling_stopped = true
 	var center_delta := player.global_position.x - ROOM_SIZE * 0.5
 	if absf(center_delta) <= DOOR_CENTER_TOLERANCE:
 		_door_side = "west" if _rng.randi_range(0, 1) == 0 else "east"
 	else:
 		_door_side = "east" if center_delta < 0.0 else "west"
-	var tile_index := clampi(
-		floori(player.global_position.z / TILE_LENGTH),
-		-HALF_TILE_COUNT, HALF_TILE_COUNT)
-	var chunk := _chunk_for_index(tile_index)
-	if chunk == null:
+	_door_chunk = _pick_door_host()
+	if _door_chunk == null:
 		push_error("hole_e: reveal tile not found")
 		return
-	_build_side_wall(chunk, _door_side, true)
+	_build_side_wall(_door_chunk, _door_side, true)
+	_configure_geometry_fade(
+		_door_chunk.get_node("%s_wall" % _door_side))
+	_door_world_z = _door_chunk.position.z + TILE_LENGTH * 0.5
+	_door_direction = _last_move_sign
+	_door_reveal_count += 1
 	audio.play_flick()
 
 
-func _chunk_for_index(logical_index: int) -> Node3D:
+func _pick_door_host() -> Node3D:
+	var target_z := player.global_position.z \
+		+ _last_move_sign * TILE_LENGTH * 1.25
+	var best: Node3D
+	var best_distance := INF
 	for chunk in _chunks:
-		if int(chunk.get_meta("logical_index", 0)) == logical_index:
-			return chunk
-	return null
+		var center_z := chunk.position.z + TILE_LENGTH * 0.5
+		var distance := absf(center_z - target_z)
+		if distance < best_distance:
+			best = chunk
+			best_distance = distance
+	return best
+
+
+func _update_repeating_door() -> void:
+	if _door_chunk == null:
+		if _cycle_count >= _next_door_cycle:
+			_reveal_door()
+		return
+	var ahead_distance := (
+		_door_world_z - player.global_position.z
+	) * _door_direction
+	if ahead_distance < -DOOR_PASSED_MARGIN:
+		_deactivate_door()
+
+
+func _deactivate_door() -> void:
+	if _door_chunk != null and is_instance_valid(_door_chunk):
+		_build_side_wall(_door_chunk, _door_side, false)
+		_configure_geometry_fade(
+			_door_chunk.get_node("%s_wall" % _door_side))
+	_door_chunk = null
+	_door_side = ""
+	_door_world_z = 0.0
+	_door_direction = _last_move_sign
+	_next_door_cycle = _cycle_count + DOOR_PERIOD_CYCLES
 
 
 func _update_fall() -> void:
 	if player.global_position.y >= FALL_Y:
 		return
 	_fall_count += 1
-	var tile_index := clampi(
-		floori(player.global_position.z / TILE_LENGTH),
-		-HALF_TILE_COUNT, HALF_TILE_COUNT)
+	var tile_index := floori(player.global_position.z / TILE_LENGTH)
 	player.global_position = Vector3(
 		7.5 * Architecture.CELL,
 		PLAYER_HEIGHT,
@@ -365,44 +459,48 @@ func _input(event: InputEvent) -> void:
 
 func _hud_text() -> String:
 	var phase := "bounded"
-	if _bidirectional:
+	if _infinite_active:
 		phase = "infinite"
-	elif _south_infinite:
-		phase = "behind"
-	return "HOLE E — TEST\nphase %s | cycles %d/%d | falls %d\ndoor %s%s\nH — HUD | M — карта | R — сброс" % [
-		phase, _cycle_count, REVEAL_CYCLE, _fall_count,
-		str(_door_revealed),
-		"" if _door_side == "" else " (%s)" % _door_side]
+	elif _niche_prepared:
+		phase = "prepared"
+	return "HOLE E — TEST\nphase %s | cycles %d | next door %d | falls %d\ndoor %s%s | reveals %d\nH — HUD | M — карта | R — сброс" % [
+		phase, _cycle_count, _next_door_cycle, _fall_count,
+		str(_door_chunk != null),
+		"" if _door_side == "" else " (%s)" % _door_side,
+		_door_reveal_count]
 
 
 func _build_map_data() -> void:
 	_map_grid.clear()
 	_pit_rects.clear()
-	var min_z := -HALF_TILE_COUNT * Architecture.ROOM_CELLS
-	var max_z := (HALF_TILE_COUNT + 1) * Architecture.ROOM_CELLS - 1
-	for x in range(-Architecture.WALL_CELLS,
-			Architecture.ROOM_CELLS + Architecture.WALL_CELLS):
-		for z in range(min_z, max_z + 1):
-			var interior := x >= 0 and x < Architecture.ROOM_CELLS
-			_map_grid[Vector2i(x, z)] = "floor" if interior else "wall"
+	var min_z := 2147483647
+	var max_z := -2147483648
 	var layout := Architecture.pit_layout_cells()
-	for tile_index in range(-HALF_TILE_COUNT, HALF_TILE_COUNT + 1):
+	for chunk in _chunks:
+		var tile_z := roundi(chunk.position.z / Architecture.CELL)
+		min_z = mini(min_z, tile_z)
+		max_z = maxi(max_z, tile_z + Architecture.ROOM_CELLS - 1)
+		for x in range(-Architecture.WALL_CELLS,
+				Architecture.ROOM_CELLS + Architecture.WALL_CELLS):
+			for local_z in range(Architecture.ROOM_CELLS):
+				var z := tile_z + local_z
+				var interior := x >= 0 and x < Architecture.ROOM_CELLS
+				_map_grid[Vector2i(x, z)] = "floor" if interior else "wall"
 		for rect: Rect2 in layout["holes"]:
 			_pit_rects.append(Rect2(
-				rect.position + Vector2(
-					0.0, float(tile_index * Architecture.ROOM_CELLS)),
+				rect.position + Vector2(0.0, float(tile_z)),
 				rect.size))
+	_map_gmin = Vector2i(-Architecture.WALL_CELLS, min_z)
+	_map_gmax = Vector2i(
+		Architecture.ROOM_CELLS + Architecture.WALL_CELLS - 1, max_z)
 
 
 func _map_data() -> Dictionary:
+	_build_map_data()
 	return {
 		"grid": _map_grid,
-		"gmin": Vector2i(
-			-Architecture.WALL_CELLS,
-			-HALF_TILE_COUNT * Architecture.ROOM_CELLS),
-		"gmax": Vector2i(
-			Architecture.ROOM_CELLS + Architecture.WALL_CELLS - 1,
-			(HALF_TILE_COUNT + 1) * Architecture.ROOM_CELLS - 1),
+		"gmin": _map_gmin,
+		"gmax": _map_gmax,
 		"pits": _pit_rects,
 	}
 
@@ -413,34 +511,45 @@ func _get_player() -> Node3D:
 
 func debug_snapshot() -> Dictionary:
 	return {
-		"south_infinite": _south_infinite,
-		"return_started": _return_started,
-		"bidirectional": _bidirectional,
+		"reached_wall": _reached_wall,
+		"niche_prepared": _niche_prepared,
+		"infinite_active": _infinite_active,
 		"cycle_count": _cycle_count,
-		"door_revealed": _door_revealed,
+		"door_active": _door_chunk != null,
 		"door_side": _door_side,
-		"recycling_stopped": _recycling_stopped,
+		"door_reveal_count": _door_reveal_count,
+		"next_door_cycle": _next_door_cycle,
 		"fall_count": _fall_count,
 	}
 
 
 func _run_mechanic_test() -> void:
-	_arm_south_infinity()
-	_return_started = true
-	_enable_bidirectional()
+	var niche_contract := _start_niche != null \
+		and _start_niche.name == "start_niche_6x2" \
+		and _start_niche.get_node_or_null("niche_back") != null
+	_reached_wall = true
+	_prepare_south_infinity()
+	_activate_infinite()
 	player.global_position.x = ROOM_SIZE * 0.25
-	for index in range(REVEAL_CYCLE):
+	for index in range(DOOR_PERIOD_CYCLES):
+		_register_cycle()
+	var first_door_has_sign := _door_chunk != null \
+		and _door_chunk.find_child("hole_exit_sign", true, false) != null
+	_deactivate_door()
+	for index in range(DOOR_PERIOD_CYCLES):
 		_register_cycle()
 	var snapshot := debug_snapshot()
-	var passed := bool(snapshot["south_infinite"]) \
-		and bool(snapshot["bidirectional"]) \
-		and int(snapshot["cycle_count"]) == REVEAL_CYCLE \
-		and bool(snapshot["door_revealed"]) \
+	var passed := niche_contract \
+		and bool(snapshot["niche_prepared"]) \
+		and bool(snapshot["infinite_active"]) \
+		and int(snapshot["cycle_count"]) == DOOR_PERIOD_CYCLES * 2 \
+		and bool(snapshot["door_active"]) \
 		and String(snapshot["door_side"]) == "east" \
-		and bool(snapshot["recycling_stopped"]) \
+		and int(snapshot["door_reveal_count"]) == 2 \
+		and first_door_has_sign \
 		and _light_entries.size() == TILE_COUNT * 6 \
-		and _chunk_for_index(0).find_child(
-			"hole_exit_sign", true, false) != null
+		and bool(_chunks[HALF_TILE_COUNT].get_meta(
+			"static_center", false))
 	if passed:
 		print("HOLE_E_MECHANIC_OK ", snapshot)
 		get_tree().quit()

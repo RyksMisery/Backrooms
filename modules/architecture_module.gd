@@ -253,6 +253,53 @@ func build_standard_hall(parent: Node3D, openings: Array = [],
 		"outer_wall": outer_wall}
 
 
+# Карман в южной трёхклеточной стене: проём ведёт в нишу заданной ширины и
+# глубины, оставшийся наружный слой стены всегда остаётся глухим.
+func build_south_wall_niche(parent: Node3D, width_cells: float,
+		depth_cells: float, center_cells := 7.5) -> Dictionary:
+	var room_size := float(ROOM_CELLS) * CELL
+	var wall_depth := float(WALL_CELLS) * CELL
+	var niche_width := clampf(width_cells, 1.0, float(ROOM_CELLS)) * CELL
+	var niche_depth := clampf(
+		depth_cells, 0.0, float(WALL_CELLS) - 0.001) * CELL
+	var center := opening_anchor(center_cells) * CELL
+	var opening_lo := center - niche_width * 0.5
+	var opening_hi := center + niche_width * 0.5
+	add_box(parent, "niche_wall_west",
+		Vector3(opening_lo, CEIL_H, wall_depth),
+		Vector3(opening_lo * 0.5, CEIL_H * 0.5,
+			room_size + wall_depth * 0.5),
+		"wall", true, true)
+	add_box(parent, "niche_wall_east",
+		Vector3(room_size - opening_hi, CEIL_H, wall_depth),
+		Vector3((opening_hi + room_size) * 0.5, CEIL_H * 0.5,
+			room_size + wall_depth * 0.5),
+		"wall", true, true)
+	var back_depth := wall_depth - niche_depth
+	add_box(parent, "niche_back",
+		Vector3(niche_width, CEIL_H, back_depth),
+		Vector3(center, CEIL_H * 0.5,
+			room_size + niche_depth + back_depth * 0.5),
+		"wall", true, true)
+	add_box(parent, "niche_floor",
+		Vector3(niche_width, SLAB_T, niche_depth),
+		Vector3(center, -SLAB_T * 0.5,
+			room_size + niche_depth * 0.5),
+		"floor", true)
+	add_box(parent, "niche_ceiling",
+		Vector3(niche_width, SLAB_T, niche_depth),
+		Vector3(center, CEIL_H + SLAB_T * 0.5,
+			room_size + niche_depth * 0.5),
+		"ceiling", false)
+	return {
+		"width": niche_width,
+		"depth": niche_depth,
+		"center": Vector3(center, CEIL_H * 0.5,
+			room_size + niche_depth * 0.5),
+		"remaining_wall_depth": back_depth,
+	}
+
+
 # Строит произвольную составную область напрямую из канонической occupancy-
 # сетки. Смежные клетки схлопываются в прямоугольники, поэтому маска остаётся
 # источником истины, но не создаёт отдельный меш и collision на каждую клетку.
