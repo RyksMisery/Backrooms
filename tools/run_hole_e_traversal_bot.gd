@@ -15,6 +15,7 @@ var _max_gap := 0.0
 var _max_ring_gap := 0.0
 var _max_cap_offset_error := 0.0
 var _max_cap_edge_gap := 0.0
+var _min_cap_side_overlap := INF
 
 
 func _init() -> void:
@@ -54,6 +55,9 @@ func _run() -> void:
 	if lights.size() != 9 * 9 + 1:
 		_fail("intersection/niche light layout has wrong count")
 		return
+	if not _strip_joins_are_canonical(level):
+		_fail("pit tile seams do not form a full-width canonical walkway")
+		return
 	player.global_position = Vector3(
 		7.5 * Architecture.CELL, 1.2, 1.0 * Architecture.CELL)
 	player.rotation.y = 0.0
@@ -73,6 +77,9 @@ func _run() -> void:
 		return
 	if not bool(revealed.get("door_pool_ready", false)):
 		_fail("door variants were not prebuilt")
+		return
+	if _caps_have_baseboard(level):
+		_fail("moving cap still has a visible baseboard")
 		return
 	await _walk(level, player, player.global_position.z, EXTENT, 1.0)
 	var south_snapshot: Dictionary = level.call("debug_snapshot")
@@ -113,6 +120,9 @@ func _run() -> void:
 		_fail("moving cap leaves %.4f m open at a side edge" \
 			% _max_cap_edge_gap)
 		return
+	if _min_cap_side_overlap < TILE_LENGTH - CAP_EPSILON:
+		_fail("moving cap side edge is still inside the concealment margin")
+		return
 	var timestamp := Time.get_datetime_string_from_system().replace(":", "-")
 	var relative_dir := ".hole_e_traversal_bot/%s" % timestamp
 	_artifact_dir = ProjectSettings.globalize_path("res://%s" % relative_dir)
@@ -132,6 +142,7 @@ func _run() -> void:
 		"max_ring_gap_m": _max_ring_gap,
 		"max_cap_offset_error_m": _max_cap_offset_error,
 		"max_cap_edge_gap_m": _max_cap_edge_gap,
+		"min_cap_side_overlap_m": _min_cap_side_overlap,
 		"max_door_reveal_ms": north_snapshot.get(
 			"max_door_reveal_ms", INF),
 		"sample_count": _samples.size(),
@@ -171,6 +182,9 @@ func _walk(level: Node, player: CharacterBody3D, from_z: float,
 		_max_cap_edge_gap = maxf(
 			_max_cap_edge_gap,
 			float(cap_check["edge_gap"]))
+		_min_cap_side_overlap = minf(
+			_min_cap_side_overlap,
+			float(cap_check["side_overlap"]))
 		if gap > 0.001:
 			print("HOLE_E_BOT_GAP z=", z,
 				" chunks=", _chunk_positions(level), " gap=", gap)
@@ -181,6 +195,7 @@ func _walk(level: Node, player: CharacterBody3D, from_z: float,
 			"ring_gap": ring_gap,
 			"cap_offset_error": cap_check["offset_error"],
 			"cap_edge_gap": cap_check["edge_gap"],
+			"cap_side_overlap": cap_check["side_overlap"],
 			"cycles": snapshot.get("cycle_count", 0),
 			"door_reveals": snapshot.get("door_reveal_count", 0),
 		})
@@ -190,7 +205,11 @@ func _check_caps(level: Node, player: CharacterBody3D) -> Dictionary:
 	var north := level.get("_infinite_north_cap") as Node3D
 	var south := level.get("_infinite_south_cap") as Node3D
 	if north == null or south == null:
-		return {"offset_error": INF, "edge_gap": INF}
+		return {
+			"offset_error": INF,
+			"edge_gap": INF,
+			"side_overlap": -INF,
+		}
 	var expected_distance := TILE_LENGTH * 4.0
 	var offset_error := maxf(
 		absf(north.global_position.z
@@ -198,23 +217,61 @@ func _check_caps(level: Node, player: CharacterBody3D) -> Dictionary:
 		absf(south.global_position.z
 			- (player.global_position.z + expected_distance)))
 	var edge_gap := 0.0
+	var side_overlap := INF
 	for cap: Node3D in [north, south]:
 		var wall := cap.get_child(0) as MeshInstance3D
 		if wall == null or wall.mesh == null:
-			return {"offset_error": offset_error, "edge_gap": INF}
+			return {
+				"offset_error": offset_error,
+				"edge_gap": INF,
+				"side_overlap": -INF,
+			}
 		var bounds := wall.global_transform * wall.get_aabb()
 		edge_gap = maxf(edge_gap, bounds.position.x + WALL_DEPTH)
 		edge_gap = maxf(
 			edge_gap,
 			_room_right_edge() - (bounds.position.x + bounds.size.x))
+		side_overlap = minf(
+			side_overlap,
+			-WALL_DEPTH - bounds.position.x)
+		side_overlap = minf(
+			side_overlap,
+			bounds.position.x + bounds.size.x - _room_right_edge())
 	return {
 		"offset_error": maxf(0.0, offset_error),
 		"edge_gap": maxf(0.0, edge_gap),
+		"side_overlap": side_overlap,
 	}
 
 
 func _room_right_edge() -> float:
 	return TILE_LENGTH + WALL_DEPTH
+
+
+func _strip_joins_are_canonical(level: Node) -> bool:
+	var expected_half_width := Architecture.PIT_GAP_CELLS \
+		* Architecture.CELL * 0.5
+	for chunk_value in level.get("_chunks"):
+		var chunk := chunk_value as Node3D
+		for node_name: String in ["pit_walk_00", "pit_walk_01"]:
+			var walk := chunk.get_node_or_null(node_name) as MeshInstance3D
+			if walk == null \
+					or absf(walk.get_aabb().size.z - expected_half_width) \
+						> CAP_EPSILON:
+				return false
+	return true
+
+
+func _caps_have_baseboard(level: Node) -> bool:
+	for property_name: String in [
+		"_infinite_north_cap", "_infinite_south_cap"
+	]:
+		var cap := level.get(property_name) as Node3D
+		if cap == null:
+			return true
+		if not cap.find_children("*baseboard*", "", true, false).is_empty():
+			return true
+	return false
 
 
 func _coverage_gap(level: Node, player_z: float) -> float:

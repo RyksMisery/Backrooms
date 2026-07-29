@@ -28,6 +28,7 @@ const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
 const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
 const END_DISTANCE := TILE_LENGTH * 4.0
 const RECYCLE_DISTANCE := END_DISTANCE + TILE_LENGTH
+const CAP_SIDE_OVERLAP := TILE_LENGTH
 const DOOR_SPAWN_DISTANCE := TILE_LENGTH * 3.0
 const DOOR_PASSED_MARGIN := TILE_LENGTH * 0.75
 const DOOR_CENTER_TOLERANCE := Architecture.CELL * 0.5
@@ -105,7 +106,8 @@ func _build_tiles() -> void:
 		chunk.position.z = float(logical_index) * TILE_LENGTH
 		chunk.set_meta("logical_index", logical_index)
 		add_child(chunk)
-		architecture.build_pit_tile(chunk)
+		architecture.build_pit_tile(
+			chunk, true, Architecture.PIT_GAP_CELLS)
 		_create_side_wall(chunk, "west", false, "west_wall")
 		_create_side_wall(chunk, "east", false, "east_wall")
 		if logical_index == 1:
@@ -375,11 +377,11 @@ func _make_moving_cap(node_name: String) -> Node3D:
 	add_child(root)
 	architecture.add_box(root, "%s_wall" % node_name,
 		Vector3(
-			ROOM_SIZE + WALL_DEPTH * 2.0,
+			ROOM_SIZE + (WALL_DEPTH + CAP_SIDE_OVERLAP) * 2.0,
 			Architecture.CEIL_H,
 			WALL_DEPTH),
 		Vector3(ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5, 0.0),
-		"wall", true, true)
+		"wall", true, false)
 	return root
 
 

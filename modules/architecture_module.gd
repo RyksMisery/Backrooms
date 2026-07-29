@@ -446,8 +446,20 @@ static func pit_intersection_light_cells() -> Array[Vector2]:
 
 
 # Геометрия одной 15×15 секции провала без внешних стен и торцевых капов.
-func build_pit_tile(parent: Node3D, include_ceiling := true) -> Dictionary:
+# В продольной ленте соседние секции отдают стыку по половине общего мостка.
+func build_pit_tile(parent: Node3D, include_ceiling := true,
+		longitudinal_join_walk_cells := 0.0) -> Dictionary:
 	var layout := pit_layout_cells()
+	if longitudinal_join_walk_cells > 0.0:
+		var half_join := clampf(
+			longitudinal_join_walk_cells * 0.5,
+			PIT_BORDER_CELLS,
+			float(ROOM_CELLS) * 0.5)
+		layout["walks"][0] = Rect2(
+			0.0, 0.0, float(ROOM_CELLS), half_join)
+		layout["walks"][1] = Rect2(
+			0.0, float(ROOM_CELLS) - half_join,
+			float(ROOM_CELLS), half_join)
 	for index in range(layout["walks"].size()):
 		var rect: Rect2 = layout["walks"][index]
 		add_box(parent, "pit_walk_%02d" % index,
