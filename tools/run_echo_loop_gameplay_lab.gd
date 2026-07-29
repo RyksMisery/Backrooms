@@ -86,19 +86,6 @@ func _run() -> void:
 		if (expected_cycle >= 1) != (chair_2 != null):
 			_fail("second grouped chair has wrong state at cycle %d" % expected_cycle)
 			return
-		var expected_expansions := RunPlan.core_expansion_rects(
-			level.get("_plan"), expected_cycle)
-		for expansion_index in range(expected_expansions.size()):
-			if level.find_child(
-					"core_expansion_%02d" % expansion_index,
-					true, false) == null:
-				_fail("core expansion missing at cycle %d" % expected_cycle)
-				return
-		if level.find_child(
-				"core_expansion_%02d" % expected_expansions.size(),
-				true, false) != null:
-			_fail("unexpected core expansion at cycle %d" % expected_cycle)
-			return
 		var pit_cover = level.find_child("pit_cover_floor", true, false)
 		if (expected_cycle < RunPlan.MAX_CYCLE) != (pit_cover != null):
 			_fail("pit cover has wrong state at cycle %d" % expected_cycle)

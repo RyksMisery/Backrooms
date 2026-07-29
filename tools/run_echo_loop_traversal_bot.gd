@@ -52,6 +52,7 @@ func _run() -> void:
 			return
 		if cycle >= RunPlan.MAX_CYCLE:
 			break
+		var micro_before := int(snapshot.get("micro_mutation_count", 0))
 		await _walk_full_loop(level, player, cycle)
 		for _wait_frame in range(60):
 			var waiting: Dictionary = level.call("debug_snapshot")
@@ -62,6 +63,13 @@ func _run() -> void:
 		if int(applied.get("cycle", -1)) != cycle + 1:
 			_write_report(applied)
 			_fail("continuous loop did not apply cycle %d" % (cycle + 1))
+			return
+		var micro_delta := int(applied.get(
+			"micro_mutation_count", 0)) - micro_before
+		_observations[-1]["micro_mutations_during_loop"] = micro_delta
+		if micro_delta < 4:
+			_write_report(applied)
+			_fail("loop produced only %d micro mutations" % micro_delta)
 			return
 	_write_report(level.call("debug_snapshot"))
 	print("ECHO_LOOP_TRAVERSAL_BOT_OK: %s" % _artifact_dir)
@@ -74,20 +82,22 @@ func _run() -> void:
 
 func _walk_full_loop(level: Node, player: CharacterBody3D,
 		cycle: int) -> void:
-	var grid := RunPlan.build_grid(level.get("_plan"), cycle)
+	var grid: Dictionary = level.get("_grid")
 	var west_x := _lane_center_x(grid, true)
-	var east_x := _lane_center_x(grid, false)
-	var waypoints := [
-		Vector2(west_x, 30.5),
-		Vector2(west_x, 8.5),
-		Vector2(east_x, 8.5),
-		Vector2(east_x, 30.5),
-		Vector2(13.5, 30.5),
-	]
-	for waypoint: Vector2 in waypoints:
+	for waypoint: Vector2 in [
+		Vector2(west_x, 30.5), Vector2(west_x, 8.5),
+	]:
 		await _walk_to(player, Vector3(
-			waypoint.x * Architecture.CELL,
-			1.2,
+			waypoint.x * Architecture.CELL, 1.2,
+			waypoint.y * Architecture.CELL))
+	grid = level.get("_grid")
+	var east_x := _lane_center_x(grid, false)
+	for waypoint: Vector2 in [
+		Vector2(east_x, 8.5), Vector2(east_x, 30.5),
+		Vector2(13.5, 30.5),
+	]:
+		await _walk_to(player, Vector3(
+			waypoint.x * Architecture.CELL, 1.2,
 			waypoint.y * Architecture.CELL))
 
 
@@ -104,7 +114,7 @@ func _walk_to(player: CharacterBody3D, target: Vector3) -> void:
 func _observe_state(level: Node, player: CharacterBody3D,
 		cycle: int) -> Dictionary:
 	level.set_process(false)
-	var grid := RunPlan.build_grid(level.get("_plan"), cycle)
+	var grid: Dictionary = level.get("_grid")
 	var west_x := _lane_center_x(grid, true)
 	var east_x := _lane_center_x(grid, false)
 	var west_width := await _measure_width(
@@ -113,6 +123,7 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		player, east_x, "cycle_%d_east.png" % cycle)
 	var chair_result := await _observe_chairs(
 		level, player, cycle, "cycle_%d_chairs.png" % cycle)
+	await _capture_corner_variants(level, player, cycle)
 	player.global_position = Vector3(
 		13.5 * Architecture.CELL, 1.2, 30.5 * Architecture.CELL)
 	player.rotation.y = 0.0
@@ -136,6 +147,31 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		"valid": valid,
 		"error": "" if valid else "physical width or chair presentation mismatch",
 	}
+
+
+func _capture_corner_variants(level: Node, player: CharacterBody3D,
+		cycle: int) -> void:
+	for corner_id: String in [
+		"north_west", "north_east", "south_west", "south_east",
+	]:
+		var corner = level.get("_corner_roots").get(corner_id)
+		if not (corner is Node3D):
+			continue
+		var rect: Rect2i = level.call(
+			"_micro_region_rect", "corner", corner_id)
+		var target := Vector3(
+			(rect.position.x + rect.size.x * 0.5) * Architecture.CELL,
+			1.0,
+			(rect.position.y + rect.size.y * 0.5) * Architecture.CELL)
+		var north := corner_id.begins_with("north")
+		player.global_position = Vector3(
+			13.5 * Architecture.CELL,
+			1.2,
+			(7.0 if north else 32.0) * Architecture.CELL)
+		_look_at_flat(player, target)
+		await process_frame
+		await _save_frame(
+			"cycle_%d_corner_%s.png" % [cycle, corner_id])
 
 
 func _measure_width(player: CharacterBody3D, lane_x_cells: float,

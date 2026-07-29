@@ -3,6 +3,7 @@ extends Node3D
 # Независимая лаборатория накопительных изменений после полного обхода петли.
 
 const Architecture := preload("res://modules/architecture_module.gd")
+const Opening := preload("res://modules/opening_module.gd")
 const Lighting := preload("res://modules/lighting_module.gd")
 const Audio := preload("res://modules/audio_module.gd")
 const HUD := preload("res://modules/hud_module.gd")
@@ -24,6 +25,7 @@ const MUTATION_RECT := Rect2i(3, 3, 21, 25)
 const VISIBILITY_MARGIN_M := 0.15
 
 var architecture
+var opening
 var lighting
 var audio
 var hud
@@ -35,9 +37,20 @@ var _lower_room: Node3D
 var _mutation_geometry: Node3D
 var _mutation_props: Node3D
 var _landmark_root: Node3D
+var _width_patch_roots := {}
+var _corner_roots := {}
 var _plan: Dictionary = {}
 var _plan_report: Dictionary = {}
 var _grid: Dictionary = {}
+var _runtime_widths := Vector2i(6, 6)
+var _last_micro_sector := "south"
+var _micro_pending: Array[Dictionary] = []
+var _width_mutation_counts := {"west": 0, "east": 0}
+var _corner_mutation_counts := {
+	"north_west": 0, "north_east": 0,
+	"south_west": 0, "south_east": 0,
+}
+var _micro_mutation_count := 0
 var _cycle := 0
 var _pending_cycle := -1
 var _hidden_frames := 0
@@ -59,6 +72,7 @@ func _ready() -> void:
 	DisplayServer.window_set_title("Echo Loop v3 — CORE WIDTH 1..6")
 	_build_plan()
 	architecture = Architecture.new(self)
+	opening = Opening.new(self, architecture)
 	architecture.install_environment(false)
 	Architecture.apply_render_profile(get_viewport())
 	lighting = Lighting.new(self, architecture)
@@ -66,6 +80,7 @@ func _ready() -> void:
 	hud = HUD.new(self)
 	map = Map.new(self)
 	_build_main_geometry()
+	_build_all_width_patches()
 	_build_main_lights()
 	_build_lower_room()
 	_build_landmark()
@@ -80,11 +95,12 @@ func _ready() -> void:
 
 func _build_plan() -> void:
 	_plan = RunPlan.build(seed_detail)
+	_runtime_widths = RunPlan.widths_for_cycle(_plan, 0)
 	_plan_report = RunPlan.validate(_plan)
 	if not bool(_plan_report.get("valid", false)):
 		push_error("Echo Loop plan invalid: %s" % [
 			"; ".join(_plan_report.get("errors", []))])
-	_grid = RunPlan.build_grid(_plan, _cycle)
+	_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
 
 
 func _build_main_geometry() -> void:
@@ -175,12 +191,6 @@ func _build_mutation_patch() -> void:
 		_add_floor_patch(_mutation_geometry, RunPlan.PIT_RECT)
 	else:
 		architecture.add_pit_shaft(_mutation_geometry, RunPlan.PIT_RECT)
-	var expansion_index := 0
-	for expansion_rect: Rect2i in RunPlan.core_expansion_rects(
-			_plan, _cycle):
-		_add_core_expansion(
-			_mutation_geometry, expansion_rect, expansion_index)
-		expansion_index += 1
 	var chair_cells: Array = _plan.get("chair_wall_cells", [])
 	var chair_count := mini(_cycle + 1, 2)
 	for index in range(chair_count):
@@ -224,6 +234,33 @@ func _add_core_expansion(parent: Node3D, rect: Rect2i, index: int) -> void:
 		"wall", true, true)
 
 
+func _build_all_width_patches() -> void:
+	_rebuild_width_patch("west")
+	_rebuild_width_patch("east")
+
+
+func _rebuild_width_patch(side: String) -> void:
+	var existing = _width_patch_roots.get(side)
+	if existing is Node and is_instance_valid(existing):
+		(existing as Node).free()
+	var root_node := Node3D.new()
+	root_node.name = "runtime_width_%s" % side
+	add_child(root_node)
+	_width_patch_roots[side] = root_node
+	var width := _runtime_widths.x if side == "west" else _runtime_widths.y
+	var rect := Rect2i()
+	if side == "west" and width < 6:
+		rect = Rect2i(
+			3 + width, RunPlan.CORE_RECT.position.y,
+			6 - width, RunPlan.CORE_RECT.size.y)
+	elif side == "east" and width < 6:
+		rect = Rect2i(
+			RunPlan.CORE_RECT.end.x, RunPlan.CORE_RECT.position.y,
+			6 - width, RunPlan.CORE_RECT.size.y)
+	if rect.has_area():
+		_add_core_expansion(root_node, rect, 0)
+
+
 func _spawn_player() -> void:
 	player = PLAYER_SCENE.instantiate() as CharacterBody3D
 	player.name = "EchoLoopPlayer"
@@ -241,6 +278,8 @@ func _process(delta: float) -> void:
 	map.update()
 	if not _completed:
 		_update_loop_progress()
+		_update_micro_sector()
+		_update_micro_pending()
 		_update_pending_mutation()
 		_update_fall()
 	hud.update(_hud_text())
@@ -259,6 +298,79 @@ func _update_loop_progress() -> void:
 			and _left_south and _visited_north:
 		_advance_cycle()
 	_last_sector = sector
+
+
+func _update_micro_sector() -> void:
+	var sector := _sector_for_cell(_player_cell())
+	if sector == "middle" or sector == _last_micro_sector:
+		return
+	_last_micro_sector = sector
+	var width_target: String = {
+		"west": "east",
+		"east": "west",
+	}.get(sector, "")
+	if not String(width_target).is_empty():
+		_queue_micro_mutation("width", String(width_target))
+	var corner_target: String = {
+		"west": "north_east",
+		"north": "south_east",
+		"east": "south_west",
+		"south": "north_west",
+	}.get(sector, "")
+	if not String(corner_target).is_empty():
+		_queue_micro_mutation("corner", String(corner_target))
+
+
+func _queue_micro_mutation(kind: String, target: String) -> void:
+	for pending: Dictionary in _micro_pending:
+		if String(pending.get("kind", "")) == kind \
+				and String(pending.get("target", "")) == target:
+			return
+	_micro_pending.append({
+		"kind": kind,
+		"target": target,
+		"hidden_frames": 0,
+	})
+
+
+func _update_micro_pending() -> void:
+	for index in range(_micro_pending.size() - 1, -1, -1):
+		var pending := _micro_pending[index]
+		var rect := _micro_region_rect(
+			String(pending["kind"]), String(pending["target"]))
+		if _rect_region_visible(rect):
+			pending["hidden_frames"] = 0
+			_micro_pending[index] = pending
+			continue
+		pending["hidden_frames"] = int(pending["hidden_frames"]) + 1
+		if int(pending["hidden_frames"]) < HIDDEN_CONFIRM_FRAMES:
+			_micro_pending[index] = pending
+			continue
+		_apply_micro_mutation(
+			String(pending["kind"]), String(pending["target"]))
+		_micro_pending.remove_at(index)
+
+
+func _apply_micro_mutation(kind: String, target: String) -> void:
+	if kind == "width":
+		var count := int(_width_mutation_counts.get(target, 0)) + 1
+		_width_mutation_counts[target] = count
+		var previous := _runtime_widths.x \
+			if target == "west" else _runtime_widths.y
+		var next := RunPlan.next_runtime_width(
+			seed_detail, target, count, previous)
+		if target == "west":
+			_runtime_widths.x = next
+		else:
+			_runtime_widths.y = next
+		_rebuild_width_patch(target)
+		_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+	else:
+		var count := int(_corner_mutation_counts.get(target, 0)) + 1
+		_corner_mutation_counts[target] = count
+		_build_corner_variant(target, ((count - 1) % 3) + 1)
+	_micro_mutation_count += 1
+	audio.play_flick()
 
 
 func _advance_cycle() -> void:
@@ -292,7 +404,7 @@ func _apply_pending_mutation() -> void:
 	_cycle = _pending_cycle
 	_pending_cycle = -1
 	_mutation_count += 1
-	_grid = RunPlan.build_grid(_plan, _cycle)
+	_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
 	_mutation_wait_samples_ms.append(float(
 		Time.get_ticks_msec() - _pending_started_ms))
 	_hidden_frames = 0
@@ -336,6 +448,80 @@ func _mutation_region_visible() -> bool:
 						and not _point_occluded(camera, target):
 					return true
 	return false
+
+
+func _micro_region_rect(kind: String, target: String) -> Rect2i:
+	if kind == "width":
+		return Rect2i(3, 9, 6, 21) if target == "west" \
+			else Rect2i(18, 9, 6, 21)
+	return {
+		"north_west": Rect2i(5, 5, 4, 4),
+		"north_east": Rect2i(18, 5, 4, 4),
+		"south_west": Rect2i(5, 30, 4, 4),
+		"south_east": Rect2i(18, 30, 4, 4),
+	}.get(target, Rect2i())
+
+
+func _rect_region_visible(rect: Rect2i) -> bool:
+	if player == null or player.camera == null or not rect.has_area():
+		return true
+	var camera: Camera3D = player.camera
+	for x: float in [
+		(float(rect.position.x) + 0.1) * Architecture.CELL,
+		(float(rect.position.x) + rect.size.x * 0.5) * Architecture.CELL,
+		(float(rect.end.x) - 0.1) * Architecture.CELL,
+	]:
+		for z: float in [
+			(float(rect.position.y) + 0.1) * Architecture.CELL,
+			(float(rect.position.y) + rect.size.y * 0.5) * Architecture.CELL,
+			(float(rect.end.y) - 0.1) * Architecture.CELL,
+		]:
+			for y: float in [
+				0.2, Architecture.CEIL_H * 0.5, Architecture.CEIL_H - 0.2,
+			]:
+				var target_point := Vector3(x, y, z)
+				if camera.is_position_in_frustum(target_point) \
+						and not _point_occluded(camera, target_point):
+					return true
+	return false
+
+
+func _build_corner_variant(corner_id: String, variant: int) -> void:
+	var existing = _corner_roots.get(corner_id)
+	if existing is Node and is_instance_valid(existing):
+		(existing as Node).free()
+	var root_node := Node3D.new()
+	root_node.name = "corner_%s_variant_%d" % [corner_id, variant]
+	add_child(root_node)
+	_corner_roots[corner_id] = root_node
+	var rect := _micro_region_rect("corner", corner_id)
+	var center := Vector3(
+		(rect.position.x + rect.size.x * 0.5) * Architecture.CELL,
+		0.0,
+		(rect.position.y + rect.size.y * 0.5) * Architecture.CELL)
+	match variant:
+		1:
+			architecture.add_box(root_node, "corner_column",
+				Vector3(
+					Architecture.CELL * 0.7,
+					Architecture.CEIL_H,
+					Architecture.CELL * 0.7),
+				center + Vector3(0.0, Architecture.CEIL_H * 0.5, 0.0),
+				"wall", true, true)
+		2:
+			var thickness := Architecture.PARTITION_T_CELLS \
+				* Architecture.CELL
+			architecture.add_box(root_node, "corner_partition",
+				Vector3(
+					thickness,
+					Architecture.CEIL_H,
+					Architecture.CELL * 2.4),
+				center + Vector3(0.0, Architecture.CEIL_H * 0.5, 0.0),
+				"wall", true, true)
+		3:
+			opening.spawn_office_opening(
+				root_node, center, Vector3.RIGHT,
+				"corner_portal_%s" % corner_id, false, false)
 
 
 func _point_occluded(camera: Camera3D, target: Vector3) -> bool:
@@ -395,6 +581,14 @@ func _reset_with_seed(next_seed: int) -> void:
 	_cycle = 0
 	_pending_cycle = -1
 	_hidden_frames = 0
+	_last_micro_sector = "south"
+	_micro_pending.clear()
+	_width_mutation_counts = {"west": 0, "east": 0}
+	_corner_mutation_counts = {
+		"north_west": 0, "north_east": 0,
+		"south_west": 0, "south_east": 0,
+	}
+	_micro_mutation_count = 0
 	_last_sector = "south"
 	_left_south = false
 	_visited_north = false
@@ -407,6 +601,7 @@ func _reset_with_seed(next_seed: int) -> void:
 	_visible_mutation_count = 0
 	_build_plan()
 	_build_main_geometry()
+	_build_all_width_patches()
 	_build_landmark()
 	_build_mutation_patch()
 	player.global_position = _cell_center(RunPlan.SPAWN_CELL)
@@ -419,9 +614,9 @@ func _hud_text() -> String:
 	for sample: float in _mutation_samples_ms:
 		max_mutation = maxf(max_mutation, sample)
 	var widths := RunPlan.widths_for_cycle(_plan, _cycle)
-	return "ECHO LOOP LAB — TEST\nseed %d | cycle %d → %d | widths %d/%d | mutations %d\nnorth %s | left %s | falls %d\ncomplete %s | patch max %.2f ms | visible %d\nH — HUD | M — карта | R — новый seed" % [
+	return "ECHO LOOP LAB — TEST\nseed %d | cycle %d → %d | widths %d/%d | macro %d | micro %d\nnorth %s | left %s | falls %d\ncomplete %s | patch max %.2f ms | visible %d\nH — HUD | M — карта | R — новый seed" % [
 		seed_detail, _cycle, _pending_cycle, widths.x, widths.y,
-		_mutation_count,
+		_mutation_count, _micro_mutation_count,
 		str(_visited_north), str(_left_south), _fall_count,
 		str(_completed), max_mutation, _visible_mutation_count]
 
@@ -468,6 +663,8 @@ func debug_snapshot() -> Dictionary:
 		"east_width_cells": widths.y,
 		"pending_cycle": _pending_cycle,
 		"mutation_count": _mutation_count,
+		"micro_mutation_count": _micro_mutation_count,
+		"micro_pending_count": _micro_pending.size(),
 		"visible_mutation_count": _visible_mutation_count,
 		"static_build_count": _static_build_count,
 		"fall_count": _fall_count,

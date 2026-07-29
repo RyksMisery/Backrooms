@@ -121,8 +121,13 @@ static func validate(plan: Dictionary) -> Dictionary:
 
 
 static func build_grid(plan: Dictionary, cycle: int) -> Dictionary:
+	return build_grid_for_widths(
+		widths_for_cycle(plan, cycle), cycle)
+
+
+static func build_grid_for_widths(widths: Vector2i, cycle: int) -> Dictionary:
 	var grid := build_static_grid()
-	for expansion_rect: Rect2i in core_expansion_rects(plan, cycle):
+	for expansion_rect: Rect2i in core_expansion_rects_for_widths(widths):
 		for x in range(expansion_rect.position.x, expansion_rect.end.x):
 			for z in range(expansion_rect.position.y, expansion_rect.end.y):
 				grid[Vector2i(x, z)] = "wall"
@@ -159,7 +164,11 @@ static func widths_for_cycle(plan: Dictionary, cycle: int) -> Vector2i:
 
 
 static func core_expansion_rects(plan: Dictionary, cycle: int) -> Array[Rect2i]:
-	var widths := widths_for_cycle(plan, cycle)
+	return core_expansion_rects_for_widths(widths_for_cycle(plan, cycle))
+
+
+static func core_expansion_rects_for_widths(
+		widths: Vector2i) -> Array[Rect2i]:
 	var result: Array[Rect2i] = []
 	if widths.x < 6:
 		result.append(Rect2i(
@@ -170,6 +179,17 @@ static func core_expansion_rects(plan: Dictionary, cycle: int) -> Array[Rect2i]:
 			CORE_RECT.end.x, CORE_RECT.position.y,
 			6 - widths.y, CORE_RECT.size.y))
 	return result
+
+
+static func next_runtime_width(seed_detail: int, side: String,
+		mutation_index: int, previous: int) -> int:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([seed_detail, side, mutation_index])
+	var candidates: Array[int] = []
+	for width in range(1, 7):
+		if absi(width - previous) >= 2:
+			candidates.append(width)
+	return candidates[rng.randi_range(0, candidates.size() - 1)]
 
 
 static func _next_width(rng: RandomNumberGenerator, previous: int) -> int:
