@@ -6,6 +6,8 @@ extends RefCounted
 const PAINTED_CHAIR_SCENE := preload(
 	"res://3d/painted_wooden_chair_01_1k/painted_wooden_chair_01_1k.gltf")
 const PAINTED_CHAIR_HEIGHT_M := 1.375
+const WALL_ARROW_TEXTURE := preload("res://decals/backrooms_arrow_black.png")
+const WALL_ARROW_SIZE := Vector2(2.0, 2.0)
 
 
 static func spawn_painted_chair(parent: Node3D, local_floor_position: Vector3,
@@ -27,6 +29,27 @@ static func spawn_painted_chair(parent: Node3D, local_floor_position: Vector3,
 	else:
 		chair.global_position = target
 	return chair
+
+
+static func spawn_wall_arrow(parent: Node3D, local_wall_position: Vector3,
+		yaw: float, node_name := "wall_arrow") -> MeshInstance3D:
+	var mesh := QuadMesh.new()
+	mesh.size = WALL_ARROW_SIZE
+	var material := StandardMaterial3D.new()
+	material.albedo_texture = WALL_ARROW_TEXTURE
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	mesh.material = material
+	var arrow := MeshInstance3D.new()
+	arrow.name = node_name
+	arrow.mesh = mesh
+	arrow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	arrow.position = local_wall_position
+	arrow.rotation.y = yaw
+	parent.add_child(arrow)
+	return arrow
 
 
 static func world_aabb(root: Node3D) -> AABB:

@@ -27,11 +27,28 @@ func _run() -> void:
 	if not bool(states[0].get("plan_valid", false)):
 		_fail("plan invalid")
 		return
+	if level.find_child("chair_group_arrow", true, false) == null:
+		_fail("permanent chair-group arrow missing")
+		return
+	if level.find_child("arrow_chair_01", true, false) != null:
+		_fail("chair group must start empty")
+		return
+	var initial_static_builds := int(states[0].get("static_build_count", -1))
 	for expected_cycle in range(1, RunPlan.MAX_CYCLE + 1):
 		player.global_position = _cell_center(RunPlan.NORTH_CHECKPOINT)
 		await process_frame
+		player.rotation.y = PI
 		player.global_position = _cell_center(RunPlan.SPAWN_CELL)
 		await process_frame
+		var queued: Dictionary = level.call("debug_snapshot")
+		if int(queued.get("pending_cycle", -1)) != expected_cycle:
+			_fail("cycle %d was not queued" % expected_cycle)
+			return
+		for _wait_frame in range(120):
+			await process_frame
+			var waiting: Dictionary = level.call("debug_snapshot")
+			if int(waiting.get("cycle", -1)) == expected_cycle:
+				break
 		var snapshot: Dictionary = level.call("debug_snapshot")
 		states.append(snapshot)
 		if int(snapshot.get("cycle", -1)) != expected_cycle:
@@ -40,6 +57,29 @@ func _run() -> void:
 			return
 		if int(snapshot.get("mutation_count", -1)) != expected_cycle:
 			_fail("mutation did not accumulate at cycle %d" % expected_cycle)
+			return
+		if int(snapshot.get("visible_mutation_count", -1)) != 0:
+			_fail("visible mutation detected at cycle %d" % expected_cycle)
+			return
+		if int(snapshot.get("static_build_count", -1)) != initial_static_builds:
+			_fail("static geometry rebuilt at cycle %d" % expected_cycle)
+			return
+		var chair_1 = level.find_child("arrow_chair_01", true, false)
+		var chair_2 = level.find_child("arrow_chair_02", true, false)
+		if expected_cycle >= 1 and chair_1 == null:
+			_fail("first grouped chair missing at cycle %d" % expected_cycle)
+			return
+		if (expected_cycle >= 2) != (chair_2 != null):
+			_fail("second grouped chair has wrong state at cycle %d" % expected_cycle)
+			return
+		var constriction = level.find_child(
+			"north_width_constriction", true, false)
+		if (expected_cycle == 1) != (constriction != null):
+			_fail("north width has wrong state at cycle %d" % expected_cycle)
+			return
+		var pit_cover = level.find_child("pit_cover_floor", true, false)
+		if (expected_cycle < RunPlan.MAX_CYCLE) != (pit_cover != null):
+			_fail("pit cover has wrong state at cycle %d" % expected_cycle)
 			return
 	player.global_position = Vector3(
 		(float(RunPlan.PIT_RECT.position.x) + 0.5) * Architecture.CELL,

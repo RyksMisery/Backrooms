@@ -11,7 +11,7 @@ const INTERIOR_MAX := Vector2i(24, 36)
 const CORE_RECT := Rect2i(9, 9, 9, 21)
 const PIT_RECT := Rect2i(11, 4, 5, 4)
 const SPAWN_CELL := Vector2i(13, 34)
-const NORTH_CHECKPOINT := Vector2i(6, 5)
+const NORTH_CHECKPOINT := Vector2i(13, 3)
 const MAX_CYCLE := 3
 
 
@@ -19,13 +19,23 @@ static func build(seed_detail: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_detail
 	var mirror := rng.randi_range(0, 1) == 1
+	var narrow_rect := Rect2i(16, 3, 8, 6) if mirror \
+		else Rect2i(3, 3, 8, 6)
+	var chair_x := [7.2, 5.7] if mirror else [18.8, 20.3]
 	var plan := {
-		"schema_version": 1,
-		"id": "echo_loop_lab_v0",
+		"schema_version": 2,
+		"id": "echo_loop_lab_v1",
 		"seed_detail": seed_detail,
 		"mirror": mirror,
-		"stub_x": 17 if mirror else 9,
-		"second_chair_cell": [18.5 if mirror else 7.5, 34.0],
+		"narrow_rect": [
+			narrow_rect.position.x, narrow_rect.position.y,
+			narrow_rect.size.x, narrow_rect.size.y,
+		],
+		"chair_cells": [
+			[chair_x[0], 4.6],
+			[chair_x[1], 4.6],
+		],
+		"arrow_cell": [6.5 if mirror else 19.5, 3.02],
 		"spawn_cell": [SPAWN_CELL.x, SPAWN_CELL.y],
 		"north_checkpoint": [NORTH_CHECKPOINT.x, NORTH_CHECKPOINT.y],
 		"pit_rect": [
@@ -33,8 +43,8 @@ static func build(seed_detail: int) -> Dictionary:
 			PIT_RECT.size.x, PIT_RECT.size.y,
 		],
 		"mutations": [
-			{"cycle": 1, "id": "duplicate_chair"},
-			{"cycle": 2, "id": "wall_stub"},
+			{"cycle": 1, "id": "narrow_and_first_chair"},
+			{"cycle": 2, "id": "widen_and_second_chair"},
 			{"cycle": 3, "id": "north_pit"},
 		],
 	}
@@ -45,11 +55,29 @@ static func build(seed_detail: int) -> Dictionary:
 static func validate(plan: Dictionary) -> Dictionary:
 	var errors: Array[String] = []
 	var routes := {}
-	if int(plan.get("schema_version", -1)) != 1:
-		errors.append("schema_version должен быть 1")
-	var stub_x := int(plan.get("stub_x", -1))
-	if stub_x not in [CORE_RECT.position.x, CORE_RECT.end.x - 1]:
-		errors.append("stub_x должен продолжать одну из стен ядра")
+	if int(plan.get("schema_version", -1)) != 2:
+		errors.append("schema_version должен быть 2")
+	var narrow_rect := _rect_from_plan(plan.get("narrow_rect", []))
+	if narrow_rect not in [Rect2i(3, 3, 8, 6), Rect2i(16, 3, 8, 6)]:
+		errors.append("narrow_rect должен сужать одну сторону северного зала")
+	var chair_cells: Array = plan.get("chair_cells", [])
+	if chair_cells.size() != 2:
+		errors.append("должно быть ровно два соседних места для стульев")
+	else:
+		var chair_a := Vector2(
+			float(chair_cells[0][0]), float(chair_cells[0][1]))
+		var chair_b := Vector2(
+			float(chair_cells[1][0]), float(chair_cells[1][1]))
+		if chair_a.distance_to(chair_b) > 1.6:
+			errors.append("стулья должны образовывать компактную группу")
+		for chair: Vector2 in [chair_a, chair_b]:
+			if String(build_grid(plan, 0).get(
+					Vector2i(floori(chair.x), floori(chair.y)), "wall")) \
+					!= "floor":
+				errors.append("место стула должно оставаться на полу")
+	var arrow_cell: Array = plan.get("arrow_cell", [])
+	if arrow_cell.size() != 2:
+		errors.append("у группы стульев должна быть постоянная стрелка")
 	for cycle in range(MAX_CYCLE + 1):
 		var grid := build_grid(plan, cycle)
 		var to_north := find_route(grid, SPAWN_CELL, NORTH_CHECKPOINT)
@@ -78,15 +106,24 @@ static func build_grid(plan: Dictionary, cycle: int) -> Dictionary:
 	for x in range(CORE_RECT.position.x, CORE_RECT.end.x):
 		for z in range(CORE_RECT.position.y, CORE_RECT.end.y):
 			grid[Vector2i(x, z)] = "wall"
-	if cycle >= 2:
-		var stub_x := int(plan.get("stub_x", CORE_RECT.position.x))
-		for z in range(CORE_RECT.end.y, 33):
-			grid[Vector2i(stub_x, z)] = "wall"
+	if cycle == 1:
+		var narrow_rect := _rect_from_plan(plan.get("narrow_rect", []))
+		for x in range(narrow_rect.position.x, narrow_rect.end.x):
+			for z in range(narrow_rect.position.y, narrow_rect.end.y):
+				grid[Vector2i(x, z)] = "wall"
 	if cycle >= 3:
 		for x in range(PIT_RECT.position.x, PIT_RECT.end.x):
 			for z in range(PIT_RECT.position.y, PIT_RECT.end.y):
 				grid[Vector2i(x, z)] = "pit"
 	return grid
+
+
+static func _rect_from_plan(value: Variant) -> Rect2i:
+	var data: Array = value if value is Array else []
+	if data.size() != 4:
+		return Rect2i()
+	return Rect2i(
+		int(data[0]), int(data[1]), int(data[2]), int(data[3]))
 
 
 static func find_route(grid: Dictionary, start: Vector2i,
