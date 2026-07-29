@@ -25,14 +25,10 @@ const DOOR_PERIOD_CYCLES := 3
 const FALL_Y := -6.0
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
-const GEOMETRY_FADE_MARGIN := TILE_LENGTH * 0.75
+const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
 const RECYCLE_DISTANCE := FADE_DARK_DISTANCE + TILE_LENGTH
 const DOOR_PASSED_MARGIN := TILE_LENGTH * 0.75
 const DOOR_CENTER_TOLERANCE := Architecture.CELL * 0.5
-const EXTRA_LIGHT_POINTS_CELLS := [
-	Vector2(7.5, 3.5),
-	Vector2(7.5, 11.5),
-]
 
 var architecture
 var openings
@@ -133,7 +129,7 @@ func _build_start_niche() -> Node3D:
 	root.name = "start_niche_6x2"
 	add_child(root)
 	var niche: Dictionary = architecture.build_south_wall_niche(
-		root, NICHE_WIDTH_CELLS, NICHE_DEPTH_CELLS)
+		root, NICHE_WIDTH_CELLS, NICHE_DEPTH_CELLS, 3.0)
 	root.set_meta("focus_position", niche["center"])
 	return root
 
@@ -205,33 +201,32 @@ func _build_side_wall(chunk: Node3D, side: String,
 
 func _build_lights() -> void:
 	for chunk in _chunks:
-		var points: Array = Lighting.PIT_LIGHT_POINTS_CELLS.duplicate()
-		points.append_array(EXTRA_LIGHT_POINTS_CELLS)
+		var points: Array = Architecture.pit_intersection_light_cells()
 		for point: Vector2 in points:
-			var panel_index := chunk.get_child_count()
-			var light: OmniLight3D = lighting.add_ceiling_light(chunk, Vector3(
+			_add_light_entry(chunk, Vector3(
 				point.x * Architecture.CELL,
 				Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-				point.y * Architecture.CELL), true)
-			_light_entries.append({
-				"light": light,
-				"panel": chunk.get_child(panel_index),
-				"base_energy": light.light_energy,
-			})
-		_configure_chunk_fade(chunk)
+				point.y * Architecture.CELL))
+	_add_light_entry(_start_niche, Vector3(
+		2.5 * Architecture.CELL,
+		Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
+		15.5 * Architecture.CELL))
 
 
-func _configure_chunk_fade(chunk: Node3D) -> void:
-	_configure_geometry_fade(chunk)
-
-
-func _configure_geometry_fade(root: Node3D) -> void:
-	for node in root.find_children("*", "GeometryInstance3D", true, false):
-		var geometry := node as GeometryInstance3D
-		geometry.visibility_range_end = FADE_DARK_DISTANCE
-		geometry.visibility_range_end_margin = GEOMETRY_FADE_MARGIN
-		geometry.visibility_range_fade_mode = \
-			GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+func _add_light_entry(parent: Node3D, position: Vector3) -> void:
+	var panel_index := parent.get_child_count()
+	var light: OmniLight3D = lighting.add_ceiling_light(
+		parent, position, true)
+	var panel := parent.get_child(panel_index) as GeometryInstance3D
+	panel.visibility_range_end = FADE_DARK_DISTANCE
+	panel.visibility_range_end_margin = PANEL_FADE_MARGIN
+	panel.visibility_range_fade_mode = \
+		GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+	_light_entries.append({
+		"light": light,
+		"panel": panel,
+		"base_energy": light.light_energy,
+	})
 
 
 func _spawn_player() -> void:
@@ -306,9 +301,10 @@ func _node_visible(node: Node3D) -> bool:
 func _update_light_fade() -> void:
 	var span := maxf(0.001, FADE_DARK_DISTANCE - FADE_FULL_DISTANCE)
 	for entry: Dictionary in _light_entries:
-		var light := entry["light"] as OmniLight3D
-		if not is_instance_valid(light):
+		var light_value = entry.get("light")
+		if not is_instance_valid(light_value):
 			continue
+		var light := light_value as OmniLight3D
 		var distance := absf(
 			light.global_position.z - player.global_position.z)
 		var level := clampf(
@@ -353,18 +349,22 @@ func _recycle_dynamic_tiles() -> void:
 	var min_z := INF
 	var max_z := -INF
 	for chunk in _chunks:
+		if bool(chunk.get_meta("static_center", false)):
+			continue
 		min_z = minf(min_z, chunk.position.z)
 		max_z = maxf(max_z, chunk.position.z)
 	for chunk in _chunks:
 		if bool(chunk.get_meta("static_center", false)):
 			continue
-		if chunk.position.z > player.global_position.z + RECYCLE_DISTANCE:
+		if _last_move_sign < 0.0 \
+				and chunk.position.z > player.global_position.z \
+					+ RECYCLE_DISTANCE:
 			if chunk == _door_chunk:
 				_deactivate_door()
 			chunk.position.z = min_z - TILE_LENGTH
 			min_z = chunk.position.z
 			_register_cycle()
-		elif chunk.position.z + TILE_LENGTH \
+		elif _last_move_sign > 0.0 and chunk.position.z + TILE_LENGTH \
 				< player.global_position.z - RECYCLE_DISTANCE:
 			if chunk == _door_chunk:
 				_deactivate_door()
@@ -384,8 +384,6 @@ func _reveal_door() -> void:
 		push_error("hole_e: reveal tile not found")
 		return
 	_build_side_wall(_door_chunk, _door_side, true)
-	_configure_geometry_fade(
-		_door_chunk.get_node("%s_wall" % _door_side))
 	_door_world_z = _door_chunk.position.z + TILE_LENGTH * 0.5
 	_door_direction = _last_move_sign
 	_door_reveal_count += 1
@@ -421,8 +419,6 @@ func _update_repeating_door() -> void:
 func _deactivate_door() -> void:
 	if _door_chunk != null and is_instance_valid(_door_chunk):
 		_build_side_wall(_door_chunk, _door_side, false)
-		_configure_geometry_fade(
-			_door_chunk.get_node("%s_wall" % _door_side))
 	_door_chunk = null
 	_door_side = ""
 	_door_world_z = 0.0
@@ -547,7 +543,7 @@ func _run_mechanic_test() -> void:
 		and String(snapshot["door_side"]) == "east" \
 		and int(snapshot["door_reveal_count"]) == 2 \
 		and first_door_has_sign \
-		and _light_entries.size() == TILE_COUNT * 6 \
+		and _light_entries.size() == TILE_COUNT * 9 + 1 \
 		and bool(_chunks[HALF_TILE_COUNT].get_meta(
 			"static_center", false))
 	if passed:

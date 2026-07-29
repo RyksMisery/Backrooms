@@ -1,0 +1,190 @@
+extends SceneTree
+
+const Architecture := preload("res://modules/architecture_module.gd")
+const TILE_LENGTH := float(Architecture.ROOM_CELLS) * Architecture.CELL
+const VIEW_RADIUS := TILE_LENGTH * 2.25
+const STEP := TILE_LENGTH * 0.5
+const EXTENT := TILE_LENGTH * 14.0
+
+var _artifact_dir := ""
+var _samples: Array[Dictionary] = []
+var _max_gap := 0.0
+
+
+func _init() -> void:
+	call_deferred("_run")
+
+
+func _run() -> void:
+	var packed := load("res://hole_e.tscn") as PackedScene
+	if packed == null:
+		_fail("scene failed to load")
+		return
+	var level := packed.instantiate()
+	root.add_child(level)
+	for _frame in range(8):
+		await process_frame
+	var player := level.get("player") as CharacterBody3D
+	if player == null:
+		_fail("player missing")
+		return
+	player.set_physics_process(false)
+	player.set_process_input(false)
+	var niche := level.get("_start_niche") as Node3D
+	if niche == null:
+		_fail("6x2 start niche missing")
+		return
+	var niche_floor := niche.get_node_or_null("niche_floor") as MeshInstance3D
+	if niche_floor == null:
+		_fail("niche floor missing")
+		return
+	var niche_box := niche_floor.global_transform * niche_floor.get_aabb()
+	if absf(niche_box.position.x) > 0.001 \
+			or absf(niche_box.size.x - 6.0 * Architecture.CELL) > 0.001 \
+			or absf(niche_box.size.z - 2.0 * Architecture.CELL) > 0.001:
+		_fail("start niche is not west-flush 6x2")
+		return
+	var lights: Array = level.get("_light_entries")
+	if lights.size() != 9 * 9 + 1:
+		_fail("intersection/niche light layout has wrong count")
+		return
+	player.global_position = Vector3(
+		7.5 * Architecture.CELL, 1.2, 1.0 * Architecture.CELL)
+	player.rotation.y = 0.0
+	for _frame in range(3):
+		await process_frame
+	var prepared: Dictionary = level.call("debug_snapshot")
+	if not bool(prepared.get("niche_prepared", false)) \
+			or bool(prepared.get("infinite_active", false)):
+		_fail("approach did not prepare hidden south continuation")
+		return
+	player.rotation.y = PI
+	for _frame in range(3):
+		await process_frame
+	var revealed: Dictionary = level.call("debug_snapshot")
+	if not bool(revealed.get("infinite_active", false)):
+		_fail("camera turn did not activate bidirectional infinity")
+		return
+	var static_chunk := _static_chunk(level)
+	if static_chunk == null:
+		_fail("static center tile missing")
+		return
+	var static_position := static_chunk.position
+	await _walk(level, player, player.global_position.z, EXTENT, 1.0)
+	var south_snapshot: Dictionary = level.call("debug_snapshot")
+	if int(south_snapshot.get("door_reveal_count", 0)) < 2:
+		_fail("door did not repeat on south traversal")
+		return
+	await _walk(level, player, EXTENT, -EXTENT, -1.0)
+	var north_snapshot: Dictionary = level.call("debug_snapshot")
+	if int(north_snapshot.get("door_reveal_count", 0)) \
+			<= int(south_snapshot.get("door_reveal_count", 0)):
+		_fail("door did not repeat after reversing direction")
+		return
+	if static_chunk.position != static_position:
+		_fail("static center tile moved")
+		return
+	if _max_gap > 0.001:
+		_fail("visible coverage gap %.4f m" % _max_gap)
+		return
+	var timestamp := Time.get_datetime_string_from_system().replace(":", "-")
+	var relative_dir := ".hole_e_traversal_bot/%s" % timestamp
+	_artifact_dir = ProjectSettings.globalize_path("res://%s" % relative_dir)
+	DirAccess.make_dir_recursive_absolute(_artifact_dir)
+	var report := {
+		"created": timestamp,
+		"engine": Engine.get_version_info().get("string", ""),
+		"niche_aabb": {
+			"position": niche_box.position,
+			"size": niche_box.size,
+		},
+		"prepared": prepared,
+		"revealed": revealed,
+		"south": south_snapshot,
+		"north": north_snapshot,
+		"max_visible_gap_m": _max_gap,
+		"sample_count": _samples.size(),
+		"samples": _samples,
+	}
+	var file := FileAccess.open(
+		_artifact_dir.path_join("report.json"), FileAccess.WRITE)
+	if file != null:
+		file.store_string(JSON.stringify(report, "\t"))
+	print("HOLE_E_TRAVERSAL_BOT_OK: %s" % _artifact_dir)
+	print(JSON.stringify(north_snapshot))
+	root.remove_child(level)
+	level.free()
+	await process_frame
+	quit(0)
+
+
+func _walk(level: Node, player: CharacterBody3D, from_z: float,
+		to_z: float, direction: float) -> void:
+	var distance := absf(to_z - from_z)
+	var steps := ceili(distance / STEP)
+	for index in range(steps + 1):
+		var t := float(index) / float(maxi(steps, 1))
+		var z := lerpf(from_z, to_z, t)
+		player.global_position = Vector3(
+			7.5 * Architecture.CELL, 1.2, z)
+		player.velocity = Vector3(0.0, 0.0, direction * 4.0)
+		await process_frame
+		var gap := _coverage_gap(level, z)
+		_max_gap = maxf(_max_gap, gap)
+		if gap > 0.001:
+			print("HOLE_E_BOT_GAP z=", z,
+				" chunks=", _chunk_positions(level), " gap=", gap)
+		var snapshot: Dictionary = level.call("debug_snapshot")
+		_samples.append({
+			"z": z,
+			"gap": gap,
+			"cycles": snapshot.get("cycle_count", 0),
+			"door_reveals": snapshot.get("door_reveal_count", 0),
+		})
+
+
+func _coverage_gap(level: Node, player_z: float) -> float:
+	var intervals: Array[Vector2] = []
+	for chunk_value in level.get("_chunks"):
+		var chunk := chunk_value as Node3D
+		intervals.append(Vector2(
+			chunk.position.z, chunk.position.z + TILE_LENGTH))
+	intervals.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		return a.x < b.x)
+	var window_lo := player_z - VIEW_RADIUS
+	var window_hi := player_z + VIEW_RADIUS
+	var cursor := window_lo
+	var gap := 0.0
+	for interval in intervals:
+		if interval.y <= cursor:
+			continue
+		if interval.x > cursor:
+			gap = maxf(gap, minf(interval.x, window_hi) - cursor)
+		cursor = maxf(cursor, interval.x)
+		cursor = maxf(cursor, interval.y)
+		if cursor >= window_hi:
+			break
+	if cursor < window_hi:
+		gap = maxf(gap, window_hi - cursor)
+	return maxf(0.0, gap)
+
+
+func _static_chunk(level: Node) -> Node3D:
+	for chunk_value in level.get("_chunks"):
+		var chunk := chunk_value as Node3D
+		if bool(chunk.get_meta("static_center", false)):
+			return chunk
+	return null
+
+
+func _chunk_positions(level: Node) -> Array[float]:
+	var result: Array[float] = []
+	for chunk_value in level.get("_chunks"):
+		result.append((chunk_value as Node3D).position.z)
+	result.sort()
+	return result
+
+
+func _fail(message: String) -> void:
+	push_error("HOLE_E_TRAVERSAL_BOT_FAILED: %s" % message)
+	quit(1)

@@ -262,7 +262,9 @@ func build_south_wall_niche(parent: Node3D, width_cells: float,
 	var niche_width := clampf(width_cells, 1.0, float(ROOM_CELLS)) * CELL
 	var niche_depth := clampf(
 		depth_cells, 0.0, float(WALL_CELLS) - 0.001) * CELL
-	var center := opening_anchor(center_cells) * CELL
+	var center := clampf(
+		center_cells, niche_width / CELL * 0.5,
+		float(ROOM_CELLS) - niche_width / CELL * 0.5) * CELL
 	var opening_lo := center - niche_width * 0.5
 	var opening_hi := center + niche_width * 0.5
 	add_box(parent, "niche_wall_west",
@@ -422,6 +424,25 @@ static func pit_layout_cells() -> Dictionary:
 				+ float(z_index) * (hole + PIT_GAP_CELLS)
 			holes.append(Rect2(hole_x, hole_z, hole, hole))
 	return {"walks": walks, "holes": holes, "hole_size": hole}
+
+
+# Ближайшие канонические потолочные клетки над 3×3 пересечениями внутренних
+# мостков стандартной решётки провала.
+static func pit_intersection_light_cells() -> Array[Vector2]:
+	var layout := pit_layout_cells()
+	var vertical: Array[float] = []
+	var horizontal: Array[float] = []
+	for index in range(4, layout["walks"].size()):
+		var rect: Rect2 = layout["walks"][index]
+		if index % 2 == 0:
+			vertical.append(rect.position.x + rect.size.x * 0.5)
+		else:
+			horizontal.append(rect.position.y + rect.size.y * 0.5)
+	var result: Array[Vector2] = []
+	for x in vertical:
+		for z in horizontal:
+			result.append(Vector2(opening_anchor(x), opening_anchor(z)))
+	return result
 
 
 # Геометрия одной 15×15 секции провала без внешних стен и торцевых капов.
