@@ -19,8 +19,8 @@ static func build(seed_detail: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_detail
 	var mirror := rng.randi_range(0, 1) == 1
-	var narrow_rect := Rect2i(16, 3, 8, 6) if mirror \
-		else Rect2i(3, 3, 8, 6)
+	var narrow_rect := Rect2i(21, 11, 3, 17) if mirror \
+		else Rect2i(3, 11, 3, 17)
 	var chair_x := [7.2, 5.7] if mirror else [18.8, 20.3]
 	var plan := {
 		"schema_version": 2,
@@ -32,8 +32,8 @@ static func build(seed_detail: int) -> Dictionary:
 			narrow_rect.size.x, narrow_rect.size.y,
 		],
 		"chair_cells": [
-			[chair_x[0], 4.6],
-			[chair_x[1], 4.6],
+			[chair_x[0], 3.4],
+			[chair_x[1], 3.4],
 		],
 		"arrow_cell": [6.5 if mirror else 19.5, 3.02],
 		"spawn_cell": [SPAWN_CELL.x, SPAWN_CELL.y],
@@ -58,8 +58,10 @@ static func validate(plan: Dictionary) -> Dictionary:
 	if int(plan.get("schema_version", -1)) != 2:
 		errors.append("schema_version должен быть 2")
 	var narrow_rect := _rect_from_plan(plan.get("narrow_rect", []))
-	if narrow_rect not in [Rect2i(3, 3, 8, 6), Rect2i(16, 3, 8, 6)]:
-		errors.append("narrow_rect должен сужать одну сторону северного зала")
+	if narrow_rect not in [
+		Rect2i(3, 11, 3, 17), Rect2i(21, 11, 3, 17),
+	]:
+		errors.append("narrow_rect должен продольно сужать боковую ветвь")
 	var chair_cells: Array = plan.get("chair_cells", [])
 	if chair_cells.size() != 2:
 		errors.append("должно быть ровно два соседних места для стульев")
@@ -86,6 +88,16 @@ static func validate(plan: Dictionary) -> Dictionary:
 			errors.append("cycle %d: противоположная сторона недостижима" % cycle)
 		if cycle >= 3 and not _pit_has_reachable_edge(grid):
 			errors.append("cycle %d: у провала нет достижимого края" % cycle)
+	var narrowed_grid := build_grid(plan, 1)
+	var lane_x_values := [18, 19, 20] if bool(plan.get("mirror", false)) \
+		else [6, 7, 8]
+	for lane_x: int in lane_x_values:
+		for lane_z in range(9, 30):
+			if String(narrowed_grid.get(
+					Vector2i(lane_x, lane_z), "wall")) != "floor":
+				errors.append(
+					"суженная ветвь должна оставаться сквозной")
+				break
 	if _stable_hash_without_hash(plan) != int(plan.get("plan_hash", 0)):
 		errors.append("plan_hash не соответствует содержимому")
 	return {

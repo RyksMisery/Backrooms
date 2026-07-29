@@ -20,7 +20,7 @@ const EAST_SECTOR_X := 19
 const FALL_Y := -8.0
 const LOWER_ROOM_ORIGIN := Vector3(40.0, 0.0, 10.0)
 const HIDDEN_HOLD_SECONDS := 0.25
-const MUTATION_RECT := Rect2i(3, 3, 21, 6)
+const MUTATION_RECT := Rect2i(3, 3, 21, 25)
 const VISIBILITY_MARGIN_M := 0.15
 
 var architecture
@@ -105,12 +105,13 @@ func _build_main_lights() -> void:
 	_main_lights = Node3D.new()
 	_main_lights.name = "echo_loop_lights"
 	add_child(_main_lights)
-	var cells := [
-		Vector2i(5, 33), Vector2i(13, 33), Vector2i(21, 33),
-		Vector2i(5, 5), Vector2i(13, 5), Vector2i(21, 5),
-		Vector2i(5, 13), Vector2i(5, 21), Vector2i(5, 27),
-		Vector2i(21, 13), Vector2i(21, 21), Vector2i(21, 27),
-	]
+	var cells: Array[Vector2i] = []
+	for x in [5, 9, 13, 17, 21]:
+		cells.append(Vector2i(x, 5))
+		cells.append(Vector2i(x, 33))
+	for z in [9, 13, 17, 21, 25, 29]:
+		cells.append(Vector2i(5, z))
+		cells.append(Vector2i(21, z))
 	for cell: Vector2i in cells:
 		lighting.add_ceiling_light(_main_lights, Vector3(
 			(float(cell.x) + 0.5) * Architecture.CELL,
@@ -182,7 +183,7 @@ func _build_mutation_patch() -> void:
 		Props.spawn_painted_chair(_mutation_props, Vector3(
 			float(chair[0]) * Architecture.CELL, 0.0,
 			float(chair[1]) * Architecture.CELL),
-			PI, "arrow_chair_%02d" % (index + 1))
+			0.0, "arrow_chair_%02d" % (index + 1))
 	_mutation_samples_ms.append(
 		float(Time.get_ticks_usec() - started) / 1000.0)
 
@@ -308,6 +309,14 @@ func _mutation_region_visible() -> bool:
 	for chair_value: Array in _plan.get("chair_cells", []):
 		x_values.append(float(chair_value[0]) * Architecture.CELL)
 		z_values.append(float(chair_value[1]) * Architecture.CELL)
+	var narrow_data: Array = _plan.get("narrow_rect", [])
+	if narrow_data.size() == 4:
+		x_values.append(float(narrow_data[0]) * Architecture.CELL)
+		x_values.append(float(narrow_data[0] + narrow_data[2])
+			* Architecture.CELL)
+		z_values.append(float(narrow_data[1]) * Architecture.CELL)
+		z_values.append(float(narrow_data[1] + narrow_data[3])
+			* Architecture.CELL)
 	var y_values := [0.2, Architecture.CEIL_H * 0.5, Architecture.CEIL_H - 0.2]
 	for x: float in x_values:
 		for z: float in z_values:
