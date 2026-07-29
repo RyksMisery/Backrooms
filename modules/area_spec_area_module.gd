@@ -35,6 +35,8 @@ func setup(area_spec: Dictionary, options: Dictionary = {}) -> Dictionary:
 		push_error("AreaSpec invalid: %s" % "; ".join(analysis["errors"]))
 		return {"ok": false, "errors": analysis["errors"]}
 	name = String(spec.get("id", "AreaSpecArea"))
+	set_meta("construction_profile",
+		String(spec.get("construction_profile", "canonical")))
 	architecture = Architecture.new(self)
 	architecture.install_environment(bool(options.get("post_enabled", false)))
 	Architecture.apply_render_profile(get_viewport())
@@ -112,6 +114,11 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo \
 			and event.keycode == KEY_M and map != null:
 		map.toggle()
+
+
+func _exit_tree() -> void:
+	if lighting != null:
+		lighting.clear_lf3_runtime()
 
 
 func _map_data() -> Dictionary:

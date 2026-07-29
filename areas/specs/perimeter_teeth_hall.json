@@ -1,5 +1,7 @@
 {
   "schema_version": 1,
+  "construction_profile": "custom",
+  "space_type": "hall",
   "id": "perimeter_teeth_hall",
   "title": "Зал с выступами и проходами в толстой стене",
   "tags": [

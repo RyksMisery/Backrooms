@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "construction_profile": "canonical",
+  "space_type": "hall",
+  "id": "canonical_area_template",
+  "title": "Каноническая новая область",
+  "tags": ["canonical", "template"],
+  "size_cells": [15, 15],
+  "spawn_cells": [7.5, 7.5],
+  "openings": [],
+  "partitions": [],
+  "columns": [],
+  "clear_routes": [],
+  "wall_profiles": [],
+  "light_regions": [],
+  "light_overrides": {
+    "partition_guard": {
+      "mode": "off",
+      "effective_reach_m": 5.0,
+      "max_cross_partition_cells": 0
+    }
+  },
+  "anomaly": {
+    "enabled": false
+  },
+  "notes": "Копировать как старт новой области. Архитектура, панели, семейство источников и LF3 наследуются автоматически; добавлять только topology и явные локальные overrides."
+}

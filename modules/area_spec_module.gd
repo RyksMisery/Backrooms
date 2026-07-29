@@ -27,6 +27,17 @@ const PARTITION_THICKNESSES := [0.25, 0.5, 1.0, 2.0]
 const BLOCKING_KINDS := ["wall", "partition", "column", "pit"]
 const LIGHT_GUARD_BLOCKERS := ["partition", "column"]
 const LIGHT_GUARD_MODES := ["off", "warn", "filter"]
+const CONSTRUCTION_PROFILES := ["canonical", "custom"]
+const SPACE_TYPES := ["hall", "corridor", "office", "utility", "junction", "maze"]
+const PARTITION_ROLES := ["room_envelope", "gate", "maze", "architectural"]
+const ANOMALY_RULES := [
+	"column_rhythm",
+	"partition_alignment",
+	"room_symmetry",
+	"arch_orientation",
+	"light_rhythm",
+	"light_direction",
+]
 
 
 static func load_spec(path: String) -> Dictionary:
@@ -49,13 +60,29 @@ static func load_spec(path: String) -> Dictionary:
 
 static func normalize(source: Dictionary) -> Dictionary:
 	var spec := source.duplicate(true)
+	if not spec.has("construction_profile"):
+		spec["construction_profile"] = "canonical"
+	if not spec.has("space_type"):
+		spec["space_type"] = "hall"
 	if not spec.has("size_cells"):
 		spec["size_cells"] = [Architecture.ROOM_CELLS, Architecture.ROOM_CELLS]
 	if not spec.has("spawn_cells"):
 		spec["spawn_cells"] = [7.5, 7.5]
-	for key in ["tags", "openings", "partitions", "columns", "wall_profiles"]:
+	for key in ["tags", "openings", "partitions", "columns", "wall_profiles",
+			"clear_routes", "light_regions"]:
 		if not spec.has(key):
 			spec[key] = []
+	if not spec.has("anomaly"):
+		spec["anomaly"] = {"enabled": false}
+	if not spec.has("light_overrides"):
+		spec["light_overrides"] = {}
+	var light_overrides := (spec["light_overrides"] as Dictionary).duplicate(true)
+	if String(spec["construction_profile"]) == "canonical":
+		if not light_overrides.has("profile"):
+			light_overrides["profile"] = "wide"
+		if not light_overrides.has("source_family"):
+			light_overrides["source_family"] = "level_e_area"
+	spec["light_overrides"] = light_overrides
 	var normalized_openings: Array = []
 	for value in spec["openings"]:
 		if not (value is Dictionary):
@@ -69,6 +96,8 @@ static func normalize(source: Dictionary) -> Dictionary:
 			normalized_partitions.append(value)
 			continue
 		var partition := (value as Dictionary).duplicate(true)
+		if not partition.has("role"):
+			partition["role"] = "room_envelope"
 		var normalized_internal: Array = []
 		for opening_value in partition.get("openings", []):
 			if opening_value is Dictionary:
@@ -110,6 +139,13 @@ static func validate(spec: Dictionary) -> Dictionary:
 		errors.append("schema_version должен быть %d" % SCHEMA_VERSION)
 	if String(spec.get("id", "")).strip_edges().is_empty():
 		errors.append("Поле id обязательно")
+	var construction_profile := String(spec.get("construction_profile", "canonical"))
+	if construction_profile not in CONSTRUCTION_PROFILES:
+		errors.append("construction_profile должен быть canonical или custom")
+	var space_type := String(spec.get("space_type", "hall"))
+	if space_type not in SPACE_TYPES:
+		errors.append("Неизвестный space_type: %s" % space_type)
+	_validate_anomaly(spec.get("anomaly", {}), errors)
 	var size = spec.get("size_cells", [])
 	if not _pair_is_numeric(size) or int(size[0]) != Architecture.ROOM_CELLS \
 			or int(size[1]) != Architecture.ROOM_CELLS:
@@ -170,6 +206,9 @@ static func validate(spec: Dictionary) -> Dictionary:
 		var partition := value as Dictionary
 		var pid := String(partition.get("id", ""))
 		_register_id(pid, "partition", errors, ids)
+		var role := String(partition.get("role", "room_envelope"))
+		if role not in PARTITION_ROLES:
+			errors.append("partition %s: неизвестная role %s" % [pid, role])
 		var axis := String(partition.get("axis", ""))
 		if axis not in ["x", "z"]:
 			errors.append("partition %s: axis должен быть x или z" % pid)
@@ -207,6 +246,19 @@ static func validate(spec: Dictionary) -> Dictionary:
 				or lo_x < 0.0 or lo_z < 0.0 \
 				or hi_x > Architecture.ROOM_CELLS or hi_z > Architecture.ROOM_CELLS:
 			errors.append("column %s: габарит выходит за интерьер" % cid)
+		if construction_profile == "canonical" \
+				and not _anomaly_targets(spec, "column_rhythm", cid) \
+				and (not is_equal_approx(lo_x, roundf(lo_x))
+				or not is_equal_approx(hi_x, roundf(hi_x))
+				or not is_equal_approx(lo_z, roundf(lo_z))
+				or not is_equal_approx(hi_z, roundf(hi_z))):
+			errors.append("column %s: каноническая колонна должна занимать целые клетки" % cid)
+	if construction_profile == "canonical":
+		_validate_partition_connections(spec, errors)
+	_validate_clear_routes(spec, errors)
+	if construction_profile == "canonical" and space_type == "corridor" \
+			and (spec.get("clear_routes", []) as Array).is_empty():
+		errors.append("Канонический corridor требует хотя бы один clear_route")
 	var spawn = spec.get("spawn_cells", [])
 	if not _pair_is_numeric(spawn) or not _point_in_room(spawn):
 		errors.append("spawn_cells должен находиться внутри 15×15")
@@ -304,6 +356,7 @@ static func analyze(spec: Dictionary) -> Dictionary:
 		var spawn := _pair_to_cell(spec.get("spawn_cells", [7.5, 7.5]))
 		if BLOCKING_KINDS.has(grid_data["grid"].get(spawn, "wall")):
 			report["errors"].append("spawn_cells попадает в препятствие")
+		_validate_clear_route_occupancy(spec, grid_data["grid"], report["errors"])
 	var light_layout := find_light_layout(spec, grid_data["grid"])
 	for warning: String in light_layout["warnings"]:
 		report["warnings"].append(warning)
@@ -313,6 +366,131 @@ static func analyze(spec: Dictionary) -> Dictionary:
 		"light_cells": light_layout["light_cells"],
 		"rejected_light_cells": light_layout["rejected_light_cells"],
 		"light_partition_risk": light_layout["risk_by_cell"]}
+
+
+static func _validate_anomaly(value, errors: Array[String]) -> void:
+	if not (value is Dictionary):
+		errors.append("anomaly должен быть JSON-объектом")
+		return
+	var anomaly := value as Dictionary
+	if not bool(anomaly.get("enabled", false)):
+		return
+	var rule_id := String(anomaly.get("rule_id", ""))
+	if rule_id not in ANOMALY_RULES:
+		errors.append("anomaly.rule_id должен называть одно разрешённое правило")
+	var targets = anomaly.get("target_ids", [])
+	if not (targets is Array) or targets.is_empty():
+		errors.append("Включённая anomaly требует непустой target_ids")
+
+
+static func _anomaly_targets(spec: Dictionary, rule_id: String, target_id: String) -> bool:
+	var anomaly: Dictionary = spec.get("anomaly", {})
+	return bool(anomaly.get("enabled", false)) \
+		and String(anomaly.get("rule_id", "")) == rule_id \
+		and target_id in (anomaly.get("target_ids", []) as Array)
+
+
+static func _validate_clear_routes(spec: Dictionary, errors: Array[String]) -> void:
+	for value in spec.get("clear_routes", []):
+		if not (value is Dictionary):
+			errors.append("Каждый clear_route должен быть JSON-объектом")
+			continue
+		var route := value as Dictionary
+		var route_id := String(route.get("id", ""))
+		if route_id.strip_edges().is_empty():
+			errors.append("clear_route: поле id обязательно")
+		var axis := String(route.get("axis", ""))
+		if axis not in ["x", "z"]:
+			errors.append("clear_route %s: axis должен быть x или z" % route_id)
+			continue
+		var center := float(route.get("center_cells", -1.0))
+		var width := float(route.get("width_cells", 0.0))
+		var from_l := float(route.get("from", -1.0))
+		var to_l := float(route.get("to", -1.0))
+		if width < 1.0:
+			errors.append("clear_route %s: width_cells должен быть >= 1" % route_id)
+		if from_l < 0.0 or to_l > Architecture.ROOM_CELLS or to_l <= from_l:
+			errors.append("clear_route %s: неверный диапазон from/to" % route_id)
+		if center - width * 0.5 < 0.0 \
+				or center + width * 0.5 > Architecture.ROOM_CELLS:
+			errors.append("clear_route %s: чистая ширина выходит за интерьер" % route_id)
+
+
+static func _validate_clear_route_occupancy(spec: Dictionary, grid: Dictionary,
+		errors: Array[String]) -> void:
+	for route: Dictionary in spec.get("clear_routes", []):
+		var route_id := String(route.get("id", "clear_route"))
+		for cell: Vector2i in _clear_route_cells(route):
+			var kind := String(grid.get(cell, "wall"))
+			if kind in ["partition", "column"]:
+				errors.append("clear_route %s пересекает %s в клетке %s" \
+					% [route_id, kind, cell])
+
+
+static func _clear_route_cells(route: Dictionary) -> Array[Vector2i]:
+	var result: Array[Vector2i] = []
+	var axis := String(route.get("axis", "z"))
+	var center := float(route.get("center_cells", 0.0))
+	var width := float(route.get("width_cells", 1.0))
+	var from_l := float(route.get("from", 0.0))
+	var to_l := float(route.get("to", 0.0))
+	var cross_lo := floori(center - width * 0.5)
+	var cross_hi := ceili(center + width * 0.5)
+	for along in range(floori(from_l), ceili(to_l)):
+		for cross in range(cross_lo, cross_hi):
+			result.append(Vector2i(along, cross) if axis == "x" \
+				else Vector2i(cross, along))
+	return result
+
+
+static func _validate_partition_connections(spec: Dictionary,
+		errors: Array[String]) -> void:
+	var partitions: Array = spec.get("partitions", [])
+	var columns: Array = spec.get("columns", [])
+	for partition: Dictionary in partitions:
+		if String(partition.get("role", "room_envelope")) != "room_envelope":
+			continue
+		var pid := String(partition.get("id", "partition"))
+		for endpoint in [float(partition.get("from", 0.0)),
+				float(partition.get("to", 0.0))]:
+			if _partition_endpoint_attached(partition, endpoint, partitions, columns):
+				continue
+			if _anomaly_targets(spec, "partition_alignment", pid):
+				continue
+			errors.append("partition %s: свободный конец %.3f не соединён с конструктивным узлом" \
+				% [pid, endpoint])
+
+
+static func _partition_endpoint_attached(partition: Dictionary, endpoint: float,
+		partitions: Array, columns: Array) -> bool:
+	if is_equal_approx(endpoint, 0.0) \
+			or is_equal_approx(endpoint, float(Architecture.ROOM_CELLS)):
+		return true
+	var axis := String(partition.get("axis", "z"))
+	var line := float(partition.get("line", 0.0))
+	var point := Vector2(line, endpoint) if axis == "z" else Vector2(endpoint, line)
+	for other: Dictionary in partitions:
+		if other == partition:
+			continue
+		var other_axis := String(other.get("axis", "z"))
+		var other_line := float(other.get("line", 0.0))
+		var other_from := float(other.get("from", 0.0))
+		var other_to := float(other.get("to", 0.0))
+		if other_axis == "z" and is_equal_approx(point.x, other_line) \
+				and point.y >= other_from - 0.001 and point.y <= other_to + 0.001:
+			return true
+		if other_axis == "x" and is_equal_approx(point.y, other_line) \
+				and point.x >= other_from - 0.001 and point.x <= other_to + 0.001:
+			return true
+	for column: Dictionary in columns:
+		var center: Array = column.get("center_cells", [0.0, 0.0])
+		var size: Array = column.get("size_cells", [1.0, 1.0])
+		if point.x >= float(center[0]) - float(size[0]) * 0.5 - 0.001 \
+				and point.x <= float(center[0]) + float(size[0]) * 0.5 + 0.001 \
+				and point.y >= float(center[1]) - float(size[1]) * 0.5 - 0.001 \
+				and point.y <= float(center[1]) + float(size[1]) * 0.5 + 0.001:
+			return true
+	return false
 
 
 static func build_occupancy(spec: Dictionary) -> Dictionary:
@@ -519,6 +697,13 @@ static func _base_light_cells(spec: Dictionary, grid: Dictionary) -> Array[Vecto
 	var lighting = Lighting.new(null, null)
 	var result: Array[Vector2i] = []
 	var regions: Array = spec.get("light_regions", [])
+	if regions.is_empty() \
+			and String(spec.get("construction_profile", "canonical")) == "canonical":
+		match String(spec.get("space_type", "hall")):
+			"corridor":
+				return _canonical_corridor_light_cells(spec, grid, lighting)
+			"office", "utility":
+				return _canonical_centered_light_cells(grid)
 	if regions.is_empty():
 		regions = [{"origin_cells": [0, 0],
 			"size_cells": [Architecture.ROOM_CELLS, Architecture.ROOM_CELLS]}]
@@ -541,16 +726,7 @@ static func _base_light_cells(spec: Dictionary, grid: Dictionary) -> Array[Vecto
 		for x in region_indices:
 			for z in region_indices:
 				var cell := offset + Vector2i(x, z)
-				var legal := true
-				for ox in range(-1, 2):
-					for oz in range(-1, 2):
-						if BLOCKING_KINDS.has(grid.get(
-								cell + Vector2i(ox, oz), "wall")):
-							legal = false
-							break
-					if not legal:
-						break
-				if legal:
+				if _light_cell_legal(cell, grid):
 					region_cells.append(cell)
 		if int(region.get("trim_legal_rings", 0)) == 1 \
 				and not region_cells.is_empty():
@@ -573,6 +749,67 @@ static func _base_light_cells(spec: Dictionary, grid: Dictionary) -> Array[Vecto
 			if cell not in result:
 				result.append(cell)
 	return result
+
+
+static func _canonical_corridor_light_cells(spec: Dictionary, grid: Dictionary,
+		lighting) -> Array[Vector2i]:
+	var result: Array[Vector2i] = []
+	for route: Dictionary in spec.get("clear_routes", []):
+		var axis := String(route.get("axis", "z"))
+		var center := float(route.get("center_cells", 0.0))
+		var width := float(route.get("width_cells", 1.0))
+		var from_l := float(route.get("from", 0.0))
+		var to_l := float(route.get("to", 0.0))
+		var cross_indices: Array[int] = []
+		for cross in range(floori(center - width * 0.5),
+				ceili(center + width * 0.5)):
+			cross_indices.append(cross)
+		cross_indices.sort_custom(func(a: int, b: int) -> bool:
+			var distance_a := absf((float(a) + 0.5) - center)
+			var distance_b := absf((float(b) + 0.5) - center)
+			return a < b if is_equal_approx(distance_a, distance_b) \
+				else distance_a < distance_b)
+		for along: int in lighting.grid_indices(Architecture.ROOM_CELLS,
+				Lighting.STANDARD_HALL_STRIDE_MULTIPLIER):
+			var along_center := float(along) + 0.5
+			if along_center < from_l or along_center > to_l:
+				continue
+			for cross: int in cross_indices:
+				var cell := Vector2i(along, cross) if axis == "x" \
+					else Vector2i(cross, along)
+				if _light_cell_legal(cell, grid):
+					if cell not in result:
+						result.append(cell)
+					break
+	return result
+
+
+static func _canonical_centered_light_cells(grid: Dictionary) -> Array[Vector2i]:
+	var target := Vector2(float(Architecture.ROOM_CELLS) * 0.5,
+		float(Architecture.ROOM_CELLS) * 0.5)
+	var candidates: Array[Vector2i] = []
+	for x in range(Architecture.ROOM_CELLS):
+		for z in range(Architecture.ROOM_CELLS):
+			var cell := Vector2i(x, z)
+			if _light_cell_legal(cell, grid):
+				candidates.append(cell)
+	candidates.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var point_a := Vector2(float(a.x) + 0.5, float(a.y) + 0.5)
+		var point_b := Vector2(float(b.x) + 0.5, float(b.y) + 0.5)
+		var distance_a := point_a.distance_squared_to(target)
+		var distance_b := point_b.distance_squared_to(target)
+		if is_equal_approx(distance_a, distance_b):
+			return a.x < b.x if a.y == b.y else a.y < b.y
+		return distance_a < distance_b)
+	return [candidates[0]] if not candidates.is_empty() else []
+
+
+static func _light_cell_legal(cell: Vector2i, grid: Dictionary) -> bool:
+	for ox in range(-1, 2):
+		for oz in range(-1, 2):
+			if BLOCKING_KINDS.has(grid.get(cell + Vector2i(ox, oz), "wall")):
+				return false
+	return true
 
 
 static func architecture_openings(spec: Dictionary) -> Array:

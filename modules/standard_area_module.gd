@@ -27,11 +27,14 @@ var hud_title := "СТАНДАРТНАЯ ОБЛАСТЬ 15×15"
 
 func setup(spec: Dictionary = {}) -> Dictionary:
 	name = String(spec.get("name", "StandardArea15x15"))
+	set_meta("construction_profile", "canonical")
 	architecture = Architecture.new(self)
 	architecture.install_environment(bool(spec.get("post_enabled", false)))
 	Architecture.apply_render_profile(get_viewport())
 	openings = Openings.new(self, architecture)
 	lighting = Lighting.new(self, architecture)
+	lighting.configure_lf3_runtime(_lf3_cell_blocks_light, _get_active_camera,
+		Architecture.CELL)
 	audio = Audio.new(self)
 	hud = HUD.new(self)
 	map = Map.new(self)
@@ -41,8 +44,8 @@ func setup(spec: Dictionary = {}) -> Dictionary:
 	var opening_specs := _normalize_openings(spec.get("openings", []))
 	architecture.build_standard_hall(area_root, opening_specs)
 	_dress_openings(opening_specs)
-	_add_standard_lights()
 	_build_occupancy(opening_specs)
+	_add_standard_lights()
 	player = spec.get("player") as CharacterBody3D
 	if player == null:
 		player = PLAYER_SCENE.instantiate() as CharacterBody3D
@@ -84,7 +87,7 @@ func _normalize_openings(source: Array) -> Array:
 func _process(delta: float) -> void:
 	if lighting == null or player == null:
 		return
-	lighting.update(player)
+	lighting.update_level_e_area_lighting(player)
 	audio.update(delta)
 	hud.update("%s\n%d fps\nM — карта" % [
 		hud_title, Engine.get_frames_per_second()])
@@ -97,14 +100,19 @@ func _input(event: InputEvent) -> void:
 		map.toggle()
 
 
+func _exit_tree() -> void:
+	if lighting != null:
+		lighting.clear_lf3_runtime()
+
+
 func _add_standard_lights() -> void:
 	var light_cells: Array[int] = lighting.standard_hall_grid_indices()
 	for cell_x in light_cells:
 		for cell_z in light_cells:
-			lighting.add_ceiling_light(area_root,
+			lighting.add_level_e_area_ceiling_light(area_root,
 				Vector3((float(cell_x) + 0.5) * Architecture.CELL,
 					Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-					(float(cell_z) + 0.5) * Architecture.CELL), true)
+					(float(cell_z) + 0.5) * Architecture.CELL), "standard")
 
 
 func _dress_openings(opening_specs: Array) -> void:
@@ -203,3 +211,11 @@ func _map_data() -> Dictionary:
 
 func _get_player() -> Node3D:
 	return player
+
+
+func _get_active_camera() -> Camera3D:
+	return get_viewport().get_camera_3d()
+
+
+func _lf3_cell_blocks_light(cell: Vector2i) -> bool:
+	return String(grid.get(cell, "wall")) in ["wall", "partition", "column", "pit"]

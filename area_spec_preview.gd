@@ -3,7 +3,8 @@ extends Node3D
 const AreaSpec := preload("res://modules/area_spec_module.gd")
 const AreaSpecArea := preload("res://modules/area_spec_area_module.gd")
 
-@export_file("*.json") var spec_path := "res://areas/specs/pilot_mixed_hall.json"
+@export_file("*.json") var spec_path := \
+	"res://areas/specs/canonical_area_template.json"
 
 var _area
 var _base_spec: Dictionary = {}

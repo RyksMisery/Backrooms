@@ -1,5 +1,7 @@
 {
   "schema_version": 1,
+  "construction_profile": "custom",
+  "space_type": "hall",
   "id": "pilot_mixed_hall",
   "title": "Пилотный зал смешанного веса",
   "tags": ["prototype", "open", "mixed_weight"],

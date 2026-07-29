@@ -155,6 +155,12 @@ func configure_lf3_runtime(cell_blocked_provider: Callable,
 	_lf3_guardian_segment_cache.clear()
 
 
+func clear_lf3_runtime() -> void:
+	_lf3_cell_blocked_provider = Callable()
+	_lf3_camera_provider = Callable()
+	_lf3_guardian_segment_cache.clear()
+
+
 func invalidate_lf3_guardian_cache() -> void:
 	_lf3_guardian_segment_cache.clear()
 

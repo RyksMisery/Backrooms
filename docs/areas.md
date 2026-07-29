@@ -73,6 +73,24 @@ be formed:
 
 Areas may be rotated when placed.
 
+## Canonical And Custom Construction Profiles
+
+Every newly created area starts with `construction_profile=canonical`.
+Its specification is an override of the common architecture/openings/light
+package, not a replacement implementation. A new area must not opt out of the
+standard package merely because its final topology is unusual or experimental.
+
+`construction_profile=custom` is reserved for previously accepted authored
+areas and legacy laboratories whose existing layout must be preserved. It is
+an explicit compatibility marker. Custom areas do not define defaults for new
+work and are not migrated unless the task names them.
+
+For a canonical area, route intent is data. A corridor or other transport
+space declares its clear route before columns and partitions are placed.
+Validation then rejects ordinary columns and longitudinal partitions that
+intersect that route or reduce it below its declared width. A transverse gate
+must have an explicit gate/mechanic role.
+
 ## Connection Rules
 
 - Passage size is a spectrum: from a 1x1 crawl-hole (crouch) through door-sized
@@ -211,14 +229,16 @@ placement from `docs/openings.md` across the whole labyrinth. Resolve an absent
 style to `office_new`; use `office_old` only when the object explicitly requests
 that legacy variant.
 
-## Open-Area Dressing: Mixed Partition Weight (Atmosphere, Not Density)
+## Custom Open-Area Dressing: Mixed Partition Weight (Atmosphere, Not Density)
 
 Reference: `backrooms/screenshots/new/*.png` (Sketchfab "Backrooms VR" walkthrough shots) and the
 floor-plan reconstruction done from `backrooms/backrooms_vr/scene.gltf` (projected wall triangles,
 not a usable asset — see project chat log for how/why).
 
-Large open area types (`column_hall`, `room_pillars`, `room_well`, and similar "hall" archetypes)
-should not stay architecturally clean. The reference shows big open rooms broken up by a small
+This is an explicitly `custom` authored treatment for existing or deliberately
+selected areas, not the default grammar of a new canonical hall. Large open
+area types (`column_hall`, `room_pillars`, `room_well`, and similar "hall" archetypes)
+may use it only when their specification selects that treatment. The reference shows big open rooms broken up by a small
 number of free-standing elements that deliberately mix wall-weight classes which normally signal
 different things to the player:
 
@@ -240,7 +260,9 @@ recess, where it's allowed relative to the spanning-tree path). The base maze ru
 0.25 thickness, spanning-tree driven) still governs the regular grid; the dressing is an
 additional, sparse layer on top of it, not a replacement.
 
-Status: noted for later, not implemented in any template yet.
+Status: noted for later, not implemented in any template yet. It must not be
+activated by a generic new-area generator without either a documented custom
+profile or one bounded `anomaly` episode.
 
 ## Light Placement
 
