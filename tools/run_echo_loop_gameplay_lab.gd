@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Architecture := preload("res://modules/architecture_module.gd")
+const Props := preload("res://modules/props_module.gd")
 const RunPlan := preload("res://modules/echo_loop_run_plan_module.gd")
 
 
@@ -32,6 +33,11 @@ func _run() -> void:
 		return
 	if level.find_child("arrow_chair_01", true, false) != null:
 		_fail("chair group must start empty")
+		return
+	var light_module: RefCounted = level.get("lighting")
+	var lamps: Array = light_module.get("lamps") if light_module != null else []
+	if lamps.size() < 40:
+		_fail("double ceiling panels missing")
 		return
 	var initial_static_builds := int(states[0].get("static_build_count", -1))
 	for expected_cycle in range(1, RunPlan.MAX_CYCLE + 1):
@@ -69,13 +75,24 @@ func _run() -> void:
 		if expected_cycle >= 1 and chair_1 == null:
 			_fail("first grouped chair missing at cycle %d" % expected_cycle)
 			return
+		if expected_cycle >= 1:
+			var chair_box := Props.world_aabb(chair_1)
+			var inner_wall_z := 3.0 * Architecture.CELL
+			if chair_box.size.is_zero_approx() \
+					or chair_box.position.z < inner_wall_z + 0.08:
+				_fail("first chair intersects north wall")
+				return
 		if (expected_cycle >= 2) != (chair_2 != null):
 			_fail("second grouped chair has wrong state at cycle %d" % expected_cycle)
 			return
-		var constriction = level.find_child(
-			"north_width_constriction", true, false)
-		if (expected_cycle == 1) != (constriction != null):
-			_fail("north width has wrong state at cycle %d" % expected_cycle)
+		var west_constriction = level.find_child(
+			"side_width_constriction_00", true, false)
+		var east_constriction = level.find_child(
+			"side_width_constriction_01", true, false)
+		var has_both_constrictions := west_constriction != null \
+			and east_constriction != null
+		if (expected_cycle == 1) != has_both_constrictions:
+			_fail("side widths have wrong state at cycle %d" % expected_cycle)
 			return
 		var pit_cover = level.find_child("pit_cover_floor", true, false)
 		if (expected_cycle < RunPlan.MAX_CYCLE) != (pit_cover != null):

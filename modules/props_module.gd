@@ -6,6 +6,7 @@ extends RefCounted
 const PAINTED_CHAIR_SCENE := preload(
 	"res://3d/painted_wooden_chair_01_1k/painted_wooden_chair_01_1k.gltf")
 const PAINTED_CHAIR_HEIGHT_M := 1.375
+const PAINTED_CHAIR_WALL_CLEARANCE_M := 0.10
 const WALL_ARROW_TEXTURE := preload("res://decals/backrooms_arrow_black.png")
 const WALL_ARROW_SIZE := Vector2(2.0, 2.0)
 
@@ -28,6 +29,33 @@ static func spawn_painted_chair(parent: Node3D, local_floor_position: Vector3,
 			box.get_center().x, box.position.y, box.get_center().z)
 	else:
 		chair.global_position = target
+	return chair
+
+
+static func spawn_painted_chair_against_wall(parent: Node3D,
+		local_wall_position: Vector3, local_inward_normal: Vector3,
+		node_name := "painted_chair_against_wall") -> Node3D:
+	var inward := local_inward_normal.normalized()
+	var yaw := atan2(inward.x, inward.z)
+	var chair := spawn_painted_chair(
+		parent,
+		local_wall_position + inward * 0.75,
+		yaw,
+		node_name)
+	if chair == null:
+		return null
+	var box := world_aabb(chair)
+	var world_plane := parent.to_global(local_wall_position)
+	var world_inward := (parent.global_basis * inward).normalized()
+	var minimum_projection := INF
+	for endpoint_index in range(8):
+		minimum_projection = minf(
+			minimum_projection,
+			world_inward.dot(box.get_endpoint(endpoint_index)))
+	var required_projection := world_inward.dot(world_plane) \
+		+ PAINTED_CHAIR_WALL_CLEARANCE_M
+	chair.global_position += world_inward * (
+		required_projection - minimum_projection)
 	return chair
 
 

@@ -19,21 +19,19 @@ static func build(seed_detail: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_detail
 	var mirror := rng.randi_range(0, 1) == 1
-	var narrow_rect := Rect2i(21, 11, 3, 17) if mirror \
-		else Rect2i(3, 11, 3, 17)
 	var chair_x := [7.2, 5.7] if mirror else [18.8, 20.3]
 	var plan := {
-		"schema_version": 2,
-		"id": "echo_loop_lab_v1",
+		"schema_version": 3,
+		"id": "echo_loop_lab_v2",
 		"seed_detail": seed_detail,
 		"mirror": mirror,
-		"narrow_rect": [
-			narrow_rect.position.x, narrow_rect.position.y,
-			narrow_rect.size.x, narrow_rect.size.y,
+		"narrow_rects": [
+			[3, 11, 4, 17],
+			[20, 11, 4, 17],
 		],
-		"chair_cells": [
-			[chair_x[0], 3.4],
-			[chair_x[1], 3.4],
+		"chair_wall_cells": [
+			[chair_x[0], 3.0],
+			[chair_x[1], 3.0],
 		],
 		"arrow_cell": [6.5 if mirror else 19.5, 3.02],
 		"spawn_cell": [SPAWN_CELL.x, SPAWN_CELL.y],
@@ -55,14 +53,14 @@ static func build(seed_detail: int) -> Dictionary:
 static func validate(plan: Dictionary) -> Dictionary:
 	var errors: Array[String] = []
 	var routes := {}
-	if int(plan.get("schema_version", -1)) != 2:
-		errors.append("schema_version должен быть 2")
-	var narrow_rect := _rect_from_plan(plan.get("narrow_rect", []))
-	if narrow_rect not in [
-		Rect2i(3, 11, 3, 17), Rect2i(21, 11, 3, 17),
+	if int(plan.get("schema_version", -1)) != 3:
+		errors.append("schema_version должен быть 3")
+	var narrow_rects := _narrow_rects_from_plan(plan)
+	if narrow_rects != [
+		Rect2i(3, 11, 4, 17), Rect2i(20, 11, 4, 17),
 	]:
-		errors.append("narrow_rect должен продольно сужать боковую ветвь")
-	var chair_cells: Array = plan.get("chair_cells", [])
+		errors.append("narrow_rects должны сужать обе боковые ветви")
+	var chair_cells: Array = plan.get("chair_wall_cells", [])
 	if chair_cells.size() != 2:
 		errors.append("должно быть ровно два соседних места для стульев")
 	else:
@@ -89,15 +87,14 @@ static func validate(plan: Dictionary) -> Dictionary:
 		if cycle >= 3 and not _pit_has_reachable_edge(grid):
 			errors.append("cycle %d: у провала нет достижимого края" % cycle)
 	var narrowed_grid := build_grid(plan, 1)
-	var lane_x_values := [18, 19, 20] if bool(plan.get("mirror", false)) \
-		else [6, 7, 8]
-	for lane_x: int in lane_x_values:
-		for lane_z in range(9, 30):
-			if String(narrowed_grid.get(
-					Vector2i(lane_x, lane_z), "wall")) != "floor":
-				errors.append(
-					"суженная ветвь должна оставаться сквозной")
-				break
+	for lane_x_values: Array in [[7, 8], [18, 19]]:
+		for lane_x: int in lane_x_values:
+			for lane_z in range(9, 30):
+				if String(narrowed_grid.get(
+						Vector2i(lane_x, lane_z), "wall")) != "floor":
+					errors.append(
+						"обе суженные ветви должны оставаться сквозными")
+					break
 	if _stable_hash_without_hash(plan) != int(plan.get("plan_hash", 0)):
 		errors.append("plan_hash не соответствует содержимому")
 	return {
@@ -119,10 +116,10 @@ static func build_grid(plan: Dictionary, cycle: int) -> Dictionary:
 		for z in range(CORE_RECT.position.y, CORE_RECT.end.y):
 			grid[Vector2i(x, z)] = "wall"
 	if cycle == 1:
-		var narrow_rect := _rect_from_plan(plan.get("narrow_rect", []))
-		for x in range(narrow_rect.position.x, narrow_rect.end.x):
-			for z in range(narrow_rect.position.y, narrow_rect.end.y):
-				grid[Vector2i(x, z)] = "wall"
+		for narrow_rect: Rect2i in _narrow_rects_from_plan(plan):
+			for x in range(narrow_rect.position.x, narrow_rect.end.x):
+				for z in range(narrow_rect.position.y, narrow_rect.end.y):
+					grid[Vector2i(x, z)] = "wall"
 	if cycle >= 3:
 		for x in range(PIT_RECT.position.x, PIT_RECT.end.x):
 			for z in range(PIT_RECT.position.y, PIT_RECT.end.y):
@@ -136,6 +133,13 @@ static func _rect_from_plan(value: Variant) -> Rect2i:
 		return Rect2i()
 	return Rect2i(
 		int(data[0]), int(data[1]), int(data[2]), int(data[3]))
+
+
+static func _narrow_rects_from_plan(plan: Dictionary) -> Array[Rect2i]:
+	var result: Array[Rect2i] = []
+	for value: Variant in plan.get("narrow_rects", []):
+		result.append(_rect_from_plan(value))
+	return result
 
 
 static func find_route(grid: Dictionary, start: Vector2i,

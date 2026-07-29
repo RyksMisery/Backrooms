@@ -19,7 +19,7 @@ const WEST_SECTOR_X := 7
 const EAST_SECTOR_X := 19
 const FALL_Y := -8.0
 const LOWER_ROOM_ORIGIN := Vector3(40.0, 0.0, 10.0)
-const HIDDEN_HOLD_SECONDS := 0.25
+const HIDDEN_HOLD_SECONDS := 0.12
 const MUTATION_RECT := Rect2i(3, 3, 21, 25)
 const VISIBILITY_MARGIN_M := 0.15
 
@@ -105,18 +105,22 @@ func _build_main_lights() -> void:
 	_main_lights = Node3D.new()
 	_main_lights.name = "echo_loop_lights"
 	add_child(_main_lights)
-	var cells: Array[Vector2i] = []
 	for x in [5, 9, 13, 17, 21]:
-		cells.append(Vector2i(x, 5))
-		cells.append(Vector2i(x, 33))
+		_add_double_ceiling_light(Vector2i(x, 5), Vector2i(0, 1))
+		_add_double_ceiling_light(Vector2i(x, 33), Vector2i(0, 1))
 	for z in [9, 13, 17, 21, 25, 29]:
-		cells.append(Vector2i(5, z))
-		cells.append(Vector2i(21, z))
-	for cell: Vector2i in cells:
+		_add_double_ceiling_light(Vector2i(5, z), Vector2i(1, 0))
+		_add_double_ceiling_light(Vector2i(21, z), Vector2i(1, 0))
+
+
+func _add_double_ceiling_light(cell: Vector2i, cross_axis: Vector2i) -> void:
+	for side in [-0.5, 0.5]:
 		lighting.add_ceiling_light(_main_lights, Vector3(
-			(float(cell.x) + 0.5) * Architecture.CELL,
+			(float(cell.x) + 0.5 + cross_axis.x * side)
+				* Architecture.CELL,
 			Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-			(float(cell.y) + 0.5) * Architecture.CELL), true)
+			(float(cell.y) + 0.5 + cross_axis.y * side)
+				* Architecture.CELL), true)
 
 
 func _build_lower_room() -> void:
@@ -171,19 +175,25 @@ func _build_mutation_patch() -> void:
 	else:
 		architecture.add_pit_shaft(_mutation_geometry, RunPlan.PIT_RECT)
 	if _cycle == 1:
-		var narrow_data: Array = _plan.get("narrow_rect", [])
-		var narrow_rect := Rect2i(
-			int(narrow_data[0]), int(narrow_data[1]),
-			int(narrow_data[2]), int(narrow_data[3]))
-		_add_wall_patch(_mutation_geometry, narrow_rect)
-	var chair_cells: Array = _plan.get("chair_cells", [])
+		var narrow_index := 0
+		for narrow_value: Array in _plan.get("narrow_rects", []):
+			var narrow_rect := Rect2i(
+				int(narrow_value[0]), int(narrow_value[1]),
+				int(narrow_value[2]), int(narrow_value[3]))
+			_add_wall_patch(_mutation_geometry, narrow_rect, narrow_index)
+			narrow_index += 1
+	var chair_cells: Array = _plan.get("chair_wall_cells", [])
 	var chair_count := mini(_cycle, 2)
 	for index in range(chair_count):
 		var chair: Array = chair_cells[index]
-		Props.spawn_painted_chair(_mutation_props, Vector3(
-			float(chair[0]) * Architecture.CELL, 0.0,
-			float(chair[1]) * Architecture.CELL),
-			0.0, "arrow_chair_%02d" % (index + 1))
+		Props.spawn_painted_chair_against_wall(
+			_mutation_props,
+			Vector3(
+				float(chair[0]) * Architecture.CELL,
+				0.0,
+				float(chair[1]) * Architecture.CELL),
+			Vector3.BACK,
+			"arrow_chair_%02d" % (index + 1))
 	_mutation_samples_ms.append(
 		float(Time.get_ticks_usec() - started) / 1000.0)
 
@@ -201,8 +211,8 @@ func _add_floor_patch(parent: Node3D, rect: Rect2i) -> void:
 		"floor", true)
 
 
-func _add_wall_patch(parent: Node3D, rect: Rect2i) -> void:
-	architecture.add_box(parent, "north_width_constriction",
+func _add_wall_patch(parent: Node3D, rect: Rect2i, index: int) -> void:
+	architecture.add_box(parent, "side_width_constriction_%02d" % index,
 		Vector3(
 			rect.size.x * Architecture.CELL,
 			Architecture.CEIL_H,
@@ -265,6 +275,7 @@ func _update_pending_mutation(delta: float) -> void:
 	if _pending_cycle < 0:
 		return
 	if _sector_for_cell(_player_cell()) != "south" \
+			or not _camera_faces_south() \
 			or _mutation_region_visible():
 		_hidden_time = 0.0
 		return
@@ -290,6 +301,13 @@ func _apply_pending_mutation() -> void:
 	audio.play_flick()
 
 
+func _camera_faces_south() -> bool:
+	if player == null or player.camera == null:
+		return false
+	var forward: Vector3 = -player.camera.global_transform.basis.z.normalized()
+	return forward.z > 0.35
+
+
 func _mutation_region_visible() -> bool:
 	if player == null or player.camera == null:
 		return true
@@ -306,17 +324,17 @@ func _mutation_region_visible() -> bool:
 			* Architecture.CELL,
 		(float(MUTATION_RECT.end.y) - 0.1) * Architecture.CELL,
 	]
-	for chair_value: Array in _plan.get("chair_cells", []):
+	for chair_value: Array in _plan.get("chair_wall_cells", []):
 		x_values.append(float(chair_value[0]) * Architecture.CELL)
 		z_values.append(float(chair_value[1]) * Architecture.CELL)
-	var narrow_data: Array = _plan.get("narrow_rect", [])
-	if narrow_data.size() == 4:
-		x_values.append(float(narrow_data[0]) * Architecture.CELL)
-		x_values.append(float(narrow_data[0] + narrow_data[2])
-			* Architecture.CELL)
-		z_values.append(float(narrow_data[1]) * Architecture.CELL)
-		z_values.append(float(narrow_data[1] + narrow_data[3])
-			* Architecture.CELL)
+	for narrow_data: Array in _plan.get("narrow_rects", []):
+		if narrow_data.size() == 4:
+			x_values.append(float(narrow_data[0]) * Architecture.CELL)
+			x_values.append(float(narrow_data[0] + narrow_data[2])
+				* Architecture.CELL)
+			z_values.append(float(narrow_data[1]) * Architecture.CELL)
+			z_values.append(float(narrow_data[1] + narrow_data[3])
+				* Architecture.CELL)
 	var y_values := [0.2, Architecture.CEIL_H * 0.5, Architecture.CEIL_H - 0.2]
 	for x: float in x_values:
 		for z: float in z_values:
