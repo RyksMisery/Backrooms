@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://echo_loop_lab.gd" id="1"]
+
+[node name="EchoLoopGameplayLab" type="Node3D"]
+script = ExtResource("1")

@@ -8,15 +8,13 @@ const Lighting := preload("res://modules/lighting_module.gd")
 const Audio := preload("res://modules/audio_module.gd")
 const HUD := preload("res://modules/hud_module.gd")
 const Map := preload("res://modules/map_module.gd")
+const Props := preload("res://modules/props_module.gd")
 const RunPlan := preload("res://modules/blind_zone_run_plan_module.gd")
 const PLAYER_SCENE := preload("res://player.tscn")
-const CHAIR_SCENE := preload(
-	"res://3d/painted_wooden_chair_01_1k/painted_wooden_chair_01_1k.gltf")
 
 @export var seed_detail := 1
 
 const ANCHOR_CELL := Vector2(10.5, 24.5)
-const ANCHOR_HEIGHT_M := 1.375
 const SWITCH_ARM_Z_CELLS := 21.0
 const START_RETURN_Z_CELLS := 18.0
 const UNOBSERVED_HOLD_SECONDS := 0.35
@@ -109,26 +107,13 @@ func _build_lights() -> void:
 
 
 func _spawn_anchor() -> void:
-	_anchor = CHAIR_SCENE.instantiate() as Node3D
+	_anchor = Props.spawn_painted_chair(self, Vector3(
+		ANCHOR_CELL.x * Architecture.CELL, 0.0,
+		ANCHOR_CELL.y * Architecture.CELL), PI * 0.25, "space_anchor_chair")
 	if _anchor == null:
 		push_error("Blind Zone anchor chair failed to instantiate")
 		return
-	_anchor.name = "space_anchor_chair"
-	add_child(_anchor)
-	_anchor.rotation.y = PI * 0.25
-	var box := _node_world_aabb(_anchor)
-	if box.size.y > 0.001:
-		_anchor.scale = Vector3.ONE * (ANCHOR_HEIGHT_M / box.size.y)
-		box = _node_world_aabb(_anchor)
-	var target := Vector3(
-		ANCHOR_CELL.x * Architecture.CELL, 0.0,
-		ANCHOR_CELL.y * Architecture.CELL)
-	if box.size.y > 0.001:
-		_anchor.global_position += target - Vector3(
-			box.get_center().x, box.position.y, box.get_center().z)
-	else:
-		_anchor.global_position = target
-	box = _node_world_aabb(_anchor)
+	var box := Props.world_aabb(_anchor)
 	_anchor_target = box.get_center() if box.size.y > 0.001 \
 		else _anchor.global_position + Vector3.UP * 0.7
 
@@ -291,22 +276,6 @@ func _cell_center(cell: Vector2i) -> Vector3:
 		(float(cell.x) + 0.5) * Architecture.CELL,
 		1.2,
 		(float(cell.y) + 0.5) * Architecture.CELL)
-
-
-func _node_world_aabb(root: Node3D) -> AABB:
-	var result := AABB()
-	var first := true
-	for node in root.find_children("*", "MeshInstance3D", true, false):
-		var mesh_instance := node as MeshInstance3D
-		if mesh_instance == null or mesh_instance.mesh == null:
-			continue
-		var box := mesh_instance.global_transform * mesh_instance.get_aabb()
-		if first:
-			result = box
-			first = false
-		else:
-			result = result.merge(box)
-	return result
 
 
 func debug_snapshot() -> Dictionary:

@@ -43,7 +43,8 @@ This file is the handoff note for future Codex chats working on this project.
   проёмы, свет, звук, HUD и карта берутся соответственно из
   `modules/architecture_module.gd`, `opening_module.gd`,
   `lighting_module.gd`, `audio_module.gd`, `hud_module.gd` и
-  `map_module.gd`. Полный default новой стандартной области собирает
+  `map_module.gd`; повторяемые 3D-акценты — из `props_module.gd`. Полный
+  default новой стандартной области собирает
   `standard_area_module.gd`. `level_e` —
   первый продуктовый потребитель этих модулей, но не источник их правил.
   Новая область/лаборатория не наследует `level_c`, `level_d` или `level_e`:

@@ -71,7 +71,8 @@
 Общие правила больше не принадлежат ни одному уровню: размеры/материалы/сетка —
 `modules/architecture_module.gd`, проёмы — `modules/opening_module.gd`, свет —
 `modules/lighting_module.gd`, звук — `modules/audio_module.gd`, HUD —
-`modules/hud_module.gd`, карта — `modules/map_module.gd`. Полный пакет новой
+`modules/hud_module.gd`, карта — `modules/map_module.gd`, повторяемые
+3D-акценты — `modules/props_module.gd`. Полный пакет новой
 стандартной области собирает `modules/standard_area_module.gd`; `level_e` лишь
 использует тот же канон для своей раскладки и механик.
 
