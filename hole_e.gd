@@ -10,7 +10,7 @@ const HUD := preload("res://modules/hud_module.gd")
 const Map := preload("res://modules/map_module.gd")
 const PLAYER_SCENE := preload("res://player.tscn")
 
-const TILE_COUNT := 9
+const TILE_COUNT := 17
 const HALF_TILE_COUNT := TILE_COUNT / 2
 const TILE_LENGTH := float(Architecture.ROOM_CELLS) * Architecture.CELL
 const ROOM_SIZE := TILE_LENGTH
@@ -26,7 +26,7 @@ const FALL_Y := -6.0
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
 const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
-const END_DISTANCE := TILE_LENGTH * 4.0
+const END_DISTANCE := TILE_LENGTH * 7.0
 const RECYCLE_DISTANCE := END_DISTANCE + TILE_LENGTH
 const CAP_SIDE_OVERLAP := TILE_LENGTH
 const DOOR_SPAWN_DISTANCE := TILE_LENGTH * 3.0
@@ -40,6 +40,7 @@ var audio
 var hud
 var map
 var player: CharacterBody3D
+var _cap_material: StandardMaterial3D
 
 var _chunks: Array[Node3D] = []
 var _north_cap: Node3D
@@ -76,7 +77,12 @@ var _rng := RandomNumberGenerator.new()
 func _ready() -> void:
 	architecture = Architecture.new(self)
 	architecture.install_environment(false)
+	architecture.environment.fog_enabled = true
 	Architecture.apply_render_profile(get_viewport())
+	_cap_material = StandardMaterial3D.new()
+	_cap_material.albedo_color = Architecture.FOG_COLOR
+	_cap_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_cap_material.roughness = 1.0
 	openings = Openings.new(self, architecture)
 	lighting = Lighting.new(self, architecture)
 	audio = Audio.new(self)
@@ -375,13 +381,16 @@ func _make_moving_cap(node_name: String) -> Node3D:
 	var root := Node3D.new()
 	root.name = node_name
 	add_child(root)
-	architecture.add_box(root, "%s_wall" % node_name,
+	var wall: MeshInstance3D = architecture.add_box(
+		root, "%s_wall" % node_name,
 		Vector3(
 			ROOM_SIZE + (WALL_DEPTH + CAP_SIDE_OVERLAP) * 2.0,
 			Architecture.CEIL_H,
 			WALL_DEPTH),
 		Vector3(ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5, 0.0),
 		"wall", true, false)
+	wall.material_override = _cap_material
+	wall.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	return root
 
 

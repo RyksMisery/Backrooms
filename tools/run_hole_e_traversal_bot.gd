@@ -6,6 +6,8 @@ const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const VIEW_RADIUS := TILE_LENGTH * 2.25
 const STEP := TILE_LENGTH * 0.5
 const EXTENT := TILE_LENGTH * 14.0
+const CAP_DISTANCE := TILE_LENGTH * 7.0
+const RECYCLE_DISTANCE := TILE_LENGTH * 8.0
 const MAX_DOOR_REVEAL_MS := 5.0
 const CAP_EPSILON := 0.001
 
@@ -52,7 +54,7 @@ func _run() -> void:
 		_fail("start niche is not west-flush 6x2")
 		return
 	var lights: Array = level.get("_light_entries")
-	if lights.size() != 9 * 9 + 1:
+	if lights.size() != 17 * 9 + 1:
 		_fail("intersection/niche light layout has wrong count")
 		return
 	if not _strip_joins_are_canonical(level):
@@ -81,6 +83,9 @@ func _run() -> void:
 	if _caps_have_baseboard(level):
 		_fail("moving cap still has a visible baseboard")
 		return
+	if not _caps_match_fog(level):
+		_fail("moving cap material does not match the fog concealment")
+		return
 	await _walk(level, player, player.global_position.z, EXTENT, 1.0)
 	var south_snapshot: Dictionary = level.call("debug_snapshot")
 	if int(south_snapshot.get("door_reveal_count", 0)) < 2:
@@ -99,7 +104,7 @@ func _run() -> void:
 		_fail("detached ring gap %.4f m" % _max_ring_gap)
 		return
 	if float(north_snapshot.get("min_recycle_distance", 0.0)) \
-			< TILE_LENGTH * 4.0:
+			< RECYCLE_DISTANCE:
 		_fail("geometry recycled before the dark cap")
 		return
 	if float(north_snapshot.get("last_door_spawn_distance", 0.0)) \
@@ -210,7 +215,7 @@ func _check_caps(level: Node, player: CharacterBody3D) -> Dictionary:
 			"edge_gap": INF,
 			"side_overlap": -INF,
 		}
-	var expected_distance := TILE_LENGTH * 4.0
+	var expected_distance := CAP_DISTANCE
 	var offset_error := maxf(
 		absf(north.global_position.z
 			- (player.global_position.z - expected_distance)),
@@ -272,6 +277,28 @@ func _caps_have_baseboard(level: Node) -> bool:
 		if not cap.find_children("*baseboard*", "", true, false).is_empty():
 			return true
 	return false
+
+
+func _caps_match_fog(level: Node) -> bool:
+	for property_name: String in [
+		"_infinite_north_cap", "_infinite_south_cap"
+	]:
+		var cap := level.get(property_name) as Node3D
+		if cap == null:
+			return false
+		var wall := cap.get_child(0) as MeshInstance3D
+		if wall == null \
+				or wall.cast_shadow \
+					!= GeometryInstance3D.SHADOW_CASTING_SETTING_OFF:
+			return false
+		var material := wall.material_override as StandardMaterial3D
+		if material == null \
+				or material.shading_mode \
+					!= BaseMaterial3D.SHADING_MODE_UNSHADED \
+				or not material.albedo_color.is_equal_approx(
+					Architecture.FOG_COLOR):
+			return false
+	return true
 
 
 func _coverage_gap(level: Node, player_z: float) -> float:
