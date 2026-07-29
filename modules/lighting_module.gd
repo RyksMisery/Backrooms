@@ -15,6 +15,12 @@ const SOURCE_BASE_DROP := 0.32
 const SOURCE_LEVEL_DROP := 0.625
 const SOURCE_DROP := SOURCE_BASE_DROP + SOURCE_LEVEL_DROP
 const LIGHT_COLOR := Color(0.92, 0.88, 0.62)
+const PIT_LIGHT_POINTS_CELLS := [
+	Vector2(13.5, 1.5),
+	Vector2(1.5, 13.5),
+	Vector2(13.5, 13.5),
+	Vector2(7.5, 7.5),
+]
 
 const SOURCE_PROFILE_TUNED := &"tuned"
 const SOURCE_PROFILE_TIGHT := &"tight"

@@ -13,6 +13,9 @@ const BASEBOARD_H := 0.12
 const BASEBOARD_PAD := 0.05
 const PARTITION_T_CELLS := 0.5
 const PIT_DEPTH := 12.0
+const PIT_COUNT := 4
+const PIT_BORDER_CELLS := 0.05
+const PIT_GAP_CELLS := 0.6
 
 const WALL_TEXTURE := preload("res://textures/wall1.png")
 const FLOOR_TEXTURE := preload("res://textures/floor1.png")
@@ -302,31 +305,38 @@ func build_occupancy_plan(parent: Node3D, grid: Dictionary,
 # Верх шахты совпадает с Y=0; функция не создаёт пол над проёмом.
 func add_pit_shaft(parent: Node3D, rect_cells: Rect2i,
 		depth := PIT_DEPTH) -> Dictionary:
-	var width := float(rect_cells.size.x) * CELL
-	var length := float(rect_cells.size.y) * CELL
-	var x0 := float(rect_cells.position.x) * CELL
-	var z0 := float(rect_cells.position.y) * CELL
+	return add_pit_shaft_rect(parent, Rect2(
+		Vector2(rect_cells.position), Vector2(rect_cells.size)), depth)
+
+
+# Та же каноническая шахта для дробной сетки области-провала.
+func add_pit_shaft_rect(parent: Node3D, rect_cells: Rect2,
+		depth := PIT_DEPTH, node_prefix := "pit_shaft") -> Dictionary:
+	var width := rect_cells.size.x * CELL
+	var length := rect_cells.size.y * CELL
+	var x0 := rect_cells.position.x * CELL
+	var z0 := rect_cells.position.y * CELL
 	var x1 := x0 + width
 	var z1 := z0 + length
 	var wall_t := 0.02
 	var wall_y := -depth * 0.5
-	add_box(parent, "pit_shaft_west",
+	add_box(parent, "%s_west" % node_prefix,
 		Vector3(wall_t, depth, length),
 		Vector3(x0 - wall_t * 0.5, wall_y, (z0 + z1) * 0.5),
 		"void", true)
-	add_box(parent, "pit_shaft_east",
+	add_box(parent, "%s_east" % node_prefix,
 		Vector3(wall_t, depth, length),
 		Vector3(x1 + wall_t * 0.5, wall_y, (z0 + z1) * 0.5),
 		"void", true)
-	add_box(parent, "pit_shaft_north",
+	add_box(parent, "%s_north" % node_prefix,
 		Vector3(width, depth, wall_t),
 		Vector3((x0 + x1) * 0.5, wall_y, z0 - wall_t * 0.5),
 		"void", true)
-	add_box(parent, "pit_shaft_south",
+	add_box(parent, "%s_south" % node_prefix,
 		Vector3(width, depth, wall_t),
 		Vector3((x0 + x1) * 0.5, wall_y, z1 + wall_t * 0.5),
 		"void", true)
-	add_box(parent, "pit_shaft_bottom",
+	add_box(parent, "%s_bottom" % node_prefix,
 		Vector3(width, SLAB_T, length),
 		Vector3((x0 + x1) * 0.5, -depth - SLAB_T * 0.5,
 			(z0 + z1) * 0.5),
@@ -335,6 +345,61 @@ func add_pit_shaft(parent: Node3D, rect_cells: Rect2i,
 		"world_rect": Rect2(x0, z0, width, length),
 		"depth": depth,
 	}
+
+
+# Единый data-контракт решётки стандартной области-провала.
+static func pit_layout_cells() -> Dictionary:
+	var inner := float(ROOM_CELLS) - PIT_BORDER_CELLS * 2.0
+	var hole := (
+		inner - float(PIT_COUNT - 1) * PIT_GAP_CELLS
+	) / float(PIT_COUNT)
+	var walks: Array[Rect2] = [
+		Rect2(0.0, 0.0, float(ROOM_CELLS), PIT_BORDER_CELLS),
+		Rect2(0.0, float(ROOM_CELLS) - PIT_BORDER_CELLS,
+			float(ROOM_CELLS), PIT_BORDER_CELLS),
+		Rect2(0.0, PIT_BORDER_CELLS, PIT_BORDER_CELLS, inner),
+		Rect2(float(ROOM_CELLS) - PIT_BORDER_CELLS, PIT_BORDER_CELLS,
+			PIT_BORDER_CELLS, inner),
+	]
+	for index in range(1, PIT_COUNT):
+		var offset := PIT_BORDER_CELLS \
+			+ float(index - 1) * (hole + PIT_GAP_CELLS) + hole
+		walks.append(Rect2(offset, PIT_BORDER_CELLS, PIT_GAP_CELLS, inner))
+		walks.append(Rect2(PIT_BORDER_CELLS, offset, inner, PIT_GAP_CELLS))
+	var holes: Array[Rect2] = []
+	for x_index in range(PIT_COUNT):
+		var hole_x := PIT_BORDER_CELLS \
+			+ float(x_index) * (hole + PIT_GAP_CELLS)
+		for z_index in range(PIT_COUNT):
+			var hole_z := PIT_BORDER_CELLS \
+				+ float(z_index) * (hole + PIT_GAP_CELLS)
+			holes.append(Rect2(hole_x, hole_z, hole, hole))
+	return {"walks": walks, "holes": holes, "hole_size": hole}
+
+
+# Геометрия одной 15×15 секции провала без внешних стен и торцевых капов.
+func build_pit_tile(parent: Node3D, include_ceiling := true) -> Dictionary:
+	var layout := pit_layout_cells()
+	for index in range(layout["walks"].size()):
+		var rect: Rect2 = layout["walks"][index]
+		add_box(parent, "pit_walk_%02d" % index,
+			Vector3(rect.size.x * CELL, SLAB_T, rect.size.y * CELL),
+			Vector3(
+				(rect.position.x + rect.size.x * 0.5) * CELL,
+				-SLAB_T * 0.5,
+				(rect.position.y + rect.size.y * 0.5) * CELL),
+			"floor", true)
+	for index in range(layout["holes"].size()):
+		add_pit_shaft_rect(parent, layout["holes"][index], PIT_DEPTH,
+			"pit_shaft_%02d" % index)
+	if include_ceiling:
+		var room_size := float(ROOM_CELLS) * CELL
+		add_box(parent, "pit_ceiling",
+			Vector3(room_size, SLAB_T, room_size),
+			Vector3(room_size * 0.5, CEIL_H + SLAB_T * 0.5,
+				room_size * 0.5),
+			"ceiling", false)
+	return layout
 
 
 static func _merge_cell_rects(cells: Dictionary, gmin: Vector2i,

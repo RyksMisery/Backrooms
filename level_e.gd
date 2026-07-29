@@ -77,8 +77,8 @@ const OFFICE_DOOR_CENTER := Vector2(11.5, 7.5)  # полная дверь, го�
 # При крае=катвоке=1: дыра = (15 − 2 − (N−1))/N. Для N=3 дыра = 11/3 ≈ 3.667.
 const PIT_BORDER := 1.0
 const PIT_GAP := 0.75   # катвок между дырами: 0.9375 м — узко, но проходимо
-const PIT_COUNT := 4
-const PIT_DEPTH := 12.0     # глубина шахты провала, м (как колодец в level0)
+const PIT_COUNT := ARCHITECTURE.PIT_COUNT
+const PIT_DEPTH := ARCHITECTURE.PIT_DEPTH
 const PIT_FALL_TIME := 1.0  # «секунда полёта» до возврата-ноклипа
 const FLASH_DURATION := 0.30          # длительность вспышки ноклипа
 const FLASH_COLOR := Color(1.0, 0.92, 0.55)  # тёплая жёлтая вспышка
@@ -536,14 +536,12 @@ const LINKS := [
 	[Vector2i(-1, 3), Vector2i(-1, 2)], [Vector2i(-1, 2), Vector2i(-1, 1)],
 	[Vector2i(-1, 1), Vector2i(-1, 0)], [Vector2i(-1, 0), Vector2i(0, 0)],
 ]
-const PIT_BORDER_D := 0.05
-const PIT_GAP_D := 0.6
+const PIT_BORDER_D := ARCHITECTURE.PIT_BORDER_CELLS
+const PIT_GAP_D := ARCHITECTURE.PIT_GAP_CELLS
 const PIT_ENTRY_LANE_D := Vector2i(0, 3)
 const PIT_LANDING_X_CELLS_D := [-1, -2]
 const PIT_LANDING_Z_LANE_D := Vector2i(3, 6)
-const PIT_LIGHT_POINTS_D := [
-	Vector2(13.5, 1.5), Vector2(1.5, 13.5), Vector2(13.5, 13.5), Vector2(7.5, 7.5)
-]
+const PIT_LIGHT_POINTS_D := LIGHTING.PIT_LIGHT_POINTS_CELLS
 const PIT_ENTRY_NICHE_LIGHT_D := Vector2(-0.5, 4.5)
 const PIT_FLICKER_POS_D := Vector2(-1.5, 1.5)
 const PIT_SIGN_POS_D := Vector3(-1.0, 0.0, 0.5)
@@ -5770,13 +5768,7 @@ func _spawn_arrow_cardboard_box(scene: PackedScene, box_name: String,
 
 func _build_pit(area: Dictionary) -> void:
 	var pit_cell: Vector2i = area["cell"]
-	var n := PIT_COUNT
-	var b := PIT_BORDER_D
-	var gap := PIT_GAP_D
-	var inner := float(ROOM_CELLS) - b * 2.0
-	var hole := (inner - float(n - 1) * gap) / float(n)
-	if hole <= 0.0:
-		return
+	var layout := ARCHITECTURE.pit_layout_cells()
 	var base := _area_base_cell(area)
 	for lx in range(ROOM_CELLS):
 		for lz in range(ROOM_CELLS):
@@ -5784,27 +5776,23 @@ func _build_pit(area: Dictionary) -> void:
 				base.y + WALL_CELLS + lz)
 			_set_cell(cell, K_PIT)
 			_light_block[cell] = true
-	_pit_walk(pit_cell, 0.0, 0.0, float(ROOM_CELLS), b)
-	_pit_walk(pit_cell, 0.0, float(ROOM_CELLS) - b, float(ROOM_CELLS), b)
-	_pit_walk(pit_cell, 0.0, b, b, inner)
-	_pit_walk(pit_cell, float(ROOM_CELLS) - b, b, b, inner)
-	for k in range(1, n):
-		var off := b + float(k - 1) * (hole + gap) + hole
-		_pit_walk(pit_cell, off, b, gap, inner)
-		_pit_walk(pit_cell, b, off, inner, gap)
+	for walk: Rect2 in layout["walks"]:
+		_pit_walk(pit_cell, walk.position.x, walk.position.y,
+			walk.size.x, walk.size.y)
 	var icen := _local_world(pit_cell.x, pit_cell.y,
 		float(ROOM_CELLS) * 0.5, float(ROOM_CELLS) * 0.5, -PIT_DEPTH)
+	var inner := float(ROOM_CELLS) - PIT_BORDER_D * 2.0
 	_void_box(Vector3(icen.x, -PIT_DEPTH, icen.z),
 		Vector3(inner * CELL, 0.2, inner * CELL))
-	for ix in range(n):
-		var hx := b + float(ix) * (hole + gap)
-		for iz in range(n):
-			var hz := b + float(iz) * (hole + gap)
-			var corner := _local_world(pit_cell.x, pit_cell.y, hx, hz, 0.0)
-			_pit_fall_rects.append(Rect2(corner.x, corner.z,
-				hole * CELL, hole * CELL))
-			_pit_rects.append(Rect2(float(base.x + WALL_CELLS) + hx,
-				float(base.y + WALL_CELLS) + hz, hole, hole))
+	for hole: Rect2 in layout["holes"]:
+		var corner := _local_world(pit_cell.x, pit_cell.y,
+			hole.position.x, hole.position.y, 0.0)
+		_pit_fall_rects.append(Rect2(corner.x, corner.z,
+			hole.size.x * CELL, hole.size.y * CELL))
+		_pit_rects.append(Rect2(
+			float(base.x + WALL_CELLS) + hole.position.x,
+			float(base.y + WALL_CELLS) + hole.position.y,
+			hole.size.x, hole.size.y))
 	for wlx in PIT_LANDING_X_CELLS_D:
 		for wlz in range(PIT_LANDING_Z_LANE_D.x, PIT_LANDING_Z_LANE_D.y):
 			_set_cell(Vector2i(base.x + WALL_CELLS + wlx,

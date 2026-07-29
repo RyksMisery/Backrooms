@@ -1,0 +1,371 @@
+extends Node3D
+
+# Независимая лаборатория двунаправленного бесконечного провала.
+
+const Architecture := preload("res://modules/architecture_module.gd")
+const Openings := preload("res://modules/opening_module.gd")
+const Lighting := preload("res://modules/lighting_module.gd")
+const Audio := preload("res://modules/audio_module.gd")
+const HUD := preload("res://modules/hud_module.gd")
+const Map := preload("res://modules/map_module.gd")
+const PLAYER_SCENE := preload("res://player.tscn")
+
+const TILE_COUNT := 5
+const HALF_TILE_COUNT := TILE_COUNT / 2
+const TILE_LENGTH := float(Architecture.ROOM_CELLS) * Architecture.CELL
+const ROOM_SIZE := TILE_LENGTH
+const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
+const PLAYER_HEIGHT := 1.2
+const START_Z_CELLS := 13.5
+const ARM_Z_CELLS := 10.0
+const TURN_ZONE_Z_CELLS := 4.0
+const RETURN_VELOCITY := 0.25
+const WRAP_NORTH_Z := -0.5 * TILE_LENGTH
+const WRAP_SOUTH_Z := 1.5 * TILE_LENGTH
+const REVEAL_CYCLE := 3
+const FALL_Y := -6.0
+
+var architecture
+var openings
+var lighting
+var audio
+var hud
+var map
+var player: CharacterBody3D
+
+var _chunks: Array[Node3D] = []
+var _north_cap: Node3D
+var _south_cap: Node3D
+var _cycle_count := 0
+var _fall_count := 0
+var _south_infinite := false
+var _bidirectional := false
+var _door_revealed := false
+var _door_side := ""
+var _recycling_stopped := false
+var _hud_visible := false
+var _map_grid: Dictionary = {}
+var _pit_rects: Array[Rect2] = []
+
+
+func _ready() -> void:
+	architecture = Architecture.new(self)
+	architecture.install_environment(false)
+	Architecture.apply_render_profile(get_viewport())
+	openings = Openings.new(self, architecture)
+	lighting = Lighting.new(self, architecture)
+	audio = Audio.new(self)
+	hud = HUD.new(self)
+	map = Map.new(self)
+	_build_tiles()
+	_build_caps()
+	_build_lights()
+	_build_map_data()
+	_spawn_player()
+	hud.setup()
+	hud.set_visible(false)
+	map.setup(_map_data, _get_player, Architecture.CELL,
+		["wall", "partition"])
+	audio.setup(player, lighting.lamps)
+	set_process(true)
+	if "--hole-e-mechanic-test" in OS.get_cmdline_user_args():
+		call_deferred("_run_mechanic_test")
+
+
+func _build_tiles() -> void:
+	for logical_index in range(-HALF_TILE_COUNT, HALF_TILE_COUNT + 1):
+		var chunk := Node3D.new()
+		chunk.name = "hole_tile_%+d" % logical_index
+		chunk.position.z = float(logical_index) * TILE_LENGTH
+		chunk.set_meta("logical_index", logical_index)
+		add_child(chunk)
+		architecture.build_pit_tile(chunk)
+		_build_side_wall(chunk, "west")
+		_build_side_wall(chunk, "east")
+		_chunks.append(chunk)
+
+
+func _build_caps() -> void:
+	_north_cap = _make_cap("north_cap", 0.0)
+	_south_cap = _make_cap("south_cap", TILE_LENGTH)
+
+
+func _make_cap(node_name: String, z_plane: float) -> Node3D:
+	var root := Node3D.new()
+	root.name = node_name
+	add_child(root)
+	var outward := -1.0 if is_zero_approx(z_plane) else 1.0
+	architecture.add_box(root, "%s_wall" % node_name,
+		Vector3(ROOM_SIZE, Architecture.CEIL_H, WALL_DEPTH),
+		Vector3(ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5,
+			z_plane + outward * WALL_DEPTH * 0.5),
+		"wall", true, true)
+	return root
+
+
+func _build_side_wall(chunk: Node3D, side: String,
+		with_opening := false) -> Node3D:
+	var old := chunk.get_node_or_null("%s_wall" % side)
+	if old != null:
+		old.free()
+	var root := Node3D.new()
+	root.name = "%s_wall" % side
+	chunk.add_child(root)
+	var wall_x := -WALL_DEPTH * 0.5 if side == "west" \
+		else ROOM_SIZE + WALL_DEPTH * 0.5
+	if not with_opening:
+		architecture.add_box(root, "%s_solid" % side,
+			Vector3(WALL_DEPTH, Architecture.CEIL_H, TILE_LENGTH),
+			Vector3(wall_x, Architecture.CEIL_H * 0.5,
+				TILE_LENGTH * 0.5),
+			"wall", true, true)
+		return root
+	var center := Architecture.opening_anchor(7.5) * Architecture.CELL
+	var width := Openings.opening_width_m()
+	var height := Openings.opening_height_m()
+	var lo := center - width * 0.5
+	var hi := center + width * 0.5
+	architecture.add_box(root, "%s_before_door" % side,
+		Vector3(WALL_DEPTH, Architecture.CEIL_H, lo),
+		Vector3(wall_x, Architecture.CEIL_H * 0.5, lo * 0.5),
+		"wall", true, true)
+	architecture.add_box(root, "%s_after_door" % side,
+		Vector3(WALL_DEPTH, Architecture.CEIL_H, TILE_LENGTH - hi),
+		Vector3(wall_x, Architecture.CEIL_H * 0.5,
+			(hi + TILE_LENGTH) * 0.5),
+		"wall", true, true)
+	architecture.add_box(root, "%s_door_lintel" % side,
+		Vector3(WALL_DEPTH, Architecture.CEIL_H - height, width),
+		Vector3(wall_x, (height + Architecture.CEIL_H) * 0.5, center),
+		"wall", true)
+	architecture.add_box(root, "%s_door_threshold" % side,
+		Vector3(WALL_DEPTH, Architecture.SLAB_T, width),
+		Vector3(wall_x, -Architecture.SLAB_T * 0.5, center),
+		"floor", true)
+	architecture.add_box(root, "%s_door_reveal_ceiling" % side,
+		Vector3(WALL_DEPTH, Architecture.SLAB_T, width),
+		Vector3(wall_x, Architecture.CEIL_H
+			+ Architecture.SLAB_T * 0.5, center),
+		"ceiling", false)
+	var inner_x := 0.0 if side == "west" else ROOM_SIZE
+	var outer_x := -WALL_DEPTH if side == "west" \
+		else ROOM_SIZE + WALL_DEPTH
+	var inward := Vector3.RIGHT if side == "west" else Vector3.LEFT
+	var outward := -inward
+	openings.spawn_office_frame(root, Vector3(inner_x, 0.0, center),
+		inward, "hole_door_%s_inner" % side)
+	openings.spawn_office_frame(root, Vector3(outer_x, 0.0, center),
+		outward, "hole_door_%s_outer" % side)
+	openings.spawn_office_door_leaf(root,
+		Vector3(inner_x, 0.0, center), inward,
+		"hole_door_%s_leaf" % side, true)
+	return root
+
+
+func _build_lights() -> void:
+	for chunk in _chunks:
+		for point: Vector2 in Lighting.PIT_LIGHT_POINTS_CELLS:
+			lighting.add_ceiling_light(chunk, Vector3(
+				point.x * Architecture.CELL,
+				Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
+				point.y * Architecture.CELL), true)
+
+
+func _spawn_player() -> void:
+	player = PLAYER_SCENE.instantiate() as CharacterBody3D
+	player.name = "HoleEPlayer"
+	player.position = Vector3(
+		7.5 * Architecture.CELL,
+		PLAYER_HEIGHT,
+		START_Z_CELLS * Architecture.CELL)
+	player.rotation.y = 0.0
+	player.set_meta("block_debug_t_action", true)
+	add_child(player)
+
+
+func _process(delta: float) -> void:
+	if player == null:
+		return
+	lighting.update(player)
+	audio.update(delta)
+	map.update()
+	_update_reveal_phases()
+	_update_treadmill()
+	_update_fall()
+	hud.update(_hud_text())
+
+
+func _update_reveal_phases() -> void:
+	if not _south_infinite \
+			and player.global_position.z <= ARM_Z_CELLS * Architecture.CELL:
+		_arm_south_infinity()
+	if _south_infinite and not _bidirectional \
+			and player.global_position.z <= TURN_ZONE_Z_CELLS * Architecture.CELL \
+			and player.velocity.z >= RETURN_VELOCITY:
+		_enable_bidirectional()
+
+
+func _arm_south_infinity() -> void:
+	_south_infinite = true
+	if _south_cap != null and is_instance_valid(_south_cap):
+		_south_cap.free()
+		_south_cap = null
+	audio.play_flick()
+
+
+func _enable_bidirectional() -> void:
+	_bidirectional = true
+	if _north_cap != null and is_instance_valid(_north_cap):
+		_north_cap.free()
+		_north_cap = null
+	audio.play_flick()
+
+
+func _update_treadmill() -> void:
+	if not _bidirectional or _recycling_stopped:
+		return
+	if player.global_position.z < WRAP_NORTH_Z:
+		player.global_position.z += TILE_LENGTH
+		_register_cycle()
+	elif player.global_position.z > WRAP_SOUTH_Z:
+		player.global_position.z -= TILE_LENGTH
+		_register_cycle()
+
+
+func _register_cycle() -> void:
+	_cycle_count += 1
+	if _cycle_count >= REVEAL_CYCLE and not _door_revealed:
+		_reveal_door()
+
+
+func _reveal_door() -> void:
+	_door_revealed = true
+	_recycling_stopped = true
+	_door_side = "east" if player.global_position.x <= ROOM_SIZE * 0.5 \
+		else "west"
+	var tile_index := clampi(
+		floori(player.global_position.z / TILE_LENGTH),
+		-HALF_TILE_COUNT, HALF_TILE_COUNT)
+	var chunk := _chunk_for_index(tile_index)
+	if chunk == null:
+		push_error("hole_e: reveal tile not found")
+		return
+	_build_side_wall(chunk, _door_side, true)
+	audio.play_flick()
+
+
+func _chunk_for_index(logical_index: int) -> Node3D:
+	for chunk in _chunks:
+		if int(chunk.get_meta("logical_index", 0)) == logical_index:
+			return chunk
+	return null
+
+
+func _update_fall() -> void:
+	if player.global_position.y >= FALL_Y:
+		return
+	_fall_count += 1
+	var tile_index := clampi(
+		floori(player.global_position.z / TILE_LENGTH),
+		-HALF_TILE_COUNT, HALF_TILE_COUNT)
+	player.global_position = Vector3(
+		7.5 * Architecture.CELL,
+		PLAYER_HEIGHT,
+		(float(tile_index) * float(Architecture.ROOM_CELLS) + 7.5)
+			* Architecture.CELL)
+	player.velocity = Vector3.ZERO
+	audio.play_flick()
+
+
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey) or not event.pressed or event.echo:
+		return
+	var key := event as InputEventKey
+	if key.keycode == KEY_H:
+		_hud_visible = not _hud_visible
+		hud.set_visible(_hud_visible)
+	elif key.keycode == KEY_M:
+		map.toggle()
+	elif key.keycode == KEY_R:
+		get_tree().reload_current_scene()
+
+
+func _hud_text() -> String:
+	var phase := "bounded"
+	if _bidirectional:
+		phase = "infinite"
+	elif _south_infinite:
+		phase = "behind"
+	return "HOLE E — TEST\nphase %s | cycles %d/%d | falls %d\ndoor %s%s\nH — HUD | M — карта | R — сброс" % [
+		phase, _cycle_count, REVEAL_CYCLE, _fall_count,
+		str(_door_revealed),
+		"" if _door_side == "" else " (%s)" % _door_side]
+
+
+func _build_map_data() -> void:
+	_map_grid.clear()
+	_pit_rects.clear()
+	var min_z := -HALF_TILE_COUNT * Architecture.ROOM_CELLS
+	var max_z := (HALF_TILE_COUNT + 1) * Architecture.ROOM_CELLS - 1
+	for x in range(-Architecture.WALL_CELLS,
+			Architecture.ROOM_CELLS + Architecture.WALL_CELLS):
+		for z in range(min_z, max_z + 1):
+			var interior := x >= 0 and x < Architecture.ROOM_CELLS
+			_map_grid[Vector2i(x, z)] = "floor" if interior else "wall"
+	var layout := Architecture.pit_layout_cells()
+	for tile_index in range(-HALF_TILE_COUNT, HALF_TILE_COUNT + 1):
+		for rect: Rect2 in layout["holes"]:
+			_pit_rects.append(Rect2(
+				rect.position + Vector2(
+					0.0, float(tile_index * Architecture.ROOM_CELLS)),
+				rect.size))
+
+
+func _map_data() -> Dictionary:
+	return {
+		"grid": _map_grid,
+		"gmin": Vector2i(
+			-Architecture.WALL_CELLS,
+			-HALF_TILE_COUNT * Architecture.ROOM_CELLS),
+		"gmax": Vector2i(
+			Architecture.ROOM_CELLS + Architecture.WALL_CELLS - 1,
+			(HALF_TILE_COUNT + 1) * Architecture.ROOM_CELLS - 1),
+		"pits": _pit_rects,
+	}
+
+
+func _get_player() -> Node3D:
+	return player
+
+
+func debug_snapshot() -> Dictionary:
+	return {
+		"south_infinite": _south_infinite,
+		"bidirectional": _bidirectional,
+		"cycle_count": _cycle_count,
+		"door_revealed": _door_revealed,
+		"door_side": _door_side,
+		"recycling_stopped": _recycling_stopped,
+		"fall_count": _fall_count,
+	}
+
+
+func _run_mechanic_test() -> void:
+	_arm_south_infinity()
+	_enable_bidirectional()
+	player.global_position.x = ROOM_SIZE * 0.25
+	for index in range(REVEAL_CYCLE):
+		_register_cycle()
+	var snapshot := debug_snapshot()
+	var passed := bool(snapshot["south_infinite"]) \
+		and bool(snapshot["bidirectional"]) \
+		and int(snapshot["cycle_count"]) == REVEAL_CYCLE \
+		and bool(snapshot["door_revealed"]) \
+		and String(snapshot["door_side"]) == "east" \
+		and bool(snapshot["recycling_stopped"])
+	if passed:
+		print("HOLE_E_MECHANIC_OK ", snapshot)
+		get_tree().quit()
+	else:
+		push_error("HOLE_E_MECHANIC_FAILED %s" % [snapshot])
+		get_tree().quit(1)

@@ -77,6 +77,17 @@ func spawn_office_frame(parent: Node3D, local_center: Vector3,
 	return frame
 
 
+func spawn_office_door_leaf(parent: Node3D, local_center: Vector3,
+		local_normal: Vector3, opening_id: String,
+		collide := true) -> Node3D:
+	var center := parent.to_global(local_center)
+	var normal := (parent.global_basis * local_normal).normalized()
+	var leaf := _spawn_leaf(center, normal, opening_id, collide)
+	if leaf != null:
+		leaf.reparent(parent, true)
+	return leaf
+
+
 func _spawn_frame(opening_center: Vector3, outward: Vector3,
 		node_name: String) -> Node3D:
 	var instance := OFFICE_FRAME_SCENE.instantiate() as Node3D
