@@ -80,6 +80,8 @@ func _ready() -> void:
 	architecture.install_environment(false)
 	Architecture.apply_render_profile(get_viewport())
 	lighting = Lighting.new(self, architecture)
+	lighting.configure_lf3_runtime(
+		_lf3_cell_blocks_light, _active_camera, Architecture.CELL)
 	audio = Audio.new(self)
 	hud = HUD.new(self)
 	map = Map.new(self)
@@ -149,13 +151,16 @@ func _add_double_ceiling_light(parent: Node3D, first_cell: Vector2i,
 			or not _light_cell_clear(second_cell):
 		return false
 	for cell: Vector2i in [first_cell, second_cell]:
-		var light: OmniLight3D = lighting.add_wide_ceiling_light(parent, Vector3(
-			(float(cell.x) + 0.5) * Architecture.CELL,
-			Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-			(float(cell.y) + 0.5) * Architecture.CELL))
-		light.set_meta("echo_light_cell", cell)
-		light.set_meta("echo_light_region", region)
-		light.set_meta("echo_light_double", true)
+		var family: Dictionary = lighting.add_level_e_area_ceiling_light(
+			parent, Vector3(
+				(float(cell.x) + 0.5) * Architecture.CELL,
+				Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
+				(float(cell.y) + 0.5) * Architecture.CELL), "echo_loop")
+		for member in family.values():
+			if member is Light3D:
+				(member as Light3D).set_meta("echo_light_cell", cell)
+				(member as Light3D).set_meta("echo_light_region", region)
+				(member as Light3D).set_meta("echo_light_double", true)
 	return true
 
 
@@ -182,6 +187,7 @@ func _rebuild_short_light_patch(side: String) -> void:
 	var width := _runtime_widths.x if side == "north" \
 		else _runtime_widths.y
 	if width < 3:
+		_refresh_lamp_audio()
 		return
 	var start_z := RunPlan.INTERIOR_MIN.y if side == "north" \
 		else RunPlan.INTERIOR_MAX.y - width
@@ -206,7 +212,18 @@ func _rebuild_short_light_patch(side: String) -> void:
 			_add_double_ceiling_light(
 				root_node, right, Vector2i.RIGHT, side)
 			root_node.set_meta("light_row", z)
+			_refresh_lamp_audio()
 			return
+
+
+func _refresh_lamp_audio() -> void:
+	if audio == null:
+		return
+	var live_lamps: Array = []
+	for lamp in lighting.lamps:
+		if is_instance_valid(lamp):
+			live_lamps.append(lamp)
+	audio.refresh_lamps(live_lamps)
 
 
 func _build_lower_room() -> void:
@@ -221,10 +238,11 @@ func _build_lower_room() -> void:
 	var light_cells: Array[int] = lighting.standard_hall_grid_indices()
 	for x: int in light_cells:
 		for z: int in light_cells:
-			lighting.add_ceiling_light(_lower_room, Vector3(
+			lighting.add_level_e_area_ceiling_light(_lower_room, Vector3(
 				(float(x) + 0.5) * Architecture.CELL,
 				Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-				(float(z) + 0.5) * Architecture.CELL), true)
+				(float(z) + 0.5) * Architecture.CELL),
+				"echo_lower_room")
 	Props.spawn_painted_chair(_lower_room, Vector3(
 		10.5 * Architecture.CELL, 0.0, 10.5 * Architecture.CELL),
 		-PI * 0.25, "lower_room_chair")
@@ -346,7 +364,7 @@ func _spawn_player() -> void:
 func _process(delta: float) -> void:
 	if player == null:
 		return
-	lighting.update(player)
+	lighting.update_level_e_area_lighting(player)
 	audio.update(delta)
 	map.update()
 	if not _completed:
@@ -444,6 +462,7 @@ func _apply_micro_mutation(kind: String, target: String) -> void:
 		else:
 			_runtime_widths.y = next
 		_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+		lighting.invalidate_lf3_guardian_cache()
 		_rebuild_width_patch(target)
 		_rebuild_short_light_patch(target)
 	else:
@@ -486,6 +505,7 @@ func _apply_pending_mutation() -> void:
 	_pending_cycle = -1
 	_mutation_count += 1
 	_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+	lighting.invalidate_lf3_guardian_cache()
 	_mutation_wait_samples_ms.append(float(
 		Time.get_ticks_msec() - _pending_started_ms))
 	_hidden_frames = 0
@@ -816,6 +836,7 @@ func _reset_with_seed(next_seed: int) -> void:
 	_pending_started_ms = 0
 	_visible_mutation_count = 0
 	_build_plan()
+	lighting.invalidate_lf3_guardian_cache()
 	_build_main_geometry()
 	_build_all_width_patches()
 	_rebuild_short_light_patch("north")
@@ -855,6 +876,23 @@ func _map_data() -> Dictionary:
 
 func _get_player() -> Node3D:
 	return player
+
+
+func _active_camera() -> Camera3D:
+	if player != null and player.camera != null:
+		return player.camera
+	return get_viewport().get_camera_3d()
+
+
+func _lf3_cell_blocks_light(cell: Vector2i) -> bool:
+	var lower_origin := Vector2i(
+		floori(LOWER_ROOM_ORIGIN.x), floori(LOWER_ROOM_ORIGIN.z))
+	var lower_interior := Rect2i(
+		lower_origin,
+		Vector2i(Architecture.ROOM_CELLS, Architecture.ROOM_CELLS))
+	if lower_interior.has_point(cell):
+		return false
+	return String(_grid.get(cell, "wall")) in ["wall", "pit"]
 
 
 func _player_cell() -> Vector2i:

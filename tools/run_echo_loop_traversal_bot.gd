@@ -4,6 +4,7 @@ extends SceneTree
 # raycast-ами и сохраняет визуальные предъявления каждого состояния.
 
 const Architecture := preload("res://modules/architecture_module.gd")
+const Lighting := preload("res://modules/lighting_module.gd")
 const Props := preload("res://modules/props_module.gd")
 const RunPlan := preload("res://modules/echo_loop_run_plan_module.gd")
 
@@ -225,9 +226,32 @@ func _validate_echo_lights(level: Node) -> Dictionary:
 					break
 			if not has_partner:
 				errors.append("%s unpaired %s" % [region, cell])
+	var expected_family_count := 0
+	for count in expected_counts.values():
+		expected_family_count += int(count)
+	var family_counts := {
+		"legacy": _validate_light_family(
+			lamps, "legacy", expected_family_count, errors),
+		"area": _validate_light_family(
+			lighting.get("area_lamps"), "area",
+			expected_family_count, errors),
+		"bounce": _validate_light_family(
+			lighting.get("area_bounce_lamps"), "bounce",
+			expected_family_count, errors),
+	}
+	for family_name: String in [
+		"legacy", "area", "bounce",
+	]:
+		var members: Array = lamps if family_name == "legacy" \
+			else lighting.get(
+				"area_lamps" if family_name == "area" \
+				else "area_bounce_lamps")
+		if _count_area_members(members, "echo_lower_room") != 16:
+			errors.append("lower %s family count" % family_name)
 	return {
 		"valid": errors.is_empty(),
 		"errors": errors,
+		"families": family_counts,
 		"counts": {
 			"west": (cells_by_region.get("west", []) as Array).size(),
 			"east": (cells_by_region.get("east", []) as Array).size(),
@@ -235,6 +259,52 @@ func _validate_echo_lights(level: Node) -> Dictionary:
 			"south": (cells_by_region.get("south", []) as Array).size(),
 		},
 	}
+
+
+func _count_area_members(members: Array, area_id: String) -> int:
+	var count := 0
+	for member in members:
+		if is_instance_valid(member) \
+				and String(member.get_meta("area_id", "")) == area_id:
+			count += 1
+	return count
+
+
+func _validate_light_family(members: Array, kind: String,
+		expected_count: int, errors: Array[String]) -> int:
+	var count := 0
+	var panel_y := Architecture.CEIL_H + Lighting.PANEL_Y_EPS
+	for member in members:
+		if not is_instance_valid(member) \
+				or not member.has_meta("echo_light_cell"):
+			continue
+		count += 1
+		var expected_y := panel_y
+		if kind == "legacy":
+			expected_y -= Lighting.SOURCE_DROP
+			if member.visible:
+				errors.append("legacy visible")
+		elif kind == "area":
+			expected_y += Lighting.AREA_LIGHT_PANEL_Y_OFFSET
+			if not member.visible or not member.is_class("AreaLight3D"):
+				errors.append("area source mismatch")
+			if absf(float(member.get("area_range"))
+					- Lighting.AREA_LIGHT_RANGE_TEST_OFF) > 0.001:
+				errors.append("area range mismatch")
+		elif kind == "bounce":
+			expected_y += Lighting.AREA_LIGHT_BOUNCE_Y_OFFSET
+			if not member.visible \
+					or absf(float(member.omni_range)
+						- Lighting.AREA_LIGHT_BOUNCE_RANGE) > 0.001:
+				errors.append("bounce source mismatch")
+		if absf(member.global_position.y - expected_y) > 0.001:
+			errors.append("%s height mismatch" % kind)
+		if String(member.get_meta("area_id", "")) != "echo_loop":
+			errors.append("%s area_id mismatch" % kind)
+	if count != expected_count:
+		errors.append("%s family count %d/%d" % [
+			kind, count, expected_count])
+	return count
 
 
 func _validate_portals(level: Node, cycle: int) -> Dictionary:

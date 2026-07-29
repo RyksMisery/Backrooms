@@ -220,7 +220,7 @@ func add_level_e_area_ceiling_light(parent: Node3D,
 		"lamp", false, false)
 	var legacy := OmniLight3D.new()
 	legacy.name = "canonical_lamp_legacy"
-	legacy.position = local_position + Vector3(0.0, -SOURCE_BASE_DROP, 0.0)
+	legacy.position = local_position + Vector3(0.0, -SOURCE_DROP, 0.0)
 	configure_wide_lamp(legacy)
 	legacy.visible = false
 	legacy.set_meta("area_id", area_id)

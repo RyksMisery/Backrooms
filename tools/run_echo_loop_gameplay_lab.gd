@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Architecture := preload("res://modules/architecture_module.gd")
+const Lighting := preload("res://modules/lighting_module.gd")
 const Props := preload("res://modules/props_module.gd")
 const RunPlan := preload("res://modules/echo_loop_run_plan_module.gd")
 
@@ -37,7 +38,7 @@ func _run() -> void:
 		return
 	var light_module: RefCounted = level.get("lighting")
 	var lamps: Array = light_module.get("lamps") if light_module != null else []
-	var light_report := _validate_echo_lights(level, lamps)
+	var light_report := _validate_echo_lights(level, light_module, lamps)
 	if not bool(light_report.get("valid", false)):
 		_fail("invalid ceiling grid: %s" % light_report.get("errors", []))
 		return
@@ -135,7 +136,8 @@ func _cell_center(cell: Vector2i) -> Vector3:
 		(float(cell.y) + 0.5) * Architecture.CELL)
 
 
-func _validate_echo_lights(level: Node, lamps: Array) -> Dictionary:
+func _validate_echo_lights(level: Node, lighting: RefCounted,
+		lamps: Array) -> Dictionary:
 	var grid: Dictionary = level.get("_grid")
 	var errors: Array[String] = []
 	var cells_by_region := {}
@@ -182,9 +184,31 @@ func _validate_echo_lights(level: Node, lamps: Array) -> Dictionary:
 		if (cells_by_region.get(region, []) as Array).size() \
 				!= int(expected_counts[region]):
 			errors.append("%s panel count mismatch" % region)
+	var expected_family_count := 0
+	for count in expected_counts.values():
+		expected_family_count += int(count)
+	var family_counts := {
+		"legacy": _validate_light_family(
+			lamps, "legacy", expected_family_count, errors),
+		"area": _validate_light_family(
+			lighting.get("area_lamps"), "area", expected_family_count, errors),
+		"bounce": _validate_light_family(
+			lighting.get("area_bounce_lamps"), "bounce",
+			expected_family_count, errors),
+	}
+	for family_name: String in [
+		"legacy", "area", "bounce",
+	]:
+		var members: Array = lamps if family_name == "legacy" \
+			else lighting.get(
+				"area_lamps" if family_name == "area" \
+				else "area_bounce_lamps")
+		if _count_area_members(members, "echo_lower_room") != 16:
+			errors.append("lower-room %s family count mismatch" % family_name)
 	return {
 		"valid": errors.is_empty(),
 		"errors": errors,
+		"families": family_counts,
 		"counts": {
 			"west": (cells_by_region.get("west", []) as Array).size(),
 			"east": (cells_by_region.get("east", []) as Array).size(),
@@ -192,6 +216,52 @@ func _validate_echo_lights(level: Node, lamps: Array) -> Dictionary:
 			"south": (cells_by_region.get("south", []) as Array).size(),
 		},
 	}
+
+
+func _count_area_members(members: Array, area_id: String) -> int:
+	var count := 0
+	for member in members:
+		if is_instance_valid(member) \
+				and String(member.get_meta("area_id", "")) == area_id:
+			count += 1
+	return count
+
+
+func _validate_light_family(members: Array, kind: String,
+		expected_count: int, errors: Array[String]) -> int:
+	var count := 0
+	var panel_y := Architecture.CEIL_H + Lighting.PANEL_Y_EPS
+	for member in members:
+		if not is_instance_valid(member) \
+				or not member.has_meta("echo_light_cell"):
+			continue
+		count += 1
+		var expected_y := panel_y
+		if kind == "legacy":
+			expected_y -= Lighting.SOURCE_DROP
+			if member.visible:
+				errors.append("legacy fallback must be hidden")
+		elif kind == "area":
+			expected_y += Lighting.AREA_LIGHT_PANEL_Y_OFFSET
+			if not member.visible or not member.is_class("AreaLight3D"):
+				errors.append("active AreaLight3D missing")
+			if absf(float(member.get("area_range"))
+					- Lighting.AREA_LIGHT_RANGE_TEST_OFF) > 0.001:
+				errors.append("AreaLight3D range override detected")
+		elif kind == "bounce":
+			expected_y += Lighting.AREA_LIGHT_BOUNCE_Y_OFFSET
+			if not member.visible \
+					or absf(float(member.omni_range)
+						- Lighting.AREA_LIGHT_BOUNCE_RANGE) > 0.001:
+				errors.append("canonical bounce source mismatch")
+		if absf(member.global_position.y - expected_y) > 0.001:
+			errors.append("%s source height mismatch" % kind)
+		if String(member.get_meta("area_id", "")) != "echo_loop":
+			errors.append("%s area_id mismatch" % kind)
+	if count != expected_count:
+		errors.append("%s family count mismatch: %d/%d" % [
+			kind, count, expected_count])
+	return count
 
 
 func _fail(message: String) -> void:

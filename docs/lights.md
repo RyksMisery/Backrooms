@@ -737,7 +737,11 @@ anchor-focus. Перенос отклонён. Расширять portal fade з
 Unlike legacy omni sources, ceiling `AreaLight3D` panels are the light surface
 itself. Do not apply the `level_d` vertical source-drop rule to them: keep the
 area light close to the visible panel underside. The source-drop rule remains
-for old point/spot sources.
+for old point/spot sources. The compositional
+`add_level_e_area_ceiling_light()` constructor has no level-owned post-pass,
+so its hidden legacy fallback applies the complete canonical
+`SOURCE_BASE_DROP + SOURCE_LEVEL_DROP` itself; the Area panel and bounce fill
+keep their own explicit offsets.
 
 `AreaLight3D` is directional and does not provide the old fake ceiling bounce:
 it lights downward, but the surrounding ceiling surface and upper wall band can
