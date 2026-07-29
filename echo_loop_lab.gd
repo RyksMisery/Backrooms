@@ -3,7 +3,6 @@ extends Node3D
 # Независимая лаборатория накопительных изменений после полного обхода петли.
 
 const Architecture := preload("res://modules/architecture_module.gd")
-const Opening := preload("res://modules/opening_module.gd")
 const Lighting := preload("res://modules/lighting_module.gd")
 const Audio := preload("res://modules/audio_module.gd")
 const HUD := preload("res://modules/hud_module.gd")
@@ -23,9 +22,10 @@ const LOWER_ROOM_ORIGIN := Vector3(40.0, 0.0, 10.0)
 const HIDDEN_CONFIRM_FRAMES := 2
 const MUTATION_RECT := Rect2i(3, 3, 21, 25)
 const VISIBILITY_MARGIN_M := 0.15
+const PORTAL_PARTITION_T_M := 0.25
+const PORTAL_HEAD_GAP_M := 0.5
 
 var architecture
-var opening
 var lighting
 var audio
 var hud
@@ -72,7 +72,6 @@ func _ready() -> void:
 	DisplayServer.window_set_title("Echo Loop v3 — CORE WIDTH 1..6")
 	_build_plan()
 	architecture = Architecture.new(self)
-	opening = Opening.new(self, architecture)
 	architecture.install_environment(false)
 	Architecture.apply_render_profile(get_viewport())
 	lighting = Lighting.new(self, architecture)
@@ -322,6 +321,8 @@ func _update_micro_sector() -> void:
 
 
 func _queue_micro_mutation(kind: String, target: String) -> void:
+	if kind == "corner" and target == _landmark_corner_id():
+		return
 	for pending: Dictionary in _micro_pending:
 		if String(pending.get("kind", "")) == kind \
 				and String(pending.get("target", "")) == target:
@@ -331,6 +332,11 @@ func _queue_micro_mutation(kind: String, target: String) -> void:
 		"target": target,
 		"hidden_frames": 0,
 	})
+
+
+func _landmark_corner_id() -> String:
+	return "north_west" if bool(_plan.get("mirror", false)) \
+		else "north_east"
 
 
 func _update_micro_pending() -> void:
@@ -509,19 +515,87 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 				center + Vector3(0.0, Architecture.CEIL_H * 0.5, 0.0),
 				"wall", true, true)
 		2:
-			var thickness := Architecture.PARTITION_T_CELLS \
-				* Architecture.CELL
-			architecture.add_box(root_node, "corner_partition",
-				Vector3(
-					thickness,
-					Architecture.CEIL_H,
-					Architecture.CELL * 2.4),
-				center + Vector3(0.0, Architecture.CEIL_H * 0.5, 0.0),
-				"wall", true, true)
+			_build_attached_corner_partition(
+				root_node, corner_id, center.x)
 		3:
-			opening.spawn_office_opening(
-				root_node, center, Vector3.RIGHT,
-				"corner_portal_%s" % corner_id, false, false)
+			_build_freeform_corner_portal(root_node, corner_id, center.x)
+
+
+func _build_attached_corner_partition(parent: Node3D, corner_id: String,
+		wall_x: float) -> void:
+	var north := corner_id.begins_with("north")
+	var span_lo := (3.0 if north else 30.0) * Architecture.CELL
+	var span_hi := (9.0 if north else 36.0) * Architecture.CELL
+	var mutation_index := int(_corner_mutation_counts.get(corner_id, 1))
+	var thickness_options := [0.25, 0.5, 0.75, 1.0]
+	var length_cells_options := [1.5, 2.5, 3.5, 4.0]
+	var thickness_index := posmod(
+		hash([seed_detail, corner_id, mutation_index, "thickness"]),
+		thickness_options.size())
+	var length_index := posmod(
+		hash([seed_detail, corner_id, mutation_index, "length"]),
+		length_cells_options.size())
+	var attach_to_inner := posmod(
+		hash([seed_detail, corner_id, mutation_index, "attachment"]),
+		2) == 1
+	var thickness := float(thickness_options[thickness_index])
+	var length := float(length_cells_options[length_index]) \
+		* Architecture.CELL
+	var attachment_z := span_hi if north == attach_to_inner else span_lo
+	var direction := -1.0 if attachment_z == span_hi else 1.0
+	var center_z := attachment_z + direction * length * 0.5
+	architecture.add_box(parent, "corner_partition",
+		Vector3(thickness, Architecture.CEIL_H, length),
+		Vector3(wall_x, Architecture.CEIL_H * 0.5, center_z),
+		"wall", true, true)
+
+
+func _build_freeform_corner_portal(parent: Node3D, corner_id: String,
+		wall_x: float) -> void:
+	var north := corner_id.begins_with("north")
+	var span_lo := (3.0 if north else 30.0) * Architecture.CELL
+	var span_hi := (9.0 if north else 36.0) * Architecture.CELL
+	var span_center := (span_lo + span_hi) * 0.5
+	var width_cells_options := [1.5, 2.5, 3.5]
+	var mutation_index := int(_corner_mutation_counts.get(corner_id, 1))
+	var option_index := posmod(
+		hash([seed_detail, corner_id, mutation_index]),
+		width_cells_options.size())
+	var opening_width := float(width_cells_options[option_index]) \
+		* Architecture.CELL
+	var opening_height := Architecture.CEIL_H - PORTAL_HEAD_GAP_M
+	var opening_lo := span_center - opening_width * 0.5
+	var opening_hi := span_center + opening_width * 0.5
+	architecture.add_box(parent, "portal_partition_side_a",
+		Vector3(
+			PORTAL_PARTITION_T_M,
+			Architecture.CEIL_H,
+			opening_lo - span_lo),
+		Vector3(
+			wall_x,
+			Architecture.CEIL_H * 0.5,
+			(span_lo + opening_lo) * 0.5),
+		"wall", true, true)
+	architecture.add_box(parent, "portal_partition_side_b",
+		Vector3(
+			PORTAL_PARTITION_T_M,
+			Architecture.CEIL_H,
+			span_hi - opening_hi),
+		Vector3(
+			wall_x,
+			Architecture.CEIL_H * 0.5,
+			(opening_hi + span_hi) * 0.5),
+		"wall", true, true)
+	architecture.add_box(parent, "portal_partition_lintel",
+		Vector3(
+			PORTAL_PARTITION_T_M,
+			PORTAL_HEAD_GAP_M,
+			opening_width),
+		Vector3(
+			wall_x,
+			opening_height + PORTAL_HEAD_GAP_M * 0.5,
+			span_center),
+		"wall", true, false)
 
 
 func _point_occluded(camera: Camera3D, target: Vector3) -> bool:

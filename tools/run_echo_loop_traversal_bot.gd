@@ -124,6 +124,9 @@ func _observe_state(level: Node, player: CharacterBody3D,
 	var chair_result := await _observe_chairs(
 		level, player, cycle, "cycle_%d_chairs.png" % cycle)
 	await _capture_corner_variants(level, player, cycle)
+	var portal_lintels := level.find_children(
+		"portal_partition_lintel", "MeshInstance3D", true, false)
+	var portal_valid := cycle < 3 or not portal_lintels.is_empty()
 	player.global_position = Vector3(
 		13.5 * Architecture.CELL, 1.2, 30.5 * Architecture.CELL)
 	player.rotation.y = 0.0
@@ -136,7 +139,8 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		<= width_tolerance \
 		and absf(east_width / Architecture.CELL - expected_east) \
 		<= width_tolerance \
-		and bool(chair_result.get("valid", false))
+		and bool(chair_result.get("valid", false)) \
+		and portal_valid
 	return {
 		"cycle": cycle,
 		"west_width_cells": west_width / Architecture.CELL,
@@ -144,6 +148,7 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		"expected_west_cells": expected_west,
 		"expected_east_cells": expected_east,
 		"chairs": chair_result,
+		"portal_partition_count": portal_lintels.size(),
 		"valid": valid,
 		"error": "" if valid else "physical width or chair presentation mismatch",
 	}
