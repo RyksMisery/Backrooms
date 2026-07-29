@@ -39,6 +39,10 @@ var _mutation_props: Node3D
 var _landmark_root: Node3D
 var _width_patch_roots := {}
 var _corner_roots := {}
+var _corner_variants := {
+	"north_west": 0, "north_east": 0,
+	"south_west": 0, "south_east": 0,
+}
 var _plan: Dictionary = {}
 var _plan_report: Dictionary = {}
 var _grid: Dictionary = {}
@@ -370,6 +374,7 @@ func _apply_micro_mutation(kind: String, target: String) -> void:
 		else:
 			_runtime_widths.y = next
 		_rebuild_width_patch(target)
+		_rebuild_corner_variants_for_side(target)
 		_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
 	else:
 		var count := int(_corner_mutation_counts.get(target, 0)) + 1
@@ -458,8 +463,8 @@ func _mutation_region_visible() -> bool:
 
 func _micro_region_rect(kind: String, target: String) -> Rect2i:
 	if kind == "width":
-		return Rect2i(3, 9, 6, 21) if target == "west" \
-			else Rect2i(18, 9, 6, 21)
+		return Rect2i(3, 3, 6, 33) if target == "west" \
+			else Rect2i(18, 3, 6, 33)
 	return {
 		"north_west": Rect2i(5, 5, 4, 4),
 		"north_east": Rect2i(18, 5, 4, 4),
@@ -500,9 +505,12 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 	root_node.name = "corner_%s_variant_%d" % [corner_id, variant]
 	add_child(root_node)
 	_corner_roots[corner_id] = root_node
+	_corner_variants[corner_id] = variant
+	root_node.set_meta("corner_id", corner_id)
+	root_node.set_meta("corner_variant", variant)
 	var rect := _micro_region_rect("corner", corner_id)
 	var center := Vector3(
-		(rect.position.x + rect.size.x * 0.5) * Architecture.CELL,
+		_corner_lane_center_x(corner_id),
 		0.0,
 		(rect.position.y + rect.size.y * 0.5) * Architecture.CELL)
 	match variant:
@@ -519,6 +527,24 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 				root_node, corner_id, center.x)
 		3:
 			_build_freeform_corner_portal(root_node, corner_id, center.x)
+
+
+func _rebuild_corner_variants_for_side(side: String) -> void:
+	for corner_id: String in [
+		"north_%s" % side,
+		"south_%s" % side,
+	]:
+		var variant := int(_corner_variants.get(corner_id, 0))
+		if variant > 0:
+			_build_corner_variant(corner_id, variant)
+
+
+func _corner_lane_center_x(corner_id: String) -> float:
+	var west := corner_id.ends_with("west")
+	var width := _runtime_widths.x if west else _runtime_widths.y
+	var x_cells := float(RunPlan.INTERIOR_MIN.x) + float(width) * 0.5 \
+		if west else float(RunPlan.INTERIOR_MAX.x) - float(width) * 0.5
+	return x_cells * Architecture.CELL
 
 
 func _build_attached_corner_partition(parent: Node3D, corner_id: String,
@@ -553,39 +579,58 @@ func _build_attached_corner_partition(parent: Node3D, corner_id: String,
 func _build_freeform_corner_portal(parent: Node3D, corner_id: String,
 		wall_x: float) -> void:
 	var north := corner_id.begins_with("north")
-	var span_lo := (3.0 if north else 30.0) * Architecture.CELL
-	var span_hi := (9.0 if north else 36.0) * Architecture.CELL
+	var span_lo := float(
+		RunPlan.INTERIOR_MIN.y if north else RunPlan.CORE_RECT.end.y) \
+		* Architecture.CELL
+	var span_hi := float(
+		RunPlan.CORE_RECT.position.y if north else RunPlan.INTERIOR_MAX.y) \
+		* Architecture.CELL
 	var span_center := (span_lo + span_hi) * 0.5
-	var width_cells_options := [1.5, 2.5, 3.5]
+	var west := corner_id.ends_with("west")
+	var side_width := _runtime_widths.x if west else _runtime_widths.y
+	var width_cells_options := [1.0, 1.5] if side_width <= 2 \
+		else ([2.0, 2.5] if side_width <= 4 else [2.5, 3.5])
 	var mutation_index := int(_corner_mutation_counts.get(corner_id, 1))
 	var option_index := posmod(
-		hash([seed_detail, corner_id, mutation_index]),
+		hash([seed_detail, corner_id, mutation_index, "opening_width"]),
 		width_cells_options.size())
 	var opening_width := float(width_cells_options[option_index]) \
 		* Architecture.CELL
 	var opening_height := Architecture.CEIL_H - PORTAL_HEAD_GAP_M
+	var alignments := ["outer", "center", "inner"]
+	var alignment := String(alignments[posmod(
+		hash([seed_detail, corner_id, mutation_index, "opening_alignment"]),
+		alignments.size())])
 	var opening_lo := span_center - opening_width * 0.5
-	var opening_hi := span_center + opening_width * 0.5
-	architecture.add_box(parent, "portal_partition_side_a",
-		Vector3(
-			PORTAL_PARTITION_T_M,
-			Architecture.CEIL_H,
-			opening_lo - span_lo),
-		Vector3(
-			wall_x,
-			Architecture.CEIL_H * 0.5,
-			(span_lo + opening_lo) * 0.5),
-		"wall", true, true)
-	architecture.add_box(parent, "portal_partition_side_b",
-		Vector3(
-			PORTAL_PARTITION_T_M,
-			Architecture.CEIL_H,
-			span_hi - opening_hi),
-		Vector3(
-			wall_x,
-			Architecture.CEIL_H * 0.5,
-			(opening_hi + span_hi) * 0.5),
-		"wall", true, true)
+	if alignment == "outer":
+		opening_lo = span_lo if north else span_hi - opening_width
+	elif alignment == "inner":
+		opening_lo = span_hi - opening_width if north else span_lo
+	var opening_hi := opening_lo + opening_width
+	var side_a_width := opening_lo - span_lo
+	var side_b_width := span_hi - opening_hi
+	if side_a_width > 0.001:
+		architecture.add_box(parent, "portal_partition_side_a",
+			Vector3(
+				PORTAL_PARTITION_T_M,
+				Architecture.CEIL_H,
+				side_a_width),
+			Vector3(
+				wall_x,
+				Architecture.CEIL_H * 0.5,
+				(span_lo + opening_lo) * 0.5),
+			"wall", true, true)
+	if side_b_width > 0.001:
+		architecture.add_box(parent, "portal_partition_side_b",
+			Vector3(
+				PORTAL_PARTITION_T_M,
+				Architecture.CEIL_H,
+				side_b_width),
+			Vector3(
+				wall_x,
+				Architecture.CEIL_H * 0.5,
+				(opening_hi + span_hi) * 0.5),
+			"wall", true, true)
 	architecture.add_box(parent, "portal_partition_lintel",
 		Vector3(
 			PORTAL_PARTITION_T_M,
@@ -594,8 +639,18 @@ func _build_freeform_corner_portal(parent: Node3D, corner_id: String,
 		Vector3(
 			wall_x,
 			opening_height + PORTAL_HEAD_GAP_M * 0.5,
-			span_center),
+			(opening_lo + opening_hi) * 0.5),
 		"wall", true, false)
+	parent.set_meta("portal_side", "west" if west else "east")
+	parent.set_meta("portal_lane_width_cells", side_width)
+	parent.set_meta(
+		"portal_opening_width_cells", opening_width / Architecture.CELL)
+	parent.set_meta("portal_alignment", alignment)
+	parent.set_meta("portal_wall_x", wall_x)
+	parent.set_meta("portal_span_lo", span_lo)
+	parent.set_meta("portal_span_hi", span_hi)
+	parent.set_meta("portal_opening_lo", opening_lo)
+	parent.set_meta("portal_opening_hi", opening_hi)
 
 
 func _point_occluded(camera: Camera3D, target: Vector3) -> bool:
@@ -659,6 +714,14 @@ func _reset_with_seed(next_seed: int) -> void:
 	_micro_pending.clear()
 	_width_mutation_counts = {"west": 0, "east": 0}
 	_corner_mutation_counts = {
+		"north_west": 0, "north_east": 0,
+		"south_west": 0, "south_east": 0,
+	}
+	for corner in _corner_roots.values():
+		if corner is Node and is_instance_valid(corner):
+			(corner as Node).free()
+	_corner_roots.clear()
+	_corner_variants = {
 		"north_west": 0, "north_east": 0,
 		"south_west": 0, "south_east": 0,
 	}

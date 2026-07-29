@@ -20,8 +20,10 @@ func _init() -> void:
 
 
 func _run() -> void:
+	var requested_seed := _requested_seed()
 	var timestamp := Time.get_datetime_string_from_system().replace(":", "-")
-	var relative_dir := ".echo_loop_traversal_bot/%s" % timestamp
+	var relative_dir := ".echo_loop_traversal_bot/%s_seed_%d" % [
+		timestamp, requested_seed]
 	_artifact_dir = ProjectSettings.globalize_path("res://%s" % relative_dir)
 	DirAccess.make_dir_recursive_absolute(_artifact_dir)
 	var packed := load("res://echo_loop_lab.tscn") as PackedScene
@@ -29,6 +31,7 @@ func _run() -> void:
 		_fail("scene failed to load")
 		return
 	var level := packed.instantiate()
+	level.set("seed_detail", requested_seed)
 	root.add_child(level)
 	for _frame in range(8):
 		await process_frame
@@ -71,6 +74,12 @@ func _run() -> void:
 			_write_report(applied)
 			_fail("loop produced only %d micro mutations" % micro_delta)
 			return
+	var rebuild_report := await _validate_portals_after_width_rebuild(level)
+	_observations.append({"post_width_rebuild": rebuild_report})
+	if not bool(rebuild_report.get("valid", false)):
+		_write_report(level.call("debug_snapshot"))
+		_fail("portal detached after runtime width rebuild")
+		return
 	_write_report(level.call("debug_snapshot"))
 	print("ECHO_LOOP_TRAVERSAL_BOT_OK: %s" % _artifact_dir)
 	print(JSON.stringify(_observations))
@@ -78,6 +87,13 @@ func _run() -> void:
 	level.free()
 	await process_frame
 	quit(0)
+
+
+func _requested_seed() -> int:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--seed="):
+			return maxi(1, int(argument.trim_prefix("--seed=")))
+	return 1
 
 
 func _walk_full_loop(level: Node, player: CharacterBody3D,
@@ -124,9 +140,7 @@ func _observe_state(level: Node, player: CharacterBody3D,
 	var chair_result := await _observe_chairs(
 		level, player, cycle, "cycle_%d_chairs.png" % cycle)
 	await _capture_corner_variants(level, player, cycle)
-	var portal_lintels := level.find_children(
-		"portal_partition_lintel", "MeshInstance3D", true, false)
-	var portal_valid := cycle < 3 or not portal_lintels.is_empty()
+	var portal_result := _validate_portals(level, cycle)
 	player.global_position = Vector3(
 		13.5 * Architecture.CELL, 1.2, 30.5 * Architecture.CELL)
 	player.rotation.y = 0.0
@@ -140,7 +154,7 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		and absf(east_width / Architecture.CELL - expected_east) \
 		<= width_tolerance \
 		and bool(chair_result.get("valid", false)) \
-		and portal_valid
+		and bool(portal_result.get("valid", false))
 	return {
 		"cycle": cycle,
 		"west_width_cells": west_width / Architecture.CELL,
@@ -148,10 +162,111 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		"expected_west_cells": expected_west,
 		"expected_east_cells": expected_east,
 		"chairs": chair_result,
-		"portal_partition_count": portal_lintels.size(),
+		"portals": portal_result,
 		"valid": valid,
-		"error": "" if valid else "physical width or chair presentation mismatch",
+		"error": "" if valid \
+			else "physical width, chair, or portal geometry mismatch",
 	}
+
+
+func _validate_portals(level: Node, cycle: int) -> Dictionary:
+	var reports: Array[Dictionary] = []
+	var all_valid := true
+	var runtime_widths: Vector2i = level.get("_runtime_widths")
+	for corner_id: String in [
+		"north_west", "north_east", "south_west", "south_east",
+	]:
+		var root_node = level.get("_corner_roots").get(corner_id)
+		if not (root_node is Node3D) \
+				or int(root_node.get_meta("corner_variant", 0)) != 3:
+			continue
+		var west := corner_id.ends_with("west")
+		var north := corner_id.begins_with("north")
+		var side_width := runtime_widths.x if west else runtime_widths.y
+		var expected_x_cells := float(RunPlan.INTERIOR_MIN.x) \
+			+ float(side_width) * 0.5 if west \
+			else float(RunPlan.INTERIOR_MAX.x) \
+				- float(side_width) * 0.5
+		var expected_x := expected_x_cells * Architecture.CELL
+		var expected_span_lo := float(
+			RunPlan.INTERIOR_MIN.y if north \
+				else RunPlan.CORE_RECT.end.y) * Architecture.CELL
+		var expected_span_hi := float(
+			RunPlan.CORE_RECT.position.y if north \
+				else RunPlan.INTERIOR_MAX.y) * Architecture.CELL
+		var opening_width_cells := float(root_node.get_meta(
+			"portal_opening_width_cells", 0.0))
+		var alignment := String(root_node.get_meta(
+			"portal_alignment", ""))
+		var opening_lo := float(root_node.get_meta("portal_opening_lo", 0.0))
+		var opening_hi := float(root_node.get_meta("portal_opening_hi", 0.0))
+		var narrow_rule_valid := opening_width_cells <= 1.5 \
+			if side_width <= 2 else opening_width_cells >= 2.0
+		var alignment_valid := alignment == "center" \
+			or (alignment == "outer" and (
+				is_equal_approx(opening_lo, expected_span_lo) if north \
+				else is_equal_approx(opening_hi, expected_span_hi))) \
+			or (alignment == "inner" and (
+				is_equal_approx(opening_hi, expected_span_hi) if north \
+				else is_equal_approx(opening_lo, expected_span_lo)))
+		var physical_aabb := AABB()
+		var has_part := false
+		for part_name: String in [
+			"portal_partition_side_a",
+			"portal_partition_side_b",
+			"portal_partition_lintel",
+		]:
+			var part = root_node.find_child(part_name, false, false)
+			if not (part is MeshInstance3D):
+				continue
+			var part_aabb: AABB = (part as MeshInstance3D).get_aabb()
+			physical_aabb = part_aabb if not has_part \
+				else physical_aabb.merge(part_aabb)
+			has_part = true
+		var physical_span_valid := has_part \
+			and absf(physical_aabb.position.z - expected_span_lo) < 0.01 \
+			and absf(physical_aabb.end.z - expected_span_hi) < 0.01 \
+			and absf(physical_aabb.get_center().x - expected_x) < 0.01
+		var metadata_valid := \
+			absf(float(root_node.get_meta("portal_wall_x", 0.0))
+				- expected_x) < 0.01 \
+			and absf(float(root_node.get_meta("portal_span_lo", 0.0))
+				- expected_span_lo) < 0.01 \
+			and absf(float(root_node.get_meta("portal_span_hi", 0.0))
+				- expected_span_hi) < 0.01
+		var valid := narrow_rule_valid and alignment_valid \
+			and physical_span_valid and metadata_valid
+		all_valid = all_valid and valid
+		reports.append({
+			"corner": corner_id,
+			"side_width_cells": side_width,
+			"opening_width_cells": opening_width_cells,
+			"alignment": alignment,
+			"wall_x_cells": expected_x_cells,
+			"valid": valid,
+		})
+	if cycle >= 3 and reports.is_empty():
+		all_valid = false
+	return {
+		"count": reports.size(),
+		"items": reports,
+		"valid": all_valid,
+	}
+
+
+func _validate_portals_after_width_rebuild(level: Node) -> Dictionary:
+	level.set_process(false)
+	var reports: Array[Dictionary] = []
+	var all_valid := true
+	for side: String in ["west", "east"]:
+		level.call("_apply_micro_mutation", "width", side)
+		await process_frame
+		var report := _validate_portals(level, RunPlan.MAX_CYCLE)
+		report["rebuilt_side"] = side
+		reports.append(report)
+		all_valid = all_valid and bool(report.get("valid", false))
+	level.set_process(true)
+	return {"steps": reports, "valid": all_valid}
 
 
 func _capture_corner_variants(level: Node, player: CharacterBody3D,
