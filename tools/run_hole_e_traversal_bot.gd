@@ -9,6 +9,7 @@ const EXTENT := TILE_LENGTH * 14.0
 var _artifact_dir := ""
 var _samples: Array[Dictionary] = []
 var _max_gap := 0.0
+var _max_ring_gap := 0.0
 
 
 func _init() -> void:
@@ -65,11 +66,6 @@ func _run() -> void:
 	if not bool(revealed.get("infinite_active", false)):
 		_fail("camera turn did not activate bidirectional infinity")
 		return
-	var static_chunk := _static_chunk(level)
-	if static_chunk == null:
-		_fail("static center tile missing")
-		return
-	var static_position := static_chunk.position
 	await _walk(level, player, player.global_position.z, EXTENT, 1.0)
 	var south_snapshot: Dictionary = level.call("debug_snapshot")
 	if int(south_snapshot.get("door_reveal_count", 0)) < 2:
@@ -81,11 +77,19 @@ func _run() -> void:
 			<= int(south_snapshot.get("door_reveal_count", 0)):
 		_fail("door did not repeat after reversing direction")
 		return
-	if static_chunk.position != static_position:
-		_fail("static center tile moved")
-		return
 	if _max_gap > 0.001:
 		_fail("visible coverage gap %.4f m" % _max_gap)
+		return
+	if _max_ring_gap > 0.001:
+		_fail("detached ring gap %.4f m" % _max_ring_gap)
+		return
+	if float(north_snapshot.get("min_recycle_distance", 0.0)) \
+			< TILE_LENGTH * 4.0:
+		_fail("geometry recycled before the dark cap")
+		return
+	if float(north_snapshot.get("last_door_spawn_distance", 0.0)) \
+			< VIEW_RADIUS:
+		_fail("door was built inside the visible light range")
 		return
 	var timestamp := Time.get_datetime_string_from_system().replace(":", "-")
 	var relative_dir := ".hole_e_traversal_bot/%s" % timestamp
@@ -103,6 +107,7 @@ func _run() -> void:
 		"south": south_snapshot,
 		"north": north_snapshot,
 		"max_visible_gap_m": _max_gap,
+		"max_ring_gap_m": _max_ring_gap,
 		"sample_count": _samples.size(),
 		"samples": _samples,
 	}
@@ -131,6 +136,8 @@ func _walk(level: Node, player: CharacterBody3D, from_z: float,
 		await process_frame
 		var gap := _coverage_gap(level, z)
 		_max_gap = maxf(_max_gap, gap)
+		var ring_gap := _ring_gap(level)
+		_max_ring_gap = maxf(_max_ring_gap, ring_gap)
 		if gap > 0.001:
 			print("HOLE_E_BOT_GAP z=", z,
 				" chunks=", _chunk_positions(level), " gap=", gap)
@@ -138,6 +145,7 @@ func _walk(level: Node, player: CharacterBody3D, from_z: float,
 		_samples.append({
 			"z": z,
 			"gap": gap,
+			"ring_gap": ring_gap,
 			"cycles": snapshot.get("cycle_count", 0),
 			"door_reveals": snapshot.get("door_reveal_count", 0),
 		})
@@ -169,12 +177,18 @@ func _coverage_gap(level: Node, player_z: float) -> float:
 	return maxf(0.0, gap)
 
 
-func _static_chunk(level: Node) -> Node3D:
+func _ring_gap(level: Node) -> float:
+	var intervals: Array[Vector2] = []
 	for chunk_value in level.get("_chunks"):
 		var chunk := chunk_value as Node3D
-		if bool(chunk.get_meta("static_center", false)):
-			return chunk
-	return null
+		intervals.append(Vector2(
+			chunk.position.z, chunk.position.z + TILE_LENGTH))
+	intervals.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		return a.x < b.x)
+	var gap := 0.0
+	for index in range(1, intervals.size()):
+		gap = maxf(gap, intervals[index].x - intervals[index - 1].y)
+	return maxf(0.0, gap)
 
 
 func _chunk_positions(level: Node) -> Array[float]:

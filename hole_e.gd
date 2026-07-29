@@ -26,7 +26,9 @@ const FALL_Y := -6.0
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
 const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
-const RECYCLE_DISTANCE := FADE_DARK_DISTANCE + TILE_LENGTH
+const END_DISTANCE := TILE_LENGTH * 4.0
+const RECYCLE_DISTANCE := END_DISTANCE + TILE_LENGTH
+const DOOR_SPAWN_DISTANCE := TILE_LENGTH * 3.0
 const DOOR_PASSED_MARGIN := TILE_LENGTH * 0.75
 const DOOR_CENTER_TOLERANCE := Architecture.CELL * 0.5
 
@@ -42,6 +44,8 @@ var _chunks: Array[Node3D] = []
 var _north_cap: Node3D
 var _start_niche: Node3D
 var _south_prebuilt_chunk: Node3D
+var _infinite_north_cap: Node3D
+var _infinite_south_cap: Node3D
 var _cycle_count := 0
 var _fall_count := 0
 var _reached_wall := false
@@ -54,6 +58,8 @@ var _door_direction := -1.0
 var _door_reveal_count := 0
 var _next_door_cycle := DOOR_PERIOD_CYCLES
 var _last_move_sign := -1.0
+var _min_recycle_distance := INF
+var _last_door_spawn_distance := 0.0
 var _hud_visible := false
 var _map_grid: Dictionary = {}
 var _pit_rects: Array[Rect2] = []
@@ -94,7 +100,6 @@ func _build_tiles() -> void:
 		chunk.name = "hole_tile_%+d" % logical_index
 		chunk.position.z = float(logical_index) * TILE_LENGTH
 		chunk.set_meta("logical_index", logical_index)
-		chunk.set_meta("static_center", logical_index == 0)
 		add_child(chunk)
 		architecture.build_pit_tile(chunk)
 		_build_side_wall(chunk, "west")
@@ -251,6 +256,7 @@ func _process(delta: float) -> void:
 	_update_infinite_reveal()
 	if _infinite_active:
 		_update_motion_direction()
+		_update_infinite_caps()
 		_recycle_dynamic_tiles()
 		_update_repeating_door()
 	_update_fall()
@@ -329,7 +335,32 @@ func _activate_infinite() -> void:
 	if _north_cap != null and is_instance_valid(_north_cap):
 		_north_cap.free()
 		_north_cap = null
+	_infinite_north_cap = _make_moving_cap("infinite_north_cap")
+	_infinite_south_cap = _make_moving_cap("infinite_south_cap")
+	_update_infinite_caps()
 	audio.play_flick()
+
+
+func _make_moving_cap(node_name: String) -> Node3D:
+	var root := Node3D.new()
+	root.name = node_name
+	add_child(root)
+	architecture.add_box(root, "%s_wall" % node_name,
+		Vector3(ROOM_SIZE, Architecture.CEIL_H, WALL_DEPTH),
+		Vector3(ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5, 0.0),
+		"wall", true, true)
+	return root
+
+
+func _update_infinite_caps() -> void:
+	if _infinite_north_cap == null or _infinite_south_cap == null:
+		return
+	_infinite_north_cap.position.z = floorf(
+		(player.global_position.z - END_DISTANCE) / TILE_LENGTH) \
+		* TILE_LENGTH
+	_infinite_south_cap.position.z = ceilf(
+		(player.global_position.z + END_DISTANCE) / TILE_LENGTH) \
+		* TILE_LENGTH
 
 
 func _update_motion_direction() -> void:
@@ -349,16 +380,13 @@ func _recycle_dynamic_tiles() -> void:
 	var min_z := INF
 	var max_z := -INF
 	for chunk in _chunks:
-		if bool(chunk.get_meta("static_center", false)):
-			continue
 		min_z = minf(min_z, chunk.position.z)
 		max_z = maxf(max_z, chunk.position.z)
 	for chunk in _chunks:
-		if bool(chunk.get_meta("static_center", false)):
-			continue
 		if _last_move_sign < 0.0 \
 				and chunk.position.z > player.global_position.z \
 					+ RECYCLE_DISTANCE:
+			_record_recycle_distance(chunk)
 			if chunk == _door_chunk:
 				_deactivate_door()
 			chunk.position.z = min_z - TILE_LENGTH
@@ -366,11 +394,19 @@ func _recycle_dynamic_tiles() -> void:
 			_register_cycle()
 		elif _last_move_sign > 0.0 and chunk.position.z + TILE_LENGTH \
 				< player.global_position.z - RECYCLE_DISTANCE:
+			_record_recycle_distance(chunk)
 			if chunk == _door_chunk:
 				_deactivate_door()
 			chunk.position.z = max_z + TILE_LENGTH
 			max_z = chunk.position.z
 			_register_cycle()
+
+
+func _record_recycle_distance(chunk: Node3D) -> void:
+	var distance := absf(
+		chunk.position.z + TILE_LENGTH * 0.5
+		- player.global_position.z)
+	_min_recycle_distance = minf(_min_recycle_distance, distance)
 
 
 func _reveal_door() -> void:
@@ -392,7 +428,7 @@ func _reveal_door() -> void:
 
 func _pick_door_host() -> Node3D:
 	var target_z := player.global_position.z \
-		+ _last_move_sign * TILE_LENGTH * 1.25
+		+ _last_move_sign * DOOR_SPAWN_DISTANCE
 	var best: Node3D
 	var best_distance := INF
 	for chunk in _chunks:
@@ -401,6 +437,10 @@ func _pick_door_host() -> Node3D:
 		if distance < best_distance:
 			best = chunk
 			best_distance = distance
+	if best != null:
+		_last_door_spawn_distance = absf(
+			best.position.z + TILE_LENGTH * 0.5
+			- player.global_position.z)
 	return best
 
 
@@ -515,6 +555,8 @@ func debug_snapshot() -> Dictionary:
 		"door_side": _door_side,
 		"door_reveal_count": _door_reveal_count,
 		"next_door_cycle": _next_door_cycle,
+		"last_door_spawn_distance": _last_door_spawn_distance,
+		"min_recycle_distance": _min_recycle_distance,
 		"fall_count": _fall_count,
 	}
 
@@ -544,8 +586,9 @@ func _run_mechanic_test() -> void:
 		and int(snapshot["door_reveal_count"]) == 2 \
 		and first_door_has_sign \
 		and _light_entries.size() == TILE_COUNT * 9 + 1 \
-		and bool(_chunks[HALF_TILE_COUNT].get_meta(
-			"static_center", false))
+		and _infinite_north_cap != null \
+		and _infinite_south_cap != null \
+		and _last_door_spawn_distance >= FADE_DARK_DISTANCE
 	if passed:
 		print("HOLE_E_MECHANIC_OK ", snapshot)
 		get_tree().quit()
