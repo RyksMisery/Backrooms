@@ -168,7 +168,7 @@ func _ray_distance(player: CharacterBody3D, origin: Vector3,
 
 func _observe_chairs(level: Node, player: CharacterBody3D,
 		cycle: int, image_name: String) -> Dictionary:
-	var chair_count := mini(cycle, 2)
+	var chair_count := mini(cycle + 1, 2)
 	var chairs: Array = []
 	for index in range(chair_count):
 		var chair = level.find_child(

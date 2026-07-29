@@ -31,8 +31,9 @@ func _run() -> void:
 	if level.find_child("chair_group_arrow", true, false) == null:
 		_fail("permanent chair-group arrow missing")
 		return
-	if level.find_child("arrow_chair_01", true, false) != null:
-		_fail("chair group must start empty")
+	if level.find_child("arrow_chair_01", true, false) == null \
+			or level.find_child("arrow_chair_02", true, false) != null:
+		_fail("chair group must start with exactly one chair")
 		return
 	var light_module: RefCounted = level.get("lighting")
 	var lamps: Array = light_module.get("lamps") if light_module != null else []
@@ -72,17 +73,17 @@ func _run() -> void:
 			return
 		var chair_1 = level.find_child("arrow_chair_01", true, false)
 		var chair_2 = level.find_child("arrow_chair_02", true, false)
-		if expected_cycle >= 1 and chair_1 == null:
+		if chair_1 == null:
 			_fail("first grouped chair missing at cycle %d" % expected_cycle)
 			return
-		if expected_cycle >= 1:
+		if chair_1 != null:
 			var chair_box := Props.world_aabb(chair_1)
 			var inner_wall_z := 3.0 * Architecture.CELL
 			if chair_box.size.is_zero_approx() \
 					or chair_box.position.z < inner_wall_z + 0.08:
 				_fail("first chair intersects north wall")
 				return
-		if (expected_cycle >= 2) != (chair_2 != null):
+		if (expected_cycle >= 1) != (chair_2 != null):
 			_fail("second grouped chair has wrong state at cycle %d" % expected_cycle)
 			return
 		var expected_expansions := RunPlan.core_expansion_rects(

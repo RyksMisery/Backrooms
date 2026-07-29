@@ -93,7 +93,7 @@ func _build_main_geometry() -> void:
 	_main_geometry = Node3D.new()
 	_main_geometry.name = "echo_loop_static_geometry"
 	add_child(_main_geometry)
-	var static_grid := RunPlan.build_grid(_plan, 0)
+	var static_grid := RunPlan.build_static_grid()
 	for x in range(RunPlan.PIT_RECT.position.x, RunPlan.PIT_RECT.end.x):
 		for z in range(RunPlan.PIT_RECT.position.y, RunPlan.PIT_RECT.end.y):
 			static_grid[Vector2i(x, z)] = "pit"
@@ -182,7 +182,7 @@ func _build_mutation_patch() -> void:
 			_mutation_geometry, expansion_rect, expansion_index)
 		expansion_index += 1
 	var chair_cells: Array = _plan.get("chair_wall_cells", [])
-	var chair_count := mini(_cycle, 2)
+	var chair_count := mini(_cycle + 1, 2)
 	for index in range(chair_count):
 		var chair: Array = chair_cells[index]
 		Props.spawn_painted_chair_against_wall(

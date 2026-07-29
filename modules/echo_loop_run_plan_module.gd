@@ -20,8 +20,11 @@ static func build(seed_detail: int) -> Dictionary:
 	rng.seed = seed_detail
 	var mirror := rng.randi_range(0, 1) == 1
 	var chair_x := [7.2, 5.7] if mirror else [18.8, 20.3]
-	var widths_by_cycle: Array = [[6, 6]]
-	var previous_widths := Vector2i(6, 6)
+	var previous_widths := Vector2i(
+		rng.randi_range(1, 6), rng.randi_range(1, 6))
+	if mini(previous_widths.x, previous_widths.y) > 3:
+		previous_widths.x = rng.randi_range(1, 3)
+	var widths_by_cycle: Array = [[previous_widths.x, previous_widths.y]]
 	for _cycle in range(1, MAX_CYCLE + 1):
 		var next_widths := Vector2i(
 			_next_width(rng, previous_widths.x),
@@ -64,6 +67,9 @@ static func validate(plan: Dictionary) -> Dictionary:
 	if widths_by_cycle.size() != MAX_CYCLE + 1:
 		errors.append("widths_by_cycle должен описывать все состояния")
 	else:
+		var initial := widths_for_cycle(plan, 0)
+		if initial == Vector2i(6, 6) or mini(initial.x, initial.y) > 3:
+			errors.append("старт должен сразу иметь заметное расширение ядра")
 		for cycle in range(widths_by_cycle.size()):
 			var widths := widths_for_cycle(plan, cycle)
 			if widths.x < 1 or widths.x > 6 \
@@ -115,6 +121,19 @@ static func validate(plan: Dictionary) -> Dictionary:
 
 
 static func build_grid(plan: Dictionary, cycle: int) -> Dictionary:
+	var grid := build_static_grid()
+	for expansion_rect: Rect2i in core_expansion_rects(plan, cycle):
+		for x in range(expansion_rect.position.x, expansion_rect.end.x):
+			for z in range(expansion_rect.position.y, expansion_rect.end.y):
+				grid[Vector2i(x, z)] = "wall"
+	if cycle >= 3:
+		for x in range(PIT_RECT.position.x, PIT_RECT.end.x):
+			for z in range(PIT_RECT.position.y, PIT_RECT.end.y):
+				grid[Vector2i(x, z)] = "pit"
+	return grid
+
+
+static func build_static_grid() -> Dictionary:
 	var grid := {}
 	for x in range(GMIN.x, GMAX.x + 1):
 		for z in range(GMIN.y, GMAX.y + 1):
@@ -125,14 +144,6 @@ static func build_grid(plan: Dictionary, cycle: int) -> Dictionary:
 	for x in range(CORE_RECT.position.x, CORE_RECT.end.x):
 		for z in range(CORE_RECT.position.y, CORE_RECT.end.y):
 			grid[Vector2i(x, z)] = "wall"
-	for expansion_rect: Rect2i in core_expansion_rects(plan, cycle):
-		for x in range(expansion_rect.position.x, expansion_rect.end.x):
-			for z in range(expansion_rect.position.y, expansion_rect.end.y):
-				grid[Vector2i(x, z)] = "wall"
-	if cycle >= 3:
-		for x in range(PIT_RECT.position.x, PIT_RECT.end.x):
-			for z in range(PIT_RECT.position.y, PIT_RECT.end.y):
-				grid[Vector2i(x, z)] = "pit"
 	return grid
 
 
