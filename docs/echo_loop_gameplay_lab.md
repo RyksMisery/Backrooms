@@ -181,6 +181,15 @@ godot --headless --path . --script res://tools/run_echo_loop_gameplay_lab.gd
 godot --headless --path . --script res://tools/run_echo_loop_traversal_bot.gd
 ```
 
-Ручная сцена: `echo_loop_lab.tscn`. Диагностический HUD скрыт; `H` показывает
-его, `M` включает occupancy-карту, `R` создаёт следующий зеркальный сид.
-Артефакты физического раннера: `.echo_loop_gameplay_lab/`.
+Ручной запуск обязан явно указывать `--scene`; позиционный аргумент после
+`--path` в desktop-запуске может быть проигнорирован, и тогда Godot запускает
+проектный `run/main_scene` (`level_e`):
+
+```bash
+godot --path . --scene res://echo_loop_lab.tscn
+```
+
+Диагностический HUD скрыт; `H` показывает его, `M` включает occupancy-карту,
+`R` создаёт следующий процедурный сид. Заголовок правильного игрового окна:
+`Echo Loop v3 — CORE WIDTH 1..6`. Артефакты физического раннера:
+`.echo_loop_gameplay_lab/`.
