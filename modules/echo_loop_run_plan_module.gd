@@ -9,8 +9,8 @@ const GMAX := Vector2i(26, 38)
 const INTERIOR_MIN := Vector2i(3, 3)
 const INTERIOR_MAX := Vector2i(24, 36)
 const CORE_RECT := Rect2i(9, 9, 9, 21)
-const PIT_RECT := Rect2i(11, 4, 5, 4)
-const SPAWN_CELL := Vector2i(13, 34)
+const PIT_RECT := Rect2i(4, 17, 3, 5)
+const SPAWN_CELL := Vector2i(13, 35)
 const NORTH_CHECKPOINT := Vector2i(13, 3)
 const MAX_CYCLE := 3
 
@@ -32,7 +32,7 @@ static func build(seed_detail: int) -> Dictionary:
 		widths_by_cycle.append([next_widths.x, next_widths.y])
 		previous_widths = next_widths
 	var plan := {
-		"schema_version": 4,
+		"schema_version": 5,
 		"id": "echo_loop_lab_v3",
 		"seed_detail": seed_detail,
 		"mirror": mirror,
@@ -51,7 +51,7 @@ static func build(seed_detail: int) -> Dictionary:
 		"mutations": [
 			{"cycle": 1, "id": "narrow_and_first_chair"},
 			{"cycle": 2, "id": "widen_and_second_chair"},
-			{"cycle": 3, "id": "north_pit"},
+			{"cycle": 3, "id": "west_pit"},
 		],
 	}
 	plan["plan_hash"] = _stable_hash(plan)
@@ -61,8 +61,8 @@ static func build(seed_detail: int) -> Dictionary:
 static func validate(plan: Dictionary) -> Dictionary:
 	var errors: Array[String] = []
 	var routes := {}
-	if int(plan.get("schema_version", -1)) != 4:
-		errors.append("schema_version должен быть 4")
+	if int(plan.get("schema_version", -1)) != 5:
+		errors.append("schema_version должен быть 5")
 	var widths_by_cycle: Array = plan.get("widths_by_cycle", [])
 	if widths_by_cycle.size() != MAX_CYCLE + 1:
 		errors.append("widths_by_cycle должен описывать все состояния")
@@ -102,8 +102,8 @@ static func validate(plan: Dictionary) -> Dictionary:
 	for cycle in range(MAX_CYCLE + 1):
 		var grid := build_grid(plan, cycle)
 		var widths := widths_for_cycle(plan, cycle)
-		if _lane_width(grid, true) != widths.x \
-				or _lane_width(grid, false) != widths.y:
+		if _short_side_width(grid, true) != widths.x \
+				or _short_side_width(grid, false) != widths.y:
 			errors.append("cycle %d: occupancy не совпадает с ширинами" % cycle)
 		var to_north := find_route(grid, SPAWN_CELL, NORTH_CHECKPOINT)
 		routes[cycle] = to_north
@@ -172,12 +172,16 @@ static func core_expansion_rects_for_widths(
 	var result: Array[Rect2i] = []
 	if widths.x < 6:
 		result.append(Rect2i(
-			3 + widths.x, CORE_RECT.position.y,
-			6 - widths.x, CORE_RECT.size.y))
+			CORE_RECT.position.x,
+			INTERIOR_MIN.y + widths.x,
+			CORE_RECT.size.x,
+			6 - widths.x))
 	if widths.y < 6:
 		result.append(Rect2i(
-			CORE_RECT.end.x, CORE_RECT.position.y,
-			6 - widths.y, CORE_RECT.size.y))
+			CORE_RECT.position.x,
+			CORE_RECT.end.y,
+			CORE_RECT.size.x,
+			6 - widths.y))
 	return result
 
 
@@ -200,11 +204,11 @@ static func _next_width(rng: RandomNumberGenerator, previous: int) -> int:
 	return candidates[rng.randi_range(0, candidates.size() - 1)]
 
 
-static func _lane_width(grid: Dictionary, west: bool) -> int:
+static func _short_side_width(grid: Dictionary, north: bool) -> int:
 	var result := 0
-	var range_x := range(3, 9) if west else range(18, 24)
-	for x: int in range_x:
-		if String(grid.get(Vector2i(x, 19), "wall")) == "floor":
+	var range_z := range(3, 9) if north else range(30, 36)
+	for z: int in range_z:
+		if String(grid.get(Vector2i(13, z), "wall")) == "floor":
 			result += 1
 	return result
 

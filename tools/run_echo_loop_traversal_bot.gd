@@ -8,7 +8,7 @@ const Props := preload("res://modules/props_module.gd")
 const RunPlan := preload("res://modules/echo_loop_run_plan_module.gd")
 
 const WALK_STEP_M := 0.18
-const MEASURE_Z_CELL := 19.5
+const MEASURE_X_CELL := 13.5
 const RAY_LENGTH_M := 20.0
 
 var _artifact_dir := ""
@@ -99,22 +99,28 @@ func _requested_seed() -> int:
 func _walk_full_loop(level: Node, player: CharacterBody3D,
 		cycle: int) -> void:
 	var grid: Dictionary = level.get("_grid")
-	var west_x := _lane_center_x(grid, true)
+	var north_z := _short_side_center_z(grid, true)
+	var south_z := _short_side_center_z(grid, false)
+	var west_x := 5.5
 	for waypoint: Vector2 in [
-		Vector2(west_x, 30.5), Vector2(west_x, 8.5),
+		Vector2(west_x, south_z), Vector2(west_x, north_z),
 	]:
 		await _walk_to(player, Vector3(
 			waypoint.x * Architecture.CELL, 1.2,
 			waypoint.y * Architecture.CELL))
 	grid = level.get("_grid")
-	var east_x := _lane_center_x(grid, false)
+	north_z = _short_side_center_z(grid, true)
+	south_z = _short_side_center_z(grid, false)
+	var east_x := 21.0
 	for waypoint: Vector2 in [
-		Vector2(east_x, 8.5), Vector2(east_x, 30.5),
-		Vector2(13.5, 30.5),
+		Vector2(east_x, north_z), Vector2(east_x, south_z),
+		Vector2(13.5, 35.5),
 	]:
 		await _walk_to(player, Vector3(
 			waypoint.x * Architecture.CELL, 1.2,
 			waypoint.y * Architecture.CELL))
+	player.rotation.y = PI
+	await process_frame
 
 
 func _walk_to(player: CharacterBody3D, target: Vector3) -> void:
@@ -131,38 +137,41 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		cycle: int) -> Dictionary:
 	level.set_process(false)
 	var grid: Dictionary = level.get("_grid")
-	var west_x := _lane_center_x(grid, true)
-	var east_x := _lane_center_x(grid, false)
-	var west_width := await _measure_width(
-		player, west_x, "cycle_%d_west.png" % cycle)
-	var east_width := await _measure_width(
-		player, east_x, "cycle_%d_east.png" % cycle)
+	var north_z := _short_side_center_z(grid, true)
+	var south_z := _short_side_center_z(grid, false)
+	var north_width := await _measure_short_width(
+		player, north_z, "cycle_%d_north.png" % cycle)
+	var south_width := await _measure_short_width(
+		player, south_z, "cycle_%d_south.png" % cycle)
 	var chair_result := await _observe_chairs(
 		level, player, cycle, "cycle_%d_chairs.png" % cycle)
 	await _capture_corner_variants(level, player, cycle)
 	var portal_result := _validate_portals(level, cycle)
+	var passage_result := _validate_corner_passages(level)
 	player.global_position = Vector3(
 		13.5 * Architecture.CELL, 1.2, 30.5 * Architecture.CELL)
 	player.rotation.y = 0.0
 	await process_frame
 	level.set_process(true)
-	var expected_west := _logical_lane_width(grid, true)
-	var expected_east := _logical_lane_width(grid, false)
+	var expected_north := _logical_short_width(grid, true)
+	var expected_south := _logical_short_width(grid, false)
 	var width_tolerance := 0.18
-	var valid := absf(west_width / Architecture.CELL - expected_west) \
+	var valid := absf(north_width / Architecture.CELL - expected_north) \
 		<= width_tolerance \
-		and absf(east_width / Architecture.CELL - expected_east) \
+		and absf(south_width / Architecture.CELL - expected_south) \
 		<= width_tolerance \
 		and bool(chair_result.get("valid", false)) \
-		and bool(portal_result.get("valid", false))
+		and bool(portal_result.get("valid", false)) \
+		and bool(passage_result.get("valid", false))
 	return {
 		"cycle": cycle,
-		"west_width_cells": west_width / Architecture.CELL,
-		"east_width_cells": east_width / Architecture.CELL,
-		"expected_west_cells": expected_west,
-		"expected_east_cells": expected_east,
+		"north_width_cells": north_width / Architecture.CELL,
+		"south_width_cells": south_width / Architecture.CELL,
+		"expected_north_cells": expected_north,
+		"expected_south_cells": expected_south,
 		"chairs": chair_result,
 		"portals": portal_result,
+		"corner_passages": passage_result,
 		"valid": valid,
 		"error": "" if valid \
 			else "physical width, chair, or portal geometry mismatch",
@@ -173,6 +182,7 @@ func _validate_portals(level: Node, cycle: int) -> Dictionary:
 	var reports: Array[Dictionary] = []
 	var all_valid := true
 	var runtime_widths: Vector2i = level.get("_runtime_widths")
+	var grid: Dictionary = level.get("_grid")
 	for corner_id: String in [
 		"north_west", "north_east", "south_west", "south_east",
 	]:
@@ -180,20 +190,21 @@ func _validate_portals(level: Node, cycle: int) -> Dictionary:
 		if not (root_node is Node3D) \
 				or int(root_node.get_meta("corner_variant", 0)) != 3:
 			continue
-		var west := corner_id.ends_with("west")
 		var north := corner_id.begins_with("north")
-		var side_width := runtime_widths.x if west else runtime_widths.y
-		var expected_x_cells := float(RunPlan.INTERIOR_MIN.x) \
-			+ float(side_width) * 0.5 if west \
-			else float(RunPlan.INTERIOR_MAX.x) \
-				- float(side_width) * 0.5
+		var side_width := runtime_widths.x if north else runtime_widths.y
+		var corner_rect: Rect2i = level.call(
+			"_micro_region_rect", "corner", corner_id)
+		var expected_x_cells := float(
+			corner_rect.position.x) + float(corner_rect.size.x) * 0.5
 		var expected_x := expected_x_cells * Architecture.CELL
-		var expected_span_lo := float(
+		var outer_z := float(
 			RunPlan.INTERIOR_MIN.y if north \
-				else RunPlan.CORE_RECT.end.y) * Architecture.CELL
-		var expected_span_hi := float(
-			RunPlan.CORE_RECT.position.y if north \
 				else RunPlan.INTERIOR_MAX.y) * Architecture.CELL
+		var side_width_m := float(side_width) * Architecture.CELL
+		var expected_span_lo := outer_z if north \
+			else outer_z - side_width_m
+		var expected_span_hi := outer_z + side_width_m if north \
+			else outer_z
 		var opening_width_cells := float(root_node.get_meta(
 			"portal_opening_width_cells", 0.0))
 		var alignment := String(root_node.get_meta(
@@ -226,16 +237,30 @@ func _validate_portals(level: Node, cycle: int) -> Dictionary:
 		var physical_span_valid := has_part \
 			and absf(physical_aabb.position.z - expected_span_lo) < 0.01 \
 			and absf(physical_aabb.end.z - expected_span_hi) < 0.01 \
-			and absf(physical_aabb.get_center().x - expected_x) < 0.01
+			and absf(physical_aabb.get_center().x - expected_x) < 0.01 \
+			and absf(physical_aabb.size.x - 0.25) < 0.01
 		var metadata_valid := \
 			absf(float(root_node.get_meta("portal_wall_x", 0.0))
 				- expected_x) < 0.01 \
 			and absf(float(root_node.get_meta("portal_span_lo", 0.0))
 				- expected_span_lo) < 0.01 \
 			and absf(float(root_node.get_meta("portal_span_hi", 0.0))
-				- expected_span_hi) < 0.01
+				- expected_span_hi) < 0.01 \
+			and bool(root_node.get_meta("accent_transverse", false)) \
+			and opening_width_cells >= 1.0 \
+			and opening_width_cells <= float(side_width)
+		var support_x := floori(expected_x / Architecture.CELL)
+		var outer_support_z := RunPlan.INTERIOR_MIN.y - 1 if north \
+			else RunPlan.INTERIOR_MAX.y
+		var inner_support_z := RunPlan.INTERIOR_MIN.y + side_width \
+			if north else RunPlan.INTERIOR_MAX.y - side_width - 1
+		var supports_valid := \
+			String(grid.get(
+				Vector2i(support_x, outer_support_z), "missing")) == "wall" \
+			and String(grid.get(
+				Vector2i(support_x, inner_support_z), "missing")) == "wall"
 		var valid := narrow_rule_valid and alignment_valid \
-			and physical_span_valid and metadata_valid
+			and physical_span_valid and metadata_valid and supports_valid
 		all_valid = all_valid and valid
 		reports.append({
 			"corner": corner_id,
@@ -243,6 +268,7 @@ func _validate_portals(level: Node, cycle: int) -> Dictionary:
 			"opening_width_cells": opening_width_cells,
 			"alignment": alignment,
 			"wall_x_cells": expected_x_cells,
+			"opposite_wall_supports": supports_valid,
 			"valid": valid,
 		})
 	if cycle >= 3 and reports.is_empty():
@@ -258,15 +284,107 @@ func _validate_portals_after_width_rebuild(level: Node) -> Dictionary:
 	level.set_process(false)
 	var reports: Array[Dictionary] = []
 	var all_valid := true
-	for side: String in ["west", "east"]:
+	for side: String in ["north", "south"]:
 		level.call("_apply_micro_mutation", "width", side)
 		await process_frame
 		var report := _validate_portals(level, RunPlan.MAX_CYCLE)
+		var passage_report := _validate_corner_passages(level)
+		report["corner_passages"] = passage_report
 		report["rebuilt_side"] = side
 		reports.append(report)
-		all_valid = all_valid and bool(report.get("valid", false))
+		all_valid = all_valid and bool(report.get("valid", false)) \
+			and bool(passage_report.get("valid", false))
 	level.set_process(true)
 	return {"steps": reports, "valid": all_valid}
+
+
+func _validate_corner_passages(level: Node) -> Dictionary:
+	var reports: Array[Dictionary] = []
+	var all_valid := true
+	var runtime_widths: Vector2i = level.get("_runtime_widths")
+	var grid: Dictionary = level.get("_grid")
+	for corner_id: String in [
+		"north_west", "north_east", "south_west", "south_east",
+	]:
+		var root_node = level.get("_corner_roots").get(corner_id)
+		if not (root_node is Node3D):
+			continue
+		var variant := int(root_node.get_meta("corner_variant", 0))
+		var north := corner_id.begins_with("north")
+		var side_width := runtime_widths.x if north else runtime_widths.y
+		var outer_z := float(
+			RunPlan.INTERIOR_MIN.y if north \
+				else RunPlan.INTERIOR_MAX.y) * Architecture.CELL
+		var span_lo := outer_z if north \
+			else outer_z - float(side_width) * Architecture.CELL
+		var span_hi := outer_z + float(side_width) * Architecture.CELL \
+			if north else outer_z
+		var intervals: Array[Vector2] = []
+		var transverse_valid := bool(root_node.get_meta(
+			"accent_transverse", false))
+		var attached_valid := true
+		for part_name: String in [
+			"corner_column",
+			"corner_partition",
+			"portal_partition_side_a",
+			"portal_partition_side_b",
+		]:
+			var part = root_node.find_child(part_name, false, false)
+			if not (part is MeshInstance3D):
+				continue
+			var part_aabb: AABB = (part as MeshInstance3D).get_aabb()
+			intervals.append(Vector2(
+				maxf(span_lo, part_aabb.position.z),
+				minf(span_hi, part_aabb.end.z)))
+			if part_name == "corner_partition":
+				transverse_valid = transverse_valid \
+					and part_aabb.size.z > part_aabb.size.x \
+					and part_aabb.size.x <= 1.01
+				attached_valid = \
+					absf(part_aabb.position.z - span_lo) < 0.01 \
+					or absf(part_aabb.end.z - span_hi) < 0.01
+				var support_x := floori(
+					part_aabb.get_center().x / Architecture.CELL)
+				var touches_lo := \
+					absf(part_aabb.position.z - span_lo) < 0.01
+				var support_z := (
+					RunPlan.INTERIOR_MIN.y - 1 if north \
+						else RunPlan.INTERIOR_MAX.y - side_width - 1
+				) if touches_lo else (
+					RunPlan.INTERIOR_MIN.y + side_width if north \
+						else RunPlan.INTERIOR_MAX.y
+				)
+				attached_valid = attached_valid and String(grid.get(
+					Vector2i(support_x, support_z), "missing")) == "wall"
+		intervals.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+			return a.x < b.x)
+		var cursor := span_lo
+		var max_gap := 0.0
+		for interval: Vector2 in intervals:
+			if interval.y <= interval.x:
+				continue
+			max_gap = maxf(max_gap, interval.x - cursor)
+			cursor = maxf(cursor, interval.y)
+		max_gap = maxf(max_gap, span_hi - cursor)
+		var required_gap := Architecture.CELL * (2.0 if variant == 2 else 1.0)
+		var skipped := bool(root_node.get_meta(
+			"accent_skipped_for_passage", false))
+		var passage_valid := max_gap + 0.01 >= required_gap
+		var valid := transverse_valid and attached_valid and passage_valid
+		if skipped:
+			valid = intervals.is_empty() \
+				and span_hi - span_lo + 0.01 >= Architecture.CELL
+		all_valid = all_valid and valid
+		reports.append({
+			"corner": corner_id,
+			"variant": variant,
+			"side_width_cells": side_width,
+			"free_passage_cells": max_gap / Architecture.CELL,
+			"skipped": skipped,
+			"transverse": transverse_valid,
+			"valid": valid,
+		})
+	return {"items": reports, "valid": all_valid}
 
 
 func _capture_corner_variants(level: Node, player: CharacterBody3D,
@@ -279,35 +397,35 @@ func _capture_corner_variants(level: Node, player: CharacterBody3D,
 			continue
 		var rect: Rect2i = level.call(
 			"_micro_region_rect", "corner", corner_id)
+		var span: Vector2 = level.call("_short_side_span", corner_id)
 		var target := Vector3(
 			(rect.position.x + rect.size.x * 0.5) * Architecture.CELL,
 			1.0,
-			(rect.position.y + rect.size.y * 0.5) * Architecture.CELL)
-		var north := corner_id.begins_with("north")
+			(span.x + span.y) * 0.5)
 		player.global_position = Vector3(
 			13.5 * Architecture.CELL,
 			1.2,
-			(7.0 if north else 32.0) * Architecture.CELL)
+			(span.x + span.y) * 0.5)
 		_look_at_flat(player, target)
 		await process_frame
 		await _save_frame(
 			"cycle_%d_corner_%s.png" % [cycle, corner_id])
 
 
-func _measure_width(player: CharacterBody3D, lane_x_cells: float,
+func _measure_short_width(player: CharacterBody3D, side_z_cells: float,
 		image_name: String) -> float:
 	player.global_position = Vector3(
-		lane_x_cells * Architecture.CELL,
+		MEASURE_X_CELL * Architecture.CELL,
 		1.2,
-		MEASURE_Z_CELL * Architecture.CELL)
+		side_z_cells * Architecture.CELL)
 	player.rotation.y = 0.0
 	await process_frame
 	await process_frame
 	var origin: Vector3 = player.camera.global_position
-	var west_distance := _ray_distance(player, origin, Vector3.LEFT)
-	var east_distance := _ray_distance(player, origin, Vector3.RIGHT)
+	var north_distance := _ray_distance(player, origin, Vector3.FORWARD)
+	var south_distance := _ray_distance(player, origin, Vector3.BACK)
 	await _save_frame(image_name)
-	return west_distance + east_distance
+	return north_distance + south_distance
 
 
 func _ray_distance(player: CharacterBody3D, origin: Vector3,
@@ -337,8 +455,9 @@ func _observe_chairs(level: Node, player: CharacterBody3D,
 		target = Props.world_aabb(chairs[0]).get_center()
 	elif arrow is Node3D:
 		target = (arrow as Node3D).global_position
+	var north_z := _short_side_center_z(level.get("_grid"), true)
 	player.global_position = Vector3(
-		13.5 * Architecture.CELL, 1.2, 6.5 * Architecture.CELL)
+		13.5 * Architecture.CELL, 1.2, north_z * Architecture.CELL)
 	_look_at_flat(player, target)
 	await process_frame
 	await process_frame
@@ -385,22 +504,22 @@ func _look_at_flat(player: CharacterBody3D, target: Vector3) -> void:
 	player.rotation.y = atan2(-direction.x, -direction.z)
 
 
-func _lane_center_x(grid: Dictionary, west: bool) -> float:
+func _short_side_center_z(grid: Dictionary, north: bool) -> float:
 	var cells: Array[int] = []
-	var range_x := range(3, 9) if west else range(18, 24)
-	for x: int in range_x:
-		if String(grid.get(Vector2i(x, 19), "wall")) == "floor":
-			cells.append(x)
+	var range_z := range(3, 9) if north else range(30, 36)
+	for z: int in range_z:
+		if String(grid.get(Vector2i(13, z), "wall")) == "floor":
+			cells.append(z)
 	if cells.is_empty():
-		return 5.5 if west else 21.5
+		return 3.5 if north else 35.5
 	return (float(cells.front() + cells.back() + 1)) * 0.5
 
 
-func _logical_lane_width(grid: Dictionary, west: bool) -> int:
+func _logical_short_width(grid: Dictionary, north: bool) -> int:
 	var result := 0
-	var range_x := range(3, 9) if west else range(18, 24)
-	for x: int in range_x:
-		if String(grid.get(Vector2i(x, 19), "wall")) == "floor":
+	var range_z := range(3, 9) if north else range(30, 36)
+	for z: int in range_z:
+		if String(grid.get(Vector2i(13, z), "wall")) == "floor":
 			result += 1
 	return result
 

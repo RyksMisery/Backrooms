@@ -49,7 +49,7 @@ var _grid: Dictionary = {}
 var _runtime_widths := Vector2i(6, 6)
 var _last_micro_sector := "south"
 var _micro_pending: Array[Dictionary] = []
-var _width_mutation_counts := {"west": 0, "east": 0}
+var _width_mutation_counts := {"north": 0, "south": 0}
 var _corner_mutation_counts := {
 	"north_west": 0, "north_east": 0,
 	"south_west": 0, "south_east": 0,
@@ -126,8 +126,8 @@ func _build_main_lights() -> void:
 	_main_lights.name = "echo_loop_lights"
 	add_child(_main_lights)
 	for x in [5, 9, 13, 17, 21]:
-		_add_double_ceiling_light(Vector2i(x, 5), Vector2i(1, 0))
-		_add_double_ceiling_light(Vector2i(x, 33), Vector2i(1, 0))
+		_add_double_ceiling_light(Vector2i(x, 3), Vector2i(1, 0))
+		_add_double_ceiling_light(Vector2i(x, 35), Vector2i(1, 0))
 	for z in [9, 13, 17, 21, 25, 29]:
 		_add_double_ceiling_light(Vector2i(3, z), Vector2i(0, 1))
 		_add_double_ceiling_light(Vector2i(23, z), Vector2i(0, 1))
@@ -238,8 +238,8 @@ func _add_core_expansion(parent: Node3D, rect: Rect2i, index: int) -> void:
 
 
 func _build_all_width_patches() -> void:
-	_rebuild_width_patch("west")
-	_rebuild_width_patch("east")
+	_rebuild_width_patch("north")
+	_rebuild_width_patch("south")
 
 
 func _rebuild_width_patch(side: String) -> void:
@@ -250,16 +250,20 @@ func _rebuild_width_patch(side: String) -> void:
 	root_node.name = "runtime_width_%s" % side
 	add_child(root_node)
 	_width_patch_roots[side] = root_node
-	var width := _runtime_widths.x if side == "west" else _runtime_widths.y
+	var width := _runtime_widths.x if side == "north" else _runtime_widths.y
 	var rect := Rect2i()
-	if side == "west" and width < 6:
+	if side == "north" and width < 6:
 		rect = Rect2i(
-			3 + width, RunPlan.CORE_RECT.position.y,
-			6 - width, RunPlan.CORE_RECT.size.y)
-	elif side == "east" and width < 6:
+			RunPlan.CORE_RECT.position.x,
+			RunPlan.INTERIOR_MIN.y + width,
+			RunPlan.CORE_RECT.size.x,
+			6 - width)
+	elif side == "south" and width < 6:
 		rect = Rect2i(
-			RunPlan.CORE_RECT.end.x, RunPlan.CORE_RECT.position.y,
-			6 - width, RunPlan.CORE_RECT.size.y)
+			RunPlan.CORE_RECT.position.x,
+			RunPlan.CORE_RECT.end.y,
+			RunPlan.CORE_RECT.size.x,
+			6 - width)
 	if rect.has_area():
 		_add_core_expansion(root_node, rect, 0)
 
@@ -309,8 +313,8 @@ func _update_micro_sector() -> void:
 		return
 	_last_micro_sector = sector
 	var width_target: String = {
-		"west": "east",
-		"east": "west",
+		"north": "south",
+		"south": "north",
 	}.get(sector, "")
 	if not String(width_target).is_empty():
 		_queue_micro_mutation("width", String(width_target))
@@ -366,10 +370,10 @@ func _apply_micro_mutation(kind: String, target: String) -> void:
 		var count := int(_width_mutation_counts.get(target, 0)) + 1
 		_width_mutation_counts[target] = count
 		var previous := _runtime_widths.x \
-			if target == "west" else _runtime_widths.y
+			if target == "north" else _runtime_widths.y
 		var next := RunPlan.next_runtime_width(
 			seed_detail, target, count, previous)
-		if target == "west":
+		if target == "north":
 			_runtime_widths.x = next
 		else:
 			_runtime_widths.y = next
@@ -463,13 +467,13 @@ func _mutation_region_visible() -> bool:
 
 func _micro_region_rect(kind: String, target: String) -> Rect2i:
 	if kind == "width":
-		return Rect2i(3, 3, 6, 33) if target == "west" \
-			else Rect2i(18, 3, 6, 33)
+		return Rect2i(3, 3, 21, 6) if target == "north" \
+			else Rect2i(3, 30, 21, 6)
 	return {
-		"north_west": Rect2i(5, 5, 4, 4),
-		"north_east": Rect2i(18, 5, 4, 4),
-		"south_west": Rect2i(5, 30, 4, 4),
-		"south_east": Rect2i(18, 30, 4, 4),
+		"north_west": Rect2i(9, 3, 4, 6),
+		"north_east": Rect2i(14, 3, 4, 6),
+		"south_west": Rect2i(9, 30, 4, 6),
+		"south_east": Rect2i(14, 30, 4, 6),
 	}.get(target, Rect2i())
 
 
@@ -509,19 +513,14 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 	root_node.set_meta("corner_id", corner_id)
 	root_node.set_meta("corner_variant", variant)
 	var rect := _micro_region_rect("corner", corner_id)
+	var span := _short_side_span(corner_id)
 	var center := Vector3(
-		_corner_lane_center_x(corner_id),
+		(rect.position.x + rect.size.x * 0.5) * Architecture.CELL,
 		0.0,
-		(rect.position.y + rect.size.y * 0.5) * Architecture.CELL)
+		(span.x + span.y) * 0.5)
 	match variant:
 		1:
-			architecture.add_box(root_node, "corner_column",
-				Vector3(
-					Architecture.CELL * 0.7,
-					Architecture.CEIL_H,
-					Architecture.CELL * 0.7),
-				center + Vector3(0.0, Architecture.CEIL_H * 0.5, 0.0),
-				"wall", true, true)
+			_build_passable_corner_column(root_node, center, span)
 		2:
 			_build_attached_corner_partition(
 				root_node, corner_id, center.x)
@@ -531,45 +530,82 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 
 func _rebuild_corner_variants_for_side(side: String) -> void:
 	for corner_id: String in [
-		"north_%s" % side,
-		"south_%s" % side,
+		"%s_west" % side,
+		"%s_east" % side,
 	]:
 		var variant := int(_corner_variants.get(corner_id, 0))
 		if variant > 0:
 			_build_corner_variant(corner_id, variant)
 
 
-func _corner_lane_center_x(corner_id: String) -> float:
-	var west := corner_id.ends_with("west")
-	var width := _runtime_widths.x if west else _runtime_widths.y
-	var x_cells := float(RunPlan.INTERIOR_MIN.x) + float(width) * 0.5 \
-		if west else float(RunPlan.INTERIOR_MAX.x) - float(width) * 0.5
-	return x_cells * Architecture.CELL
+func _short_side_width(corner_id: String) -> int:
+	return _runtime_widths.x if corner_id.begins_with("north") \
+		else _runtime_widths.y
+
+
+func _short_side_span(corner_id: String) -> Vector2:
+	var north := corner_id.begins_with("north")
+	var width_m := float(_short_side_width(corner_id)) * Architecture.CELL
+	var outer := float(
+		RunPlan.INTERIOR_MIN.y if north else RunPlan.INTERIOR_MAX.y) \
+		* Architecture.CELL
+	return Vector2(outer, outer + width_m) if north \
+		else Vector2(outer - width_m, outer)
+
+
+func _build_passable_corner_column(parent: Node3D, center: Vector3,
+		span: Vector2) -> void:
+	var column_size := Architecture.CELL * 0.7
+	var bypass := (span.y - span.x - column_size) * 0.5
+	parent.set_meta("accent_min_passage_m", bypass)
+	parent.set_meta("accent_transverse", true)
+	if bypass < Architecture.CELL:
+		parent.set_meta("accent_skipped_for_passage", true)
+		return
+	architecture.add_box(parent, "corner_column",
+		Vector3(column_size, Architecture.CEIL_H, column_size),
+		center + Vector3(0.0, Architecture.CEIL_H * 0.5, 0.0),
+		"wall", true, true)
 
 
 func _build_attached_corner_partition(parent: Node3D, corner_id: String,
 		wall_x: float) -> void:
 	var north := corner_id.begins_with("north")
-	var span_lo := (3.0 if north else 30.0) * Architecture.CELL
-	var span_hi := (9.0 if north else 36.0) * Architecture.CELL
+	var span := _short_side_span(corner_id)
+	var span_lo := span.x
+	var span_hi := span.y
 	var mutation_index := int(_corner_mutation_counts.get(corner_id, 1))
 	var thickness_options := [0.25, 0.5, 0.75, 1.0]
-	var length_cells_options := [1.5, 2.5, 3.5, 4.0]
-	var thickness_index := posmod(
-		hash([seed_detail, corner_id, mutation_index, "thickness"]),
-		thickness_options.size())
+	var length_cells_options := [0.5, 1.0, 1.5, 2.5, 3.5, 4.0]
+	var valid_lengths: Array[float] = []
+	for length_cells: float in length_cells_options:
+		if length_cells <= float(_short_side_width(corner_id)) - 2.0:
+			valid_lengths.append(length_cells)
+	parent.set_meta("accent_transverse", true)
+	if valid_lengths.is_empty():
+		parent.set_meta("accent_skipped_for_passage", true)
+		return
 	var length_index := posmod(
 		hash([seed_detail, corner_id, mutation_index, "length"]),
-		length_cells_options.size())
+		valid_lengths.size())
 	var attach_to_inner := posmod(
 		hash([seed_detail, corner_id, mutation_index, "attachment"]),
 		2) == 1
-	var thickness := float(thickness_options[thickness_index])
-	var length := float(length_cells_options[length_index]) \
+	var length := float(valid_lengths[length_index]) \
 		* Architecture.CELL
+	var valid_thicknesses: Array[float] = []
+	for thickness_option: float in thickness_options:
+		if thickness_option < length:
+			valid_thicknesses.append(thickness_option)
+	var thickness_index := posmod(
+		hash([seed_detail, corner_id, mutation_index, "thickness"]),
+		valid_thicknesses.size())
+	var thickness := valid_thicknesses[thickness_index]
 	var attachment_z := span_hi if north == attach_to_inner else span_lo
 	var direction := -1.0 if attachment_z == span_hi else 1.0
 	var center_z := attachment_z + direction * length * 0.5
+	parent.set_meta(
+		"accent_min_passage_m", span_hi - span_lo - length)
 	architecture.add_box(parent, "corner_partition",
 		Vector3(thickness, Architecture.CEIL_H, length),
 		Vector3(wall_x, Architecture.CEIL_H * 0.5, center_z),
@@ -579,17 +615,20 @@ func _build_attached_corner_partition(parent: Node3D, corner_id: String,
 func _build_freeform_corner_portal(parent: Node3D, corner_id: String,
 		wall_x: float) -> void:
 	var north := corner_id.begins_with("north")
-	var span_lo := float(
-		RunPlan.INTERIOR_MIN.y if north else RunPlan.CORE_RECT.end.y) \
-		* Architecture.CELL
-	var span_hi := float(
-		RunPlan.CORE_RECT.position.y if north else RunPlan.INTERIOR_MAX.y) \
-		* Architecture.CELL
+	var span := _short_side_span(corner_id)
+	var span_lo := span.x
+	var span_hi := span.y
 	var span_center := (span_lo + span_hi) * 0.5
-	var west := corner_id.ends_with("west")
-	var side_width := _runtime_widths.x if west else _runtime_widths.y
-	var width_cells_options := [1.0, 1.5] if side_width <= 2 \
-		else ([2.0, 2.5] if side_width <= 4 else [2.5, 3.5])
+	var side_width := _short_side_width(corner_id)
+	var width_cells_options := [1.0]
+	if side_width == 1:
+		width_cells_options = [1.0]
+	elif side_width == 2:
+		width_cells_options = [1.0, 1.5]
+	elif side_width <= 4:
+		width_cells_options = [2.0, 2.5]
+	elif side_width >= 5:
+		width_cells_options = [2.5, 3.5]
 	var mutation_index := int(_corner_mutation_counts.get(corner_id, 1))
 	var option_index := posmod(
 		hash([seed_detail, corner_id, mutation_index, "opening_width"]),
@@ -641,7 +680,9 @@ func _build_freeform_corner_portal(parent: Node3D, corner_id: String,
 			opening_height + PORTAL_HEAD_GAP_M * 0.5,
 			(opening_lo + opening_hi) * 0.5),
 		"wall", true, false)
-	parent.set_meta("portal_side", "west" if west else "east")
+	parent.set_meta("accent_transverse", true)
+	parent.set_meta("accent_min_passage_m", opening_width)
+	parent.set_meta("portal_side", "north" if north else "south")
 	parent.set_meta("portal_lane_width_cells", side_width)
 	parent.set_meta(
 		"portal_opening_width_cells", opening_width / Architecture.CELL)
@@ -712,7 +753,7 @@ func _reset_with_seed(next_seed: int) -> void:
 	_hidden_frames = 0
 	_last_micro_sector = "south"
 	_micro_pending.clear()
-	_width_mutation_counts = {"west": 0, "east": 0}
+	_width_mutation_counts = {"north": 0, "south": 0}
 	_corner_mutation_counts = {
 		"north_west": 0, "north_east": 0,
 		"south_west": 0, "south_east": 0,
@@ -750,9 +791,9 @@ func _hud_text() -> String:
 	var max_mutation := 0.0
 	for sample: float in _mutation_samples_ms:
 		max_mutation = maxf(max_mutation, sample)
-	var widths := RunPlan.widths_for_cycle(_plan, _cycle)
-	return "ECHO LOOP LAB — TEST\nseed %d | cycle %d → %d | widths %d/%d | macro %d | micro %d\nnorth %s | left %s | falls %d\ncomplete %s | patch max %.2f ms | visible %d\nH — HUD | M — карта | R — новый seed" % [
-		seed_detail, _cycle, _pending_cycle, widths.x, widths.y,
+	return "ECHO LOOP LAB — TEST\nseed %d | cycle %d → %d | N/S widths %d/%d | macro %d | micro %d\nnorth %s | left %s | falls %d\ncomplete %s | patch max %.2f ms | visible %d\nH — HUD | M — карта | R — новый seed" % [
+		seed_detail, _cycle, _pending_cycle,
+		_runtime_widths.x, _runtime_widths.y,
 		_mutation_count, _micro_mutation_count,
 		str(_visited_north), str(_left_south), _fall_count,
 		str(_completed), max_mutation, _visible_mutation_count]
@@ -790,14 +831,13 @@ func _cell_center(cell: Vector2i) -> Vector3:
 
 
 func debug_snapshot() -> Dictionary:
-	var widths := RunPlan.widths_for_cycle(_plan, _cycle)
 	return {
 		"seed_detail": seed_detail,
 		"plan_valid": bool(_plan_report.get("valid", false)),
 		"plan_hash": int(_plan.get("plan_hash", 0)),
 		"cycle": _cycle,
-		"west_width_cells": widths.x,
-		"east_width_cells": widths.y,
+		"north_width_cells": _runtime_widths.x,
+		"south_width_cells": _runtime_widths.y,
 		"pending_cycle": _pending_cycle,
 		"mutation_count": _mutation_count,
 		"micro_mutation_count": _micro_mutation_count,
