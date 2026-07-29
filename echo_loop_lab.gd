@@ -13,13 +13,13 @@ const PLAYER_SCENE := preload("res://player.tscn")
 
 @export var seed_detail := 1
 
-const SOUTH_SECTOR_Z := 33
-const NORTH_SECTOR_Z := 7
+const SOUTH_SECTOR_Z := 30
+const NORTH_SECTOR_Z := 8
 const WEST_SECTOR_X := 7
 const EAST_SECTOR_X := 19
 const FALL_Y := -8.0
 const LOWER_ROOM_ORIGIN := Vector3(40.0, 0.0, 10.0)
-const HIDDEN_HOLD_SECONDS := 0.12
+const HIDDEN_CONFIRM_FRAMES := 2
 const MUTATION_RECT := Rect2i(3, 3, 21, 25)
 const VISIBILITY_MARGIN_M := 0.15
 
@@ -40,7 +40,7 @@ var _plan_report: Dictionary = {}
 var _grid: Dictionary = {}
 var _cycle := 0
 var _pending_cycle := -1
-var _hidden_time := 0.0
+var _hidden_frames := 0
 var _last_sector := "south"
 var _left_south := false
 var _visited_north := false
@@ -241,7 +241,7 @@ func _process(delta: float) -> void:
 	map.update()
 	if not _completed:
 		_update_loop_progress()
-		_update_pending_mutation(delta)
+		_update_pending_mutation()
 		_update_fall()
 	hud.update(_hud_text())
 
@@ -268,19 +268,18 @@ func _advance_cycle() -> void:
 		return
 	_pending_cycle = _cycle + 1
 	_pending_started_ms = Time.get_ticks_msec()
-	_hidden_time = 0.0
+	_hidden_frames = 0
 
 
-func _update_pending_mutation(delta: float) -> void:
+func _update_pending_mutation() -> void:
 	if _pending_cycle < 0:
 		return
 	if _sector_for_cell(_player_cell()) != "south" \
-			or not _camera_faces_south() \
 			or _mutation_region_visible():
-		_hidden_time = 0.0
+		_hidden_frames = 0
 		return
-	_hidden_time += delta
-	if _hidden_time >= HIDDEN_HOLD_SECONDS:
+	_hidden_frames += 1
+	if _hidden_frames >= HIDDEN_CONFIRM_FRAMES:
 		_apply_pending_mutation()
 
 
@@ -296,16 +295,9 @@ func _apply_pending_mutation() -> void:
 	_grid = RunPlan.build_grid(_plan, _cycle)
 	_mutation_wait_samples_ms.append(float(
 		Time.get_ticks_msec() - _pending_started_ms))
-	_hidden_time = 0.0
+	_hidden_frames = 0
 	_build_mutation_patch()
 	audio.play_flick()
-
-
-func _camera_faces_south() -> bool:
-	if player == null or player.camera == null:
-		return false
-	var forward: Vector3 = -player.camera.global_transform.basis.z.normalized()
-	return forward.z > 0.35
 
 
 func _mutation_region_visible() -> bool:
@@ -402,7 +394,7 @@ func _reset_with_seed(next_seed: int) -> void:
 	seed_detail = next_seed
 	_cycle = 0
 	_pending_cycle = -1
-	_hidden_time = 0.0
+	_hidden_frames = 0
 	_last_sector = "south"
 	_left_south = false
 	_visited_north = false

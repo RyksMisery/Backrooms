@@ -53,11 +53,10 @@ func _run() -> void:
 		if cycle >= RunPlan.MAX_CYCLE:
 			break
 		await _walk_full_loop(level, player, cycle)
-		for _wait_frame in range(180):
+		for _wait_frame in range(60):
 			var waiting: Dictionary = level.call("debug_snapshot")
 			if int(waiting.get("cycle", -1)) == cycle + 1:
 				break
-			player.rotation.y = PI
 			await process_frame
 		var applied: Dictionary = level.call("debug_snapshot")
 		if int(applied.get("cycle", -1)) != cycle + 1:
@@ -79,11 +78,11 @@ func _walk_full_loop(level: Node, player: CharacterBody3D,
 	var west_x := _lane_center_x(grid, true)
 	var east_x := _lane_center_x(grid, false)
 	var waypoints := [
-		Vector2(west_x, 34.5),
-		Vector2(west_x, 5.5),
-		Vector2(east_x, 5.5),
-		Vector2(east_x, 34.5),
-		Vector2(13.5, 34.5),
+		Vector2(west_x, 30.5),
+		Vector2(west_x, 8.5),
+		Vector2(east_x, 8.5),
+		Vector2(east_x, 30.5),
+		Vector2(13.5, 30.5),
 	]
 	for waypoint: Vector2 in waypoints:
 		await _walk_to(player, Vector3(
@@ -115,7 +114,7 @@ func _observe_state(level: Node, player: CharacterBody3D,
 	var chair_result := await _observe_chairs(
 		level, player, cycle, "cycle_%d_chairs.png" % cycle)
 	player.global_position = Vector3(
-		13.5 * Architecture.CELL, 1.2, 34.5 * Architecture.CELL)
+		13.5 * Architecture.CELL, 1.2, 30.5 * Architecture.CELL)
 	player.rotation.y = 0.0
 	await process_frame
 	level.set_process(true)
