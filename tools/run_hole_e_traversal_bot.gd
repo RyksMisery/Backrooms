@@ -2,14 +2,19 @@ extends SceneTree
 
 const Architecture := preload("res://modules/architecture_module.gd")
 const TILE_LENGTH := float(Architecture.ROOM_CELLS) * Architecture.CELL
+const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const VIEW_RADIUS := TILE_LENGTH * 2.25
 const STEP := TILE_LENGTH * 0.5
 const EXTENT := TILE_LENGTH * 14.0
+const MAX_DOOR_REVEAL_MS := 5.0
+const CAP_EPSILON := 0.001
 
 var _artifact_dir := ""
 var _samples: Array[Dictionary] = []
 var _max_gap := 0.0
 var _max_ring_gap := 0.0
+var _max_cap_offset_error := 0.0
+var _max_cap_edge_gap := 0.0
 
 
 func _init() -> void:
@@ -66,6 +71,9 @@ func _run() -> void:
 	if not bool(revealed.get("infinite_active", false)):
 		_fail("camera turn did not activate bidirectional infinity")
 		return
+	if not bool(revealed.get("door_pool_ready", false)):
+		_fail("door variants were not prebuilt")
+		return
 	await _walk(level, player, player.global_position.z, EXTENT, 1.0)
 	var south_snapshot: Dictionary = level.call("debug_snapshot")
 	if int(south_snapshot.get("door_reveal_count", 0)) < 2:
@@ -89,7 +97,21 @@ func _run() -> void:
 		return
 	if float(north_snapshot.get("last_door_spawn_distance", 0.0)) \
 			< VIEW_RADIUS:
-		_fail("door was built inside the visible light range")
+		_fail("door was revealed inside the visible light range")
+		return
+	if float(north_snapshot.get("max_door_reveal_ms", INF)) \
+			> MAX_DOOR_REVEAL_MS:
+		_fail("door reveal exceeded %.1f ms: %.3f ms" % [
+			MAX_DOOR_REVEAL_MS,
+			float(north_snapshot.get("max_door_reveal_ms", INF)),
+		])
+		return
+	if _max_cap_offset_error > CAP_EPSILON:
+		_fail("moving cap offset jumped by %.4f m" % _max_cap_offset_error)
+		return
+	if _max_cap_edge_gap > CAP_EPSILON:
+		_fail("moving cap leaves %.4f m open at a side edge" \
+			% _max_cap_edge_gap)
 		return
 	var timestamp := Time.get_datetime_string_from_system().replace(":", "-")
 	var relative_dir := ".hole_e_traversal_bot/%s" % timestamp
@@ -108,6 +130,10 @@ func _run() -> void:
 		"north": north_snapshot,
 		"max_visible_gap_m": _max_gap,
 		"max_ring_gap_m": _max_ring_gap,
+		"max_cap_offset_error_m": _max_cap_offset_error,
+		"max_cap_edge_gap_m": _max_cap_edge_gap,
+		"max_door_reveal_ms": north_snapshot.get(
+			"max_door_reveal_ms", INF),
 		"sample_count": _samples.size(),
 		"samples": _samples,
 	}
@@ -138,6 +164,13 @@ func _walk(level: Node, player: CharacterBody3D, from_z: float,
 		_max_gap = maxf(_max_gap, gap)
 		var ring_gap := _ring_gap(level)
 		_max_ring_gap = maxf(_max_ring_gap, ring_gap)
+		var cap_check := _check_caps(level, player)
+		_max_cap_offset_error = maxf(
+			_max_cap_offset_error,
+			float(cap_check["offset_error"]))
+		_max_cap_edge_gap = maxf(
+			_max_cap_edge_gap,
+			float(cap_check["edge_gap"]))
 		if gap > 0.001:
 			print("HOLE_E_BOT_GAP z=", z,
 				" chunks=", _chunk_positions(level), " gap=", gap)
@@ -146,9 +179,42 @@ func _walk(level: Node, player: CharacterBody3D, from_z: float,
 			"z": z,
 			"gap": gap,
 			"ring_gap": ring_gap,
+			"cap_offset_error": cap_check["offset_error"],
+			"cap_edge_gap": cap_check["edge_gap"],
 			"cycles": snapshot.get("cycle_count", 0),
 			"door_reveals": snapshot.get("door_reveal_count", 0),
 		})
+
+
+func _check_caps(level: Node, player: CharacterBody3D) -> Dictionary:
+	var north := level.get("_infinite_north_cap") as Node3D
+	var south := level.get("_infinite_south_cap") as Node3D
+	if north == null or south == null:
+		return {"offset_error": INF, "edge_gap": INF}
+	var expected_distance := TILE_LENGTH * 4.0
+	var offset_error := maxf(
+		absf(north.global_position.z
+			- (player.global_position.z - expected_distance)),
+		absf(south.global_position.z
+			- (player.global_position.z + expected_distance)))
+	var edge_gap := 0.0
+	for cap: Node3D in [north, south]:
+		var wall := cap.get_child(0) as MeshInstance3D
+		if wall == null or wall.mesh == null:
+			return {"offset_error": offset_error, "edge_gap": INF}
+		var bounds := wall.global_transform * wall.get_aabb()
+		edge_gap = maxf(edge_gap, bounds.position.x + WALL_DEPTH)
+		edge_gap = maxf(
+			edge_gap,
+			_room_right_edge() - (bounds.position.x + bounds.size.x))
+	return {
+		"offset_error": maxf(0.0, offset_error),
+		"edge_gap": maxf(0.0, edge_gap),
+	}
+
+
+func _room_right_edge() -> float:
+	return TILE_LENGTH + WALL_DEPTH
 
 
 func _coverage_gap(level: Node, player_z: float) -> float:

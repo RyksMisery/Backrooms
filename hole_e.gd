@@ -56,6 +56,9 @@ var _door_side := ""
 var _door_world_z := 0.0
 var _door_direction := -1.0
 var _door_reveal_count := 0
+var _door_pool: Node3D
+var _door_variants: Dictionary = {}
+var _max_door_reveal_ms := 0.0
 var _next_door_cycle := DOOR_PERIOD_CYCLES
 var _last_move_sign := -1.0
 var _min_recycle_distance := INF
@@ -80,6 +83,7 @@ func _ready() -> void:
 	map = Map.new(self)
 	_rng.randomize()
 	_build_tiles()
+	_build_door_pool()
 	_build_caps()
 	_build_lights()
 	_build_map_data()
@@ -102,8 +106,8 @@ func _build_tiles() -> void:
 		chunk.set_meta("logical_index", logical_index)
 		add_child(chunk)
 		architecture.build_pit_tile(chunk)
-		_build_side_wall(chunk, "west")
-		_build_side_wall(chunk, "east")
+		_create_side_wall(chunk, "west", false, "west_wall")
+		_create_side_wall(chunk, "east", false, "east_wall")
 		if logical_index == 1:
 			_south_prebuilt_chunk = chunk
 			chunk.visible = false
@@ -139,14 +143,22 @@ func _build_start_niche() -> Node3D:
 	return root
 
 
-func _build_side_wall(chunk: Node3D, side: String,
-		with_opening := false) -> Node3D:
-	var old := chunk.get_node_or_null("%s_wall" % side)
-	if old != null:
-		old.free()
+func _build_door_pool() -> void:
+	_door_pool = Node3D.new()
+	_door_pool.name = "door_pool"
+	add_child(_door_pool)
+	for side: String in ["west", "east"]:
+		var variant := _create_side_wall(
+			_door_pool, side, true, "pooled_door_wall_%s" % side)
+		_set_tree_active(variant, false)
+		_door_variants[side] = variant
+
+
+func _create_side_wall(parent: Node3D, side: String,
+		with_opening: bool, node_name: String) -> Node3D:
 	var root := Node3D.new()
-	root.name = "%s_wall" % side
-	chunk.add_child(root)
+	root.name = node_name
+	parent.add_child(root)
 	var wall_x := -WALL_DEPTH * 0.5 if side == "west" \
 		else ROOM_SIZE + WALL_DEPTH * 0.5
 	if not with_opening:
@@ -202,6 +214,22 @@ func _build_side_wall(chunk: Node3D, side: String,
 			sign_y, center),
 		inward, "hole_exit_sign")
 	return root
+
+
+func _set_tree_active(root: Node3D, active: bool) -> void:
+	root.visible = active
+	root.process_mode = Node.PROCESS_MODE_INHERIT if active \
+		else Node.PROCESS_MODE_DISABLED
+	for body_value in root.find_children(
+			"*", "CollisionObject3D", true, false):
+		var body := body_value as CollisionObject3D
+		if not body.has_meta("hole_e_collision_layer"):
+			body.set_meta("hole_e_collision_layer", body.collision_layer)
+			body.set_meta("hole_e_collision_mask", body.collision_mask)
+		body.collision_layer = int(
+			body.get_meta("hole_e_collision_layer")) if active else 0
+		body.collision_mask = int(
+			body.get_meta("hole_e_collision_mask")) if active else 0
 
 
 func _build_lights() -> void:
@@ -346,7 +374,10 @@ func _make_moving_cap(node_name: String) -> Node3D:
 	root.name = node_name
 	add_child(root)
 	architecture.add_box(root, "%s_wall" % node_name,
-		Vector3(ROOM_SIZE, Architecture.CEIL_H, WALL_DEPTH),
+		Vector3(
+			ROOM_SIZE + WALL_DEPTH * 2.0,
+			Architecture.CEIL_H,
+			WALL_DEPTH),
 		Vector3(ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5, 0.0),
 		"wall", true, true)
 	return root
@@ -355,12 +386,10 @@ func _make_moving_cap(node_name: String) -> Node3D:
 func _update_infinite_caps() -> void:
 	if _infinite_north_cap == null or _infinite_south_cap == null:
 		return
-	_infinite_north_cap.position.z = floorf(
-		(player.global_position.z - END_DISTANCE) / TILE_LENGTH) \
-		* TILE_LENGTH
-	_infinite_south_cap.position.z = ceilf(
-		(player.global_position.z + END_DISTANCE) / TILE_LENGTH) \
-		* TILE_LENGTH
+	_infinite_north_cap.position.z = \
+		player.global_position.z - END_DISTANCE
+	_infinite_south_cap.position.z = \
+		player.global_position.z + END_DISTANCE
 
 
 func _update_motion_direction() -> void:
@@ -410,6 +439,7 @@ func _record_recycle_distance(chunk: Node3D) -> void:
 
 
 func _reveal_door() -> void:
+	var reveal_started_usec := Time.get_ticks_usec()
 	var center_delta := player.global_position.x - ROOM_SIZE * 0.5
 	if absf(center_delta) <= DOOR_CENTER_TOLERANCE:
 		_door_side = "west" if _rng.randi_range(0, 1) == 0 else "east"
@@ -419,11 +449,25 @@ func _reveal_door() -> void:
 	if _door_chunk == null:
 		push_error("hole_e: reveal tile not found")
 		return
-	_build_side_wall(_door_chunk, _door_side, true)
+	var solid_wall := _door_chunk.get_node_or_null(
+		"%s_wall" % _door_side) as Node3D
+	var door_wall := _door_variants.get(_door_side) as Node3D
+	if solid_wall == null or door_wall == null:
+		push_error("hole_e: pooled door wall not found")
+		_door_chunk = null
+		_door_side = ""
+		return
+	_set_tree_active(solid_wall, false)
+	door_wall.reparent(_door_chunk, false)
+	door_wall.transform = Transform3D.IDENTITY
+	_set_tree_active(door_wall, true)
 	_door_world_z = _door_chunk.position.z + TILE_LENGTH * 0.5
 	_door_direction = _last_move_sign
 	_door_reveal_count += 1
 	audio.play_flick()
+	_max_door_reveal_ms = maxf(
+		_max_door_reveal_ms,
+		float(Time.get_ticks_usec() - reveal_started_usec) / 1000.0)
 
 
 func _pick_door_host() -> Node3D:
@@ -458,7 +502,15 @@ func _update_repeating_door() -> void:
 
 func _deactivate_door() -> void:
 	if _door_chunk != null and is_instance_valid(_door_chunk):
-		_build_side_wall(_door_chunk, _door_side, false)
+		var door_wall := _door_variants.get(_door_side) as Node3D
+		if door_wall != null:
+			_set_tree_active(door_wall, false)
+			door_wall.reparent(_door_pool, false)
+			door_wall.transform = Transform3D.IDENTITY
+		var solid_wall := _door_chunk.get_node_or_null(
+			"%s_wall" % _door_side) as Node3D
+		if solid_wall != null:
+			_set_tree_active(solid_wall, true)
 	_door_chunk = null
 	_door_side = ""
 	_door_world_z = 0.0
@@ -554,6 +606,8 @@ func debug_snapshot() -> Dictionary:
 		"door_active": _door_chunk != null,
 		"door_side": _door_side,
 		"door_reveal_count": _door_reveal_count,
+		"door_pool_ready": _door_variants.size() == 2,
+		"max_door_reveal_ms": _max_door_reveal_ms,
 		"next_door_cycle": _next_door_cycle,
 		"last_door_spawn_distance": _last_door_spawn_distance,
 		"min_recycle_distance": _min_recycle_distance,
