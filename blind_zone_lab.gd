@@ -17,10 +17,10 @@ const CHAIR_SCENE := preload(
 
 const ANCHOR_CELL := Vector2(10.5, 24.5)
 const ANCHOR_HEIGHT_M := 1.375
-const PIT_RESPAWN_CELL := Vector2(10.5, 39.5)
 const SWITCH_ARM_Z_CELLS := 21.0
 const START_RETURN_Z_CELLS := 18.0
-const FALL_Y := -3.0
+const UNOBSERVED_HOLD_SECONDS := 0.35
+const FALL_Y := -8.0
 
 var architecture
 var lighting
@@ -40,7 +40,9 @@ var _switch_armed := false
 var _switch_count := 0
 var _visible_switch_count := 0
 var _fall_count := 0
+var _fall_transition_count := 0
 var _finished := false
+var _unobserved_time := 0.0
 var _hud_visible := true
 var _rebuild_samples_ms: Array[float] = []
 
@@ -146,21 +148,25 @@ func _process(delta: float) -> void:
 	lighting.update(player)
 	audio.update(delta)
 	map.update()
-	_update_switch_rule()
+	_update_switch_rule(delta)
 	_update_pit_fall()
 	_update_finish()
 	hud.update(_hud_text())
 
 
-func _update_switch_rule() -> void:
+func _update_switch_rule(delta: float) -> void:
 	var z_cells := player.global_position.z / Architecture.CELL
 	if z_cells >= SWITCH_ARM_Z_CELLS:
 		_switch_armed = true
 	if not _switch_armed or z_cells >= START_RETURN_Z_CELLS:
+		_unobserved_time = 0.0
 		return
 	if _anchor_visible():
+		_unobserved_time = 0.0
 		return
-	_toggle_space_state(false)
+	_unobserved_time += delta
+	if _unobserved_time >= UNOBSERVED_HOLD_SECONDS:
+		_toggle_space_state(false)
 
 
 func _toggle_space_state(forced: bool) -> void:
@@ -174,6 +180,7 @@ func _toggle_space_state(forced: bool) -> void:
 	_build_geometry()
 	_switch_count += 1
 	_switch_armed = false
+	_unobserved_time = 0.0
 	audio.play_flick()
 
 
@@ -199,11 +206,17 @@ func _update_pit_fall() -> void:
 	if player.global_position.y >= FALL_Y:
 		return
 	_fall_count += 1
-	player.global_position = Vector3(
-		PIT_RESPAWN_CELL.x * Architecture.CELL, 1.2,
-		PIT_RESPAWN_CELL.y * Architecture.CELL)
+	_fall_transition_count += 1
+	_space_state = "B" if _space_state == "A" else "A"
+	_grid = RunPlan.build_grid(_plan, _space_state)
+	_build_geometry()
+	_switch_armed = false
+	_unobserved_time = 0.0
+	player.global_position = _cell_center(RunPlan.SPAWN_CELL)
 	player.velocity = Vector3.ZERO
 	player.rotation.y = PI
+	_finished = true
+	audio.play_flick()
 
 
 func _update_finish() -> void:
@@ -236,7 +249,9 @@ func _reset_with_seed(next_seed: int) -> void:
 	_switch_count = 0
 	_visible_switch_count = 0
 	_fall_count = 0
+	_fall_transition_count = 0
 	_finished = false
+	_unobserved_time = 0.0
 	_rebuild_samples_ms.clear()
 	_build_plan()
 	_build_geometry()
@@ -249,9 +264,10 @@ func _hud_text() -> String:
 	var max_rebuild := 0.0
 	for sample: float in _rebuild_samples_ms:
 		max_rebuild = maxf(max_rebuild, sample)
-	return "BLIND ZONE LAB — TEST\nseed %d | state %s | armed %s\nswitch %d | visible %d | falls %d\nfinish %s | rebuild max %.2f ms\nH — HUD | M — карта | R — новый seed" % [
+	return "BLIND ZONE LAB — TEST\nseed %d | state %s | armed %s\nswitch %d | visible %d | falls %d/%d\nfinish %s | rebuild max %.2f ms\nH — HUD | M — карта | R — новый seed" % [
 		seed_detail, _space_state, str(_switch_armed),
 		_switch_count, _visible_switch_count, _fall_count,
+		_fall_transition_count,
 		str(_finished), max_rebuild]
 
 
@@ -303,6 +319,7 @@ func debug_snapshot() -> Dictionary:
 		"switch_count": _switch_count,
 		"visible_switch_count": _visible_switch_count,
 		"fall_count": _fall_count,
+		"fall_transition_count": _fall_transition_count,
 		"finished": _finished,
 		"rebuild_samples_ms": _rebuild_samples_ms.duplicate(),
 	}

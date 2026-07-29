@@ -27,13 +27,21 @@ static func build(seed_detail: int) -> Dictionary:
 	var first_left := rng.randi_range(0, 1) == 0
 	var gap_a := 2 if first_left else 10
 	var gap_b := 10 if first_left else 2
+	var spine_a := 12 if first_left else 7
+	var spine_b := 7 if first_left else 12
 	var plan := {
 		"schema_version": 1,
 		"id": "blind_zone_lab_v0",
 		"seed_detail": seed_detail,
 		"states": {
-			"A": {"partition_gap_local_x": gap_a},
-			"B": {"partition_gap_local_x": gap_b},
+			"A": {
+				"partition_gap_local_x": gap_a,
+				"lower_spine_local_x": spine_a,
+			},
+			"B": {
+				"partition_gap_local_x": gap_b,
+				"lower_spine_local_x": spine_b,
+			},
 		},
 		"initial_state": "A",
 		"spawn_cell": [SPAWN_CELL.x, SPAWN_CELL.y],
@@ -71,8 +79,12 @@ static func validate(plan: Dictionary) -> Dictionary:
 			continue
 		var gap := int((states[state_id] as Dictionary).get(
 			"partition_gap_local_x", -1))
+		var spine := int((states[state_id] as Dictionary).get(
+			"lower_spine_local_x", -1))
 		if gap < 0 or gap + PASSAGE_WIDTH > Architecture.ROOM_CELLS:
 			errors.append("состояние %s: проход вне интерьера" % state_id)
+		if spine <= 0 or spine >= Architecture.ROOM_CELLS - 1:
+			errors.append("состояние %s: боковая стена вне интерьера" % state_id)
 		gaps[state_id] = gap
 	if gaps.get("A", -1) == gaps.get("B", -1):
 		errors.append("состояния A и B обязаны различаться")
@@ -113,11 +125,22 @@ static func build_grid(plan: Dictionary, state_id: String) -> Dictionary:
 	var state: Dictionary = (plan.get("states", {}) as Dictionary).get(
 		state_id, {})
 	var gap_local := int(state.get("partition_gap_local_x", 2))
+	var spine_local := int(state.get("lower_spine_local_x", 12))
 	var partition_z := ROOM_Z[1].x + PARTITION_LOCAL_Z
 	for x in range(INTERIOR_X.x, INTERIOR_X.y):
 		var local_x := x - INTERIOR_X.x
 		if local_x < gap_local or local_x >= gap_local + PASSAGE_WIDTH:
 			grid[Vector2i(x, partition_z)] = "wall"
+	var spine_x := INTERIOR_X.x + spine_local
+	for z in range(partition_z + 1, ROOM_Z[1].y - 2):
+		grid[Vector2i(spine_x, z)] = "wall"
+	var pocket_z := ROOM_Z[1].y - 3
+	if spine_local > Architecture.ROOM_CELLS / 2:
+		for x in range(spine_x, INTERIOR_X.y):
+			grid[Vector2i(x, pocket_z)] = "wall"
+	else:
+		for x in range(INTERIOR_X.x, spine_x + 1):
+			grid[Vector2i(x, pocket_z)] = "wall"
 	for x in range(PIT_RECT.position.x, PIT_RECT.end.x):
 		for z in range(PIT_RECT.position.y, PIT_RECT.end.y):
 			grid[Vector2i(x, z)] = "pit"
