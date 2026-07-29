@@ -84,17 +84,17 @@ const FLASH_DURATION := 0.30          # длительность вспышки 
 const FLASH_COLOR := Color(1.0, 0.92, 0.55)  # тёплая жёлтая вспышка
 # ── Знак-указатель EXIT над дверью зала-провала (рабочий: светящаяся плита
 # с фаской + текстура), все параметры в одном месте.
-const SIGN_TEXTURE := "res://textures/exit_sign.png"
+const SIGN_TEXTURE := OPENINGS.EXIT_SIGN_TEXTURE
 const SIGN_LZ := -0.7                # глубина/вынос от стены (в панелях lz)
-const SIGN_CONTENT_H := 0.30         # высота контента (текстуры), м
-const SIGN_MARGIN := 0.02            # равная рамка вокруг контента, м
-const SIGN_DEPTH := 0.06             # толщина плиты, м
-const SIGN_BEVEL := 0.012            # фаска передних кромок, м
-const SIGN_FACE_EPS := 0.001         # зазор накладки-контента перед плитой, м
-const SIGN_TEX_ALPHA := 0.85         # непрозрачность текстуры (faint)
-const SIGN_GLOW_COLOR := Color(0.90, 0.87, 0.76)   # цвет свечения панели
-const SIGN_GLOW_ENERGY := 0.8        # яркость свечения панели
-const SIGN_BODY_ALBEDO := Color(0.92, 0.90, 0.82)
+const SIGN_CONTENT_H := OPENINGS.EXIT_SIGN_CONTENT_H
+const SIGN_MARGIN := OPENINGS.EXIT_SIGN_MARGIN
+const SIGN_DEPTH := OPENINGS.EXIT_SIGN_DEPTH
+const SIGN_BEVEL := OPENINGS.EXIT_SIGN_BEVEL
+const SIGN_FACE_EPS := OPENINGS.EXIT_SIGN_FACE_EPS
+const SIGN_TEX_ALPHA := OPENINGS.EXIT_SIGN_ALPHA
+const SIGN_GLOW_COLOR := OPENINGS.EXIT_SIGN_GLOW_COLOR
+const SIGN_GLOW_ENERGY := OPENINGS.EXIT_SIGN_GLOW_ENERGY
+const SIGN_BODY_ALBEDO := OPENINGS.EXIT_SIGN_BODY_COLOR
 const SIGN_REFLEX_COLOR := Color(0.72, 1.0, 0.78)  # рефлекс на стену вокруг знака
 const SIGN_REFLEX_ENERGY := 0.15
 const SIGN_REFLEX_RANGE := 1.8
@@ -2047,8 +2047,8 @@ func _place_pit_exit_texture_sign(cell: Vector2i, dir: Vector2i, lane: Vector2i)
 		pos = _local_world(cell.x, cell.y, cx, sign_line, y)
 	else:
 		pos = _local_world(cell.x, cell.y, sign_line, cx, y)
-	var yaw := atan2(normal.x, normal.y)
-	_make_exit_plate(pos, SIGN_TEXTURE, true, SIGN_CONTENT_H, SIGN_MARGIN, yaw)
+	OPENINGS.spawn_exit_sign(self, pos,
+		Vector3(normal.x, 0.0, normal.y), "pit_exit_sign")
 	# Очень лёгкий рефлекс на стену вокруг знака.
 	var refl := OmniLight3D.new()
 	refl.omni_range = SIGN_REFLEX_RANGE
@@ -2078,12 +2078,9 @@ func _place_maze_wilson_sign() -> void:
 		var y := (DOOR_HEIGHT + DOOR_TOP_CLEARANCE + CEIL_H) * 0.5
 		var inside := wp + nrm * 0.6   # чуть внутрь от стены, над дверью
 		var pos := _local_world(area["cell"].x, area["cell"].y, inside.x, inside.y, y)
-		# Плита строится лицом на +Z по умолчанию (см. _make_exit_plate/пример
-		# рабочего знака провала: yaw=0 при nrm=(0,1)) — та же формула, что и для
-		# офисных дверных панелей, но БЕЗ +PI (это фасад свежесобранного меша, а не глб-модель
-		# с собственной развёрнутой геометрией).
-		var yaw := atan2(nrm.x, nrm.y)
-		_make_exit_plate(pos, SIGN_TEXTURE, true, SIGN_CONTENT_H, SIGN_MARGIN, yaw)
+		# Общий модуль разворачивает фасад знака по внутренней нормали проёма.
+		OPENINGS.spawn_exit_sign(self, pos,
+			Vector3(nrm.x, 0.0, nrm.y), "maze_exit_sign")
 
 
 # Бокс w×h×d с фаской b на передних кромках (лёгкое скругление спереди).

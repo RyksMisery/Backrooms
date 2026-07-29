@@ -19,6 +19,16 @@ const OFFICE_DOOR_V2_FRAME_H_RAW := 2.0547001362
 const OFFICE_DOOR_V2_CASING_DEPTH_RAW := 0.0075596943
 const OFFICE_DOOR_V2_LEAF_INSET := 0.10
 const OFFICE_DOOR_V2_SIDE_HYSTERESIS := 0.02
+const EXIT_SIGN_TEXTURE := "res://textures/exit_sign.png"
+const EXIT_SIGN_CONTENT_H := 0.30
+const EXIT_SIGN_MARGIN := 0.02
+const EXIT_SIGN_DEPTH := 0.06
+const EXIT_SIGN_BEVEL := 0.012
+const EXIT_SIGN_FACE_EPS := 0.001
+const EXIT_SIGN_ALPHA := 0.85
+const EXIT_SIGN_GLOW_COLOR := Color(0.90, 0.87, 0.76)
+const EXIT_SIGN_GLOW_ENERGY := 0.8
+const EXIT_SIGN_BODY_COLOR := Color(0.92, 0.90, 0.82)
 
 const OFFICE_FRAME_SCENE := preload("res://3d/white_door_comparison_clean.glb")
 const OFFICE_LEAF_SCENE := preload("res://3d/office_door_v2_leaf.tscn")
@@ -86,6 +96,120 @@ func spawn_office_door_leaf(parent: Node3D, local_center: Vector3,
 	if leaf != null:
 		leaf.reparent(parent, true)
 	return leaf
+
+
+static func spawn_exit_sign(parent: Node3D, local_position: Vector3,
+		local_normal: Vector3, node_name := "exit_sign") -> Node3D:
+	var root := Node3D.new()
+	root.name = node_name
+	root.position = local_position
+	root.rotation.y = atan2(local_normal.x, local_normal.z)
+	parent.add_child(root)
+	var image := Image.load_from_file(
+		ProjectSettings.globalize_path(EXIT_SIGN_TEXTURE))
+	var aspect := 2.0
+	var texture: ImageTexture
+	if image != null:
+		aspect = float(image.get_width()) / float(image.get_height())
+		texture = ImageTexture.create_from_image(image)
+	var content_w := EXIT_SIGN_CONTENT_H * aspect
+	var body_w := content_w + EXIT_SIGN_MARGIN * 2.0
+	var body_h := EXIT_SIGN_CONTENT_H + EXIT_SIGN_MARGIN * 2.0
+	var body := MeshInstance3D.new()
+	body.name = "glowing_plate"
+	body.mesh = _exit_sign_mesh(
+		body_w, body_h, EXIT_SIGN_DEPTH, EXIT_SIGN_BEVEL)
+	var body_material := StandardMaterial3D.new()
+	body_material.albedo_color = EXIT_SIGN_BODY_COLOR
+	body_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	body_material.emission_enabled = true
+	body_material.emission = EXIT_SIGN_GLOW_COLOR
+	body_material.emission_energy_multiplier = EXIT_SIGN_GLOW_ENERGY
+	body_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	body.material_override = body_material
+	root.add_child(body)
+	var face := MeshInstance3D.new()
+	face.name = "exit_content"
+	var quad := QuadMesh.new()
+	quad.size = Vector2(content_w, EXIT_SIGN_CONTENT_H)
+	face.mesh = quad
+	var face_material := StandardMaterial3D.new()
+	face_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	face_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	face_material.albedo_texture = texture
+	face_material.albedo_color = Color(1.0, 1.0, 1.0, EXIT_SIGN_ALPHA)
+	face.material_override = face_material
+	face.position.z = EXIT_SIGN_DEPTH * 0.5 + EXIT_SIGN_FACE_EPS
+	root.add_child(face)
+	return root
+
+
+static func _exit_sign_mesh(width: float, height: float, depth: float,
+		bevel: float) -> ArrayMesh:
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var half_w := width * 0.5
+	var half_h := height * 0.5
+	var front_z := depth * 0.5
+	var back_z := -depth * 0.5
+	var inset_z := front_z - bevel
+	_append_quad(surface,
+		Vector3(-half_w + bevel, -half_h + bevel, front_z),
+		Vector3(half_w - bevel, -half_h + bevel, front_z),
+		Vector3(half_w - bevel, half_h - bevel, front_z),
+		Vector3(-half_w + bevel, half_h - bevel, front_z))
+	_append_quad(surface,
+		Vector3(-half_w + bevel, -half_h + bevel, front_z),
+		Vector3(-half_w, -half_h, inset_z),
+		Vector3(half_w, -half_h, inset_z),
+		Vector3(half_w - bevel, -half_h + bevel, front_z))
+	_append_quad(surface,
+		Vector3(-half_w + bevel, half_h - bevel, front_z),
+		Vector3(half_w - bevel, half_h - bevel, front_z),
+		Vector3(half_w, half_h, inset_z),
+		Vector3(-half_w, half_h, inset_z))
+	_append_quad(surface,
+		Vector3(-half_w + bevel, -half_h + bevel, front_z),
+		Vector3(-half_w + bevel, half_h - bevel, front_z),
+		Vector3(-half_w, half_h, inset_z),
+		Vector3(-half_w, -half_h, inset_z))
+	_append_quad(surface,
+		Vector3(half_w - bevel, -half_h + bevel, front_z),
+		Vector3(half_w, -half_h, inset_z),
+		Vector3(half_w, half_h, inset_z),
+		Vector3(half_w - bevel, half_h - bevel, front_z))
+	_append_quad(surface,
+		Vector3(-half_w, -half_h, inset_z),
+		Vector3(-half_w, -half_h, back_z),
+		Vector3(half_w, -half_h, back_z),
+		Vector3(half_w, -half_h, inset_z))
+	_append_quad(surface,
+		Vector3(-half_w, half_h, inset_z),
+		Vector3(half_w, half_h, inset_z),
+		Vector3(half_w, half_h, back_z),
+		Vector3(-half_w, half_h, back_z))
+	_append_quad(surface,
+		Vector3(-half_w, -half_h, inset_z),
+		Vector3(-half_w, half_h, inset_z),
+		Vector3(-half_w, half_h, back_z),
+		Vector3(-half_w, -half_h, back_z))
+	_append_quad(surface,
+		Vector3(half_w, -half_h, inset_z),
+		Vector3(half_w, -half_h, back_z),
+		Vector3(half_w, half_h, back_z),
+		Vector3(half_w, half_h, inset_z))
+	_append_quad(surface,
+		Vector3(-half_w, -half_h, back_z),
+		Vector3(-half_w, half_h, back_z),
+		Vector3(half_w, half_h, back_z),
+		Vector3(half_w, -half_h, back_z))
+	return surface.commit()
+
+
+static func _append_quad(surface: SurfaceTool, a: Vector3, b: Vector3,
+		c: Vector3, d: Vector3) -> void:
+	for vertex in [a, b, c, a, c, d]:
+		surface.add_vertex(vertex)
 
 
 func _spawn_frame(opening_center: Vector3, outward: Vector3,

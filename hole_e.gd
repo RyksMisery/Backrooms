@@ -17,13 +17,22 @@ const ROOM_SIZE := TILE_LENGTH
 const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const PLAYER_HEIGHT := 1.2
 const START_Z_CELLS := 13.5
-const ARM_Z_CELLS := 10.0
+const ARM_Z_CELLS := 4.0
 const TURN_ZONE_Z_CELLS := 4.0
+const NORTH_SWAP_Z_CELLS := 11.0
 const RETURN_VELOCITY := 0.25
 const WRAP_NORTH_Z := -0.5 * TILE_LENGTH
 const WRAP_SOUTH_Z := 1.5 * TILE_LENGTH
 const REVEAL_CYCLE := 3
 const FALL_Y := -6.0
+const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
+const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
+const GEOMETRY_FADE_MARGIN := TILE_LENGTH * 0.75
+const DOOR_CENTER_TOLERANCE := Architecture.CELL * 0.5
+const EXTRA_LIGHT_POINTS_CELLS := [
+	Vector2(7.5, 3.5),
+	Vector2(7.5, 11.5),
+]
 
 var architecture
 var openings
@@ -39,6 +48,7 @@ var _south_cap: Node3D
 var _cycle_count := 0
 var _fall_count := 0
 var _south_infinite := false
+var _return_started := false
 var _bidirectional := false
 var _door_revealed := false
 var _door_side := ""
@@ -46,6 +56,8 @@ var _recycling_stopped := false
 var _hud_visible := false
 var _map_grid: Dictionary = {}
 var _pit_rects: Array[Rect2] = []
+var _light_entries: Array[Dictionary] = []
+var _rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
@@ -57,6 +69,7 @@ func _ready() -> void:
 	audio = Audio.new(self)
 	hud = HUD.new(self)
 	map = Map.new(self)
+	_rng.randomize()
 	_build_tiles()
 	_build_caps()
 	_build_lights()
@@ -93,6 +106,7 @@ func _build_caps() -> void:
 func _make_cap(node_name: String, z_plane: float) -> Node3D:
 	var root := Node3D.new()
 	root.name = node_name
+	root.set_meta("z_plane", z_plane)
 	add_child(root)
 	var outward := -1.0 if is_zero_approx(z_plane) else 1.0
 	architecture.add_box(root, "%s_wall" % node_name,
@@ -159,16 +173,40 @@ func _build_side_wall(chunk: Node3D, side: String,
 	openings.spawn_office_door_leaf(root,
 		Vector3(inner_x, 0.0, center), inward,
 		"hole_door_%s_leaf" % side, true)
+	var sign_y := (height + Architecture.CEIL_H) * 0.5
+	Openings.spawn_exit_sign(root,
+		Vector3(
+			inner_x + inward.x * Architecture.CELL * 0.3,
+			sign_y, center),
+		inward, "hole_exit_sign")
 	return root
 
 
 func _build_lights() -> void:
 	for chunk in _chunks:
-		for point: Vector2 in Lighting.PIT_LIGHT_POINTS_CELLS:
-			lighting.add_ceiling_light(chunk, Vector3(
+		var points: Array = Lighting.PIT_LIGHT_POINTS_CELLS.duplicate()
+		points.append_array(EXTRA_LIGHT_POINTS_CELLS)
+		for point: Vector2 in points:
+			var panel_index := chunk.get_child_count()
+			var light: OmniLight3D = lighting.add_ceiling_light(chunk, Vector3(
 				point.x * Architecture.CELL,
 				Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
 				point.y * Architecture.CELL), true)
+			_light_entries.append({
+				"light": light,
+				"panel": chunk.get_child(panel_index),
+				"base_energy": light.light_energy,
+			})
+		_configure_chunk_fade(chunk)
+
+
+func _configure_chunk_fade(chunk: Node3D) -> void:
+	for node in chunk.find_children("*", "GeometryInstance3D", true, false):
+		var geometry := node as GeometryInstance3D
+		geometry.visibility_range_end = FADE_DARK_DISTANCE
+		geometry.visibility_range_end_margin = GEOMETRY_FADE_MARGIN
+		geometry.visibility_range_fade_mode = \
+			GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 
 
 func _spawn_player() -> void:
@@ -189,6 +227,7 @@ func _process(delta: float) -> void:
 	lighting.update(player)
 	audio.update(delta)
 	map.update()
+	_update_light_fade()
 	_update_reveal_phases()
 	_update_treadmill()
 	_update_fall()
@@ -197,12 +236,43 @@ func _process(delta: float) -> void:
 
 func _update_reveal_phases() -> void:
 	if not _south_infinite \
-			and player.global_position.z <= ARM_Z_CELLS * Architecture.CELL:
+			and player.global_position.z <= ARM_Z_CELLS * Architecture.CELL \
+			and not _cap_visible(_south_cap):
 		_arm_south_infinity()
 	if _south_infinite and not _bidirectional \
 			and player.global_position.z <= TURN_ZONE_Z_CELLS * Architecture.CELL \
 			and player.velocity.z >= RETURN_VELOCITY:
+		_return_started = true
+	if _return_started and not _bidirectional \
+			and player.global_position.z >= NORTH_SWAP_Z_CELLS \
+				* Architecture.CELL \
+			and not _cap_visible(_north_cap):
 		_enable_bidirectional()
+
+
+func _cap_visible(cap: Node3D) -> bool:
+	if cap == null or not is_instance_valid(cap) \
+			or player == null or player.camera == null:
+		return false
+	return player.camera.is_position_in_frustum(
+		cap.global_position + Vector3(
+			ROOM_SIZE * 0.5, Architecture.CEIL_H * 0.5,
+			float(cap.get_meta("z_plane", 0.0))))
+
+
+func _update_light_fade() -> void:
+	var span := maxf(0.001, FADE_DARK_DISTANCE - FADE_FULL_DISTANCE)
+	for entry: Dictionary in _light_entries:
+		var light := entry["light"] as OmniLight3D
+		if not is_instance_valid(light):
+			continue
+		var distance := absf(
+			light.global_position.z - player.global_position.z)
+		var level := clampf(
+			(FADE_DARK_DISTANCE - distance) / span, 0.0, 1.0)
+		level = smoothstep(0.0, 1.0, level)
+		light.light_energy = float(entry["base_energy"]) * level
+		light.visible = level > 0.001
 
 
 func _arm_south_infinity() -> void:
@@ -241,8 +311,11 @@ func _register_cycle() -> void:
 func _reveal_door() -> void:
 	_door_revealed = true
 	_recycling_stopped = true
-	_door_side = "east" if player.global_position.x <= ROOM_SIZE * 0.5 \
-		else "west"
+	var center_delta := player.global_position.x - ROOM_SIZE * 0.5
+	if absf(center_delta) <= DOOR_CENTER_TOLERANCE:
+		_door_side = "west" if _rng.randi_range(0, 1) == 0 else "east"
+	else:
+		_door_side = "east" if center_delta < 0.0 else "west"
 	var tile_index := clampi(
 		floori(player.global_position.z / TILE_LENGTH),
 		-HALF_TILE_COUNT, HALF_TILE_COUNT)
@@ -341,6 +414,7 @@ func _get_player() -> Node3D:
 func debug_snapshot() -> Dictionary:
 	return {
 		"south_infinite": _south_infinite,
+		"return_started": _return_started,
 		"bidirectional": _bidirectional,
 		"cycle_count": _cycle_count,
 		"door_revealed": _door_revealed,
@@ -352,6 +426,7 @@ func debug_snapshot() -> Dictionary:
 
 func _run_mechanic_test() -> void:
 	_arm_south_infinity()
+	_return_started = true
 	_enable_bidirectional()
 	player.global_position.x = ROOM_SIZE * 0.25
 	for index in range(REVEAL_CYCLE):
@@ -362,7 +437,10 @@ func _run_mechanic_test() -> void:
 		and int(snapshot["cycle_count"]) == REVEAL_CYCLE \
 		and bool(snapshot["door_revealed"]) \
 		and String(snapshot["door_side"]) == "east" \
-		and bool(snapshot["recycling_stopped"])
+		and bool(snapshot["recycling_stopped"]) \
+		and _light_entries.size() == TILE_COUNT * 6 \
+		and _chunk_for_index(0).find_child(
+			"hole_exit_sign", true, false) != null
 	if passed:
 		print("HOLE_E_MECHANIC_OK ", snapshot)
 		get_tree().quit()
