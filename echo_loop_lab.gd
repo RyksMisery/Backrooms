@@ -378,7 +378,6 @@ func _apply_micro_mutation(kind: String, target: String) -> void:
 		else:
 			_runtime_widths.y = next
 		_rebuild_width_patch(target)
-		_rebuild_corner_variants_for_side(target)
 		_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
 	else:
 		var count := int(_corner_mutation_counts.get(target, 0)) + 1
@@ -470,10 +469,10 @@ func _micro_region_rect(kind: String, target: String) -> Rect2i:
 		return Rect2i(3, 3, 21, 6) if target == "north" \
 			else Rect2i(3, 30, 21, 6)
 	return {
-		"north_west": Rect2i(9, 3, 4, 6),
-		"north_east": Rect2i(14, 3, 4, 6),
-		"south_west": Rect2i(9, 30, 4, 6),
-		"south_east": Rect2i(14, 30, 4, 6),
+		"north_west": Rect2i(3, 7, 6, 4),
+		"north_east": Rect2i(18, 7, 6, 4),
+		"south_west": Rect2i(3, 28, 6, 4),
+		"south_east": Rect2i(18, 28, 6, 4),
 	}.get(target, Rect2i())
 
 
@@ -512,45 +511,35 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 	_corner_variants[corner_id] = variant
 	root_node.set_meta("corner_id", corner_id)
 	root_node.set_meta("corner_variant", variant)
-	var rect := _micro_region_rect("corner", corner_id)
-	var span := _short_side_span(corner_id)
+	var span := _wide_branch_span(corner_id)
+	var wall_z := _inner_wall_continuation_z(corner_id)
 	var center := Vector3(
-		(rect.position.x + rect.size.x * 0.5) * Architecture.CELL,
+		(span.x + span.y) * 0.5,
 		0.0,
-		(span.x + span.y) * 0.5)
+		wall_z)
 	match variant:
 		1:
 			_build_passable_corner_column(root_node, center, span)
 		2:
 			_build_attached_corner_partition(
-				root_node, corner_id, center.x)
+				root_node, corner_id, wall_z)
 		3:
-			_build_freeform_corner_portal(root_node, corner_id, center.x)
+			_build_freeform_corner_portal(root_node, corner_id, wall_z)
 
 
-func _rebuild_corner_variants_for_side(side: String) -> void:
-	for corner_id: String in [
-		"%s_west" % side,
-		"%s_east" % side,
-	]:
-		var variant := int(_corner_variants.get(corner_id, 0))
-		if variant > 0:
-			_build_corner_variant(corner_id, variant)
+func _wide_branch_span(corner_id: String) -> Vector2:
+	var west := corner_id.ends_with("west")
+	return Vector2(
+		float(RunPlan.INTERIOR_MIN.x if west else RunPlan.CORE_RECT.end.x)
+			* Architecture.CELL,
+		float(RunPlan.CORE_RECT.position.x if west \
+			else RunPlan.INTERIOR_MAX.x) * Architecture.CELL)
 
 
-func _short_side_width(corner_id: String) -> int:
-	return _runtime_widths.x if corner_id.begins_with("north") \
-		else _runtime_widths.y
-
-
-func _short_side_span(corner_id: String) -> Vector2:
-	var north := corner_id.begins_with("north")
-	var width_m := float(_short_side_width(corner_id)) * Architecture.CELL
-	var outer := float(
-		RunPlan.INTERIOR_MIN.y if north else RunPlan.INTERIOR_MAX.y) \
-		* Architecture.CELL
-	return Vector2(outer, outer + width_m) if north \
-		else Vector2(outer - width_m, outer)
+func _inner_wall_continuation_z(corner_id: String) -> float:
+	return float(
+		RunPlan.CORE_RECT.position.y if corner_id.begins_with("north") \
+			else RunPlan.CORE_RECT.end.y) * Architecture.CELL
 
 
 func _build_passable_corner_column(parent: Node3D, center: Vector3,
@@ -569,28 +558,18 @@ func _build_passable_corner_column(parent: Node3D, center: Vector3,
 
 
 func _build_attached_corner_partition(parent: Node3D, corner_id: String,
-		wall_x: float) -> void:
-	var north := corner_id.begins_with("north")
-	var span := _short_side_span(corner_id)
+		wall_z: float) -> void:
+	var west := corner_id.ends_with("west")
+	var span := _wide_branch_span(corner_id)
 	var span_lo := span.x
 	var span_hi := span.y
 	var mutation_index := int(_corner_mutation_counts.get(corner_id, 1))
 	var thickness_options := [0.25, 0.5, 0.75, 1.0]
-	var length_cells_options := [0.5, 1.0, 1.5, 2.5, 3.5, 4.0]
-	var valid_lengths: Array[float] = []
-	for length_cells: float in length_cells_options:
-		if length_cells <= float(_short_side_width(corner_id)) - 2.0:
-			valid_lengths.append(length_cells)
+	var valid_lengths: Array[float] = [1.5, 2.5, 3.5, 4.0]
 	parent.set_meta("accent_transverse", true)
-	if valid_lengths.is_empty():
-		parent.set_meta("accent_skipped_for_passage", true)
-		return
 	var length_index := posmod(
 		hash([seed_detail, corner_id, mutation_index, "length"]),
 		valid_lengths.size())
-	var attach_to_inner := posmod(
-		hash([seed_detail, corner_id, mutation_index, "attachment"]),
-		2) == 1
 	var length := float(valid_lengths[length_index]) \
 		* Architecture.CELL
 	var valid_thicknesses: Array[float] = []
@@ -601,34 +580,26 @@ func _build_attached_corner_partition(parent: Node3D, corner_id: String,
 		hash([seed_detail, corner_id, mutation_index, "thickness"]),
 		valid_thicknesses.size())
 	var thickness := valid_thicknesses[thickness_index]
-	var attachment_z := span_hi if north == attach_to_inner else span_lo
-	var direction := -1.0 if attachment_z == span_hi else 1.0
-	var center_z := attachment_z + direction * length * 0.5
+	var attachment_x := span_hi if west else span_lo
+	var direction := -1.0 if west else 1.0
+	var center_x := attachment_x + direction * length * 0.5
 	parent.set_meta(
 		"accent_min_passage_m", span_hi - span_lo - length)
+	parent.set_meta("accent_attached_to_inner_wall", true)
 	architecture.add_box(parent, "corner_partition",
-		Vector3(thickness, Architecture.CEIL_H, length),
-		Vector3(wall_x, Architecture.CEIL_H * 0.5, center_z),
+		Vector3(length, Architecture.CEIL_H, thickness),
+		Vector3(center_x, Architecture.CEIL_H * 0.5, wall_z),
 		"wall", true, true)
 
 
 func _build_freeform_corner_portal(parent: Node3D, corner_id: String,
-		wall_x: float) -> void:
-	var north := corner_id.begins_with("north")
-	var span := _short_side_span(corner_id)
+		wall_z: float) -> void:
+	var west := corner_id.ends_with("west")
+	var span := _wide_branch_span(corner_id)
 	var span_lo := span.x
 	var span_hi := span.y
 	var span_center := (span_lo + span_hi) * 0.5
-	var side_width := _short_side_width(corner_id)
-	var width_cells_options := [1.0]
-	if side_width == 1:
-		width_cells_options = [1.0]
-	elif side_width == 2:
-		width_cells_options = [1.0, 1.5]
-	elif side_width <= 4:
-		width_cells_options = [2.0, 2.5]
-	elif side_width >= 5:
-		width_cells_options = [2.5, 3.5]
+	var width_cells_options := [2.0, 2.5, 3.5]
 	var mutation_index := int(_corner_mutation_counts.get(corner_id, 1))
 	var option_index := posmod(
 		hash([seed_detail, corner_id, mutation_index, "opening_width"]),
@@ -642,52 +613,52 @@ func _build_freeform_corner_portal(parent: Node3D, corner_id: String,
 		alignments.size())])
 	var opening_lo := span_center - opening_width * 0.5
 	if alignment == "outer":
-		opening_lo = span_lo if north else span_hi - opening_width
+		opening_lo = span_lo if west else span_hi - opening_width
 	elif alignment == "inner":
-		opening_lo = span_hi - opening_width if north else span_lo
+		opening_lo = span_hi - opening_width if west else span_lo
 	var opening_hi := opening_lo + opening_width
 	var side_a_width := opening_lo - span_lo
 	var side_b_width := span_hi - opening_hi
 	if side_a_width > 0.001:
 		architecture.add_box(parent, "portal_partition_side_a",
 			Vector3(
-				PORTAL_PARTITION_T_M,
+				side_a_width,
 				Architecture.CEIL_H,
-				side_a_width),
+				PORTAL_PARTITION_T_M),
 			Vector3(
-				wall_x,
+				(span_lo + opening_lo) * 0.5,
 				Architecture.CEIL_H * 0.5,
-				(span_lo + opening_lo) * 0.5),
+				wall_z),
 			"wall", true, true)
 	if side_b_width > 0.001:
 		architecture.add_box(parent, "portal_partition_side_b",
 			Vector3(
-				PORTAL_PARTITION_T_M,
+				side_b_width,
 				Architecture.CEIL_H,
-				side_b_width),
+				PORTAL_PARTITION_T_M),
 			Vector3(
-				wall_x,
+				(opening_hi + span_hi) * 0.5,
 				Architecture.CEIL_H * 0.5,
-				(opening_hi + span_hi) * 0.5),
+				wall_z),
 			"wall", true, true)
 	architecture.add_box(parent, "portal_partition_lintel",
 		Vector3(
-			PORTAL_PARTITION_T_M,
+			opening_width,
 			PORTAL_HEAD_GAP_M,
-			opening_width),
+			PORTAL_PARTITION_T_M),
 		Vector3(
-			wall_x,
+			(opening_lo + opening_hi) * 0.5,
 			opening_height + PORTAL_HEAD_GAP_M * 0.5,
-			(opening_lo + opening_hi) * 0.5),
+			wall_z),
 		"wall", true, false)
 	parent.set_meta("accent_transverse", true)
 	parent.set_meta("accent_min_passage_m", opening_width)
-	parent.set_meta("portal_side", "north" if north else "south")
-	parent.set_meta("portal_lane_width_cells", side_width)
+	parent.set_meta("portal_side", "west" if west else "east")
+	parent.set_meta("portal_lane_width_cells", 6)
 	parent.set_meta(
 		"portal_opening_width_cells", opening_width / Architecture.CELL)
 	parent.set_meta("portal_alignment", alignment)
-	parent.set_meta("portal_wall_x", wall_x)
+	parent.set_meta("portal_wall_z", wall_z)
 	parent.set_meta("portal_span_lo", span_lo)
 	parent.set_meta("portal_span_hi", span_hi)
 	parent.set_meta("portal_opening_lo", opening_lo)

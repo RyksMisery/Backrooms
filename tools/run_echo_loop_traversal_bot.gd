@@ -181,7 +181,6 @@ func _observe_state(level: Node, player: CharacterBody3D,
 func _validate_portals(level: Node, cycle: int) -> Dictionary:
 	var reports: Array[Dictionary] = []
 	var all_valid := true
-	var runtime_widths: Vector2i = level.get("_runtime_widths")
 	var grid: Dictionary = level.get("_grid")
 	for corner_id: String in [
 		"north_west", "north_east", "south_west", "south_east",
@@ -191,34 +190,28 @@ func _validate_portals(level: Node, cycle: int) -> Dictionary:
 				or int(root_node.get_meta("corner_variant", 0)) != 3:
 			continue
 		var north := corner_id.begins_with("north")
-		var side_width := runtime_widths.x if north else runtime_widths.y
-		var corner_rect: Rect2i = level.call(
-			"_micro_region_rect", "corner", corner_id)
-		var expected_x_cells := float(
-			corner_rect.position.x) + float(corner_rect.size.x) * 0.5
-		var expected_x := expected_x_cells * Architecture.CELL
-		var outer_z := float(
-			RunPlan.INTERIOR_MIN.y if north \
-				else RunPlan.INTERIOR_MAX.y) * Architecture.CELL
-		var side_width_m := float(side_width) * Architecture.CELL
-		var expected_span_lo := outer_z if north \
-			else outer_z - side_width_m
-		var expected_span_hi := outer_z + side_width_m if north \
-			else outer_z
+		var west := corner_id.ends_with("west")
+		var expected_span_lo := float(
+			RunPlan.INTERIOR_MIN.x if west \
+				else RunPlan.CORE_RECT.end.x) * Architecture.CELL
+		var expected_span_hi := float(
+			RunPlan.CORE_RECT.position.x if west \
+				else RunPlan.INTERIOR_MAX.x) * Architecture.CELL
+		var expected_wall_z := float(
+			RunPlan.CORE_RECT.position.y if north \
+				else RunPlan.CORE_RECT.end.y) * Architecture.CELL
 		var opening_width_cells := float(root_node.get_meta(
 			"portal_opening_width_cells", 0.0))
 		var alignment := String(root_node.get_meta(
 			"portal_alignment", ""))
 		var opening_lo := float(root_node.get_meta("portal_opening_lo", 0.0))
 		var opening_hi := float(root_node.get_meta("portal_opening_hi", 0.0))
-		var narrow_rule_valid := opening_width_cells <= 1.5 \
-			if side_width <= 2 else opening_width_cells >= 2.0
 		var alignment_valid := alignment == "center" \
 			or (alignment == "outer" and (
-				is_equal_approx(opening_lo, expected_span_lo) if north \
+				is_equal_approx(opening_lo, expected_span_lo) if west \
 				else is_equal_approx(opening_hi, expected_span_hi))) \
 			or (alignment == "inner" and (
-				is_equal_approx(opening_hi, expected_span_hi) if north \
+				is_equal_approx(opening_hi, expected_span_hi) if west \
 				else is_equal_approx(opening_lo, expected_span_lo)))
 		var physical_aabb := AABB()
 		var has_part := false
@@ -235,39 +228,40 @@ func _validate_portals(level: Node, cycle: int) -> Dictionary:
 				else physical_aabb.merge(part_aabb)
 			has_part = true
 		var physical_span_valid := has_part \
-			and absf(physical_aabb.position.z - expected_span_lo) < 0.01 \
-			and absf(physical_aabb.end.z - expected_span_hi) < 0.01 \
-			and absf(physical_aabb.get_center().x - expected_x) < 0.01 \
-			and absf(physical_aabb.size.x - 0.25) < 0.01
+			and absf(physical_aabb.position.x - expected_span_lo) < 0.01 \
+			and absf(physical_aabb.end.x - expected_span_hi) < 0.01 \
+			and absf(physical_aabb.get_center().z - expected_wall_z) < 0.01 \
+			and absf(physical_aabb.size.z - 0.25) < 0.01
 		var metadata_valid := \
-			absf(float(root_node.get_meta("portal_wall_x", 0.0))
-				- expected_x) < 0.01 \
+			absf(float(root_node.get_meta("portal_wall_z", 0.0))
+				- expected_wall_z) < 0.01 \
 			and absf(float(root_node.get_meta("portal_span_lo", 0.0))
 				- expected_span_lo) < 0.01 \
 			and absf(float(root_node.get_meta("portal_span_hi", 0.0))
 				- expected_span_hi) < 0.01 \
 			and bool(root_node.get_meta("accent_transverse", false)) \
-			and opening_width_cells >= 1.0 \
-			and opening_width_cells <= float(side_width)
-		var support_x := floori(expected_x / Architecture.CELL)
-		var outer_support_z := RunPlan.INTERIOR_MIN.y - 1 if north \
-			else RunPlan.INTERIOR_MAX.y
-		var inner_support_z := RunPlan.INTERIOR_MIN.y + side_width \
-			if north else RunPlan.INTERIOR_MAX.y - side_width - 1
+			and opening_width_cells >= 2.0 \
+			and opening_width_cells <= 3.5
+		var support_z := RunPlan.CORE_RECT.position.y if north \
+			else RunPlan.CORE_RECT.end.y - 1
+		var outer_support_x := RunPlan.INTERIOR_MIN.x - 1 if west \
+			else RunPlan.INTERIOR_MAX.x
+		var inner_support_x := RunPlan.CORE_RECT.position.x if west \
+			else RunPlan.CORE_RECT.end.x - 1
 		var supports_valid := \
 			String(grid.get(
-				Vector2i(support_x, outer_support_z), "missing")) == "wall" \
+				Vector2i(outer_support_x, support_z), "missing")) == "wall" \
 			and String(grid.get(
-				Vector2i(support_x, inner_support_z), "missing")) == "wall"
-		var valid := narrow_rule_valid and alignment_valid \
+				Vector2i(inner_support_x, support_z), "missing")) == "wall"
+		var valid := alignment_valid \
 			and physical_span_valid and metadata_valid and supports_valid
 		all_valid = all_valid and valid
 		reports.append({
 			"corner": corner_id,
-			"side_width_cells": side_width,
+			"branch_width_cells": 6,
 			"opening_width_cells": opening_width_cells,
 			"alignment": alignment,
-			"wall_x_cells": expected_x_cells,
+			"wall_z_cells": expected_wall_z / Architecture.CELL,
 			"opposite_wall_supports": supports_valid,
 			"valid": valid,
 		})
@@ -301,7 +295,6 @@ func _validate_portals_after_width_rebuild(level: Node) -> Dictionary:
 func _validate_corner_passages(level: Node) -> Dictionary:
 	var reports: Array[Dictionary] = []
 	var all_valid := true
-	var runtime_widths: Vector2i = level.get("_runtime_widths")
 	var grid: Dictionary = level.get("_grid")
 	for corner_id: String in [
 		"north_west", "north_east", "south_west", "south_east",
@@ -311,14 +304,13 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 			continue
 		var variant := int(root_node.get_meta("corner_variant", 0))
 		var north := corner_id.begins_with("north")
-		var side_width := runtime_widths.x if north else runtime_widths.y
-		var outer_z := float(
-			RunPlan.INTERIOR_MIN.y if north \
-				else RunPlan.INTERIOR_MAX.y) * Architecture.CELL
-		var span_lo := outer_z if north \
-			else outer_z - float(side_width) * Architecture.CELL
-		var span_hi := outer_z + float(side_width) * Architecture.CELL \
-			if north else outer_z
+		var west := corner_id.ends_with("west")
+		var span_lo := float(
+			RunPlan.INTERIOR_MIN.x if west \
+				else RunPlan.CORE_RECT.end.x) * Architecture.CELL
+		var span_hi := float(
+			RunPlan.CORE_RECT.position.x if west \
+				else RunPlan.INTERIOR_MAX.x) * Architecture.CELL
 		var intervals: Array[Vector2] = []
 		var transverse_valid := bool(root_node.get_meta(
 			"accent_transverse", false))
@@ -334,26 +326,22 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 				continue
 			var part_aabb: AABB = (part as MeshInstance3D).get_aabb()
 			intervals.append(Vector2(
-				maxf(span_lo, part_aabb.position.z),
-				minf(span_hi, part_aabb.end.z)))
+				maxf(span_lo, part_aabb.position.x),
+				minf(span_hi, part_aabb.end.x)))
 			if part_name == "corner_partition":
 				transverse_valid = transverse_valid \
-					and part_aabb.size.z > part_aabb.size.x \
-					and part_aabb.size.x <= 1.01
-				attached_valid = \
-					absf(part_aabb.position.z - span_lo) < 0.01 \
-					or absf(part_aabb.end.z - span_hi) < 0.01
-				var support_x := floori(
-					part_aabb.get_center().x / Architecture.CELL)
-				var touches_lo := \
-					absf(part_aabb.position.z - span_lo) < 0.01
-				var support_z := (
-					RunPlan.INTERIOR_MIN.y - 1 if north \
-						else RunPlan.INTERIOR_MAX.y - side_width - 1
-				) if touches_lo else (
-					RunPlan.INTERIOR_MIN.y + side_width if north \
-						else RunPlan.INTERIOR_MAX.y
-				)
+					and part_aabb.size.x > part_aabb.size.z \
+					and part_aabb.size.z <= 1.01
+				attached_valid = bool(root_node.get_meta(
+					"accent_attached_to_inner_wall", false)) \
+					and (
+						absf(part_aabb.end.x - span_hi) < 0.01 if west \
+						else absf(part_aabb.position.x - span_lo) < 0.01
+					)
+				var support_x := RunPlan.CORE_RECT.position.x if west \
+					else RunPlan.CORE_RECT.end.x - 1
+				var support_z := RunPlan.CORE_RECT.position.y if north \
+					else RunPlan.CORE_RECT.end.y - 1
 				attached_valid = attached_valid and String(grid.get(
 					Vector2i(support_x, support_z), "missing")) == "wall"
 		intervals.sort_custom(func(a: Vector2, b: Vector2) -> bool:
@@ -366,7 +354,8 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 			max_gap = maxf(max_gap, interval.x - cursor)
 			cursor = maxf(cursor, interval.y)
 		max_gap = maxf(max_gap, span_hi - cursor)
-		var required_gap := Architecture.CELL * (2.0 if variant == 2 else 1.0)
+		var required_gap := Architecture.CELL \
+			* (2.0 if variant == 2 or variant == 3 else 1.0)
 		var skipped := bool(root_node.get_meta(
 			"accent_skipped_for_passage", false))
 		var passage_valid := max_gap + 0.01 >= required_gap
@@ -378,7 +367,7 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 		reports.append({
 			"corner": corner_id,
 			"variant": variant,
-			"side_width_cells": side_width,
+			"branch_width_cells": 6,
 			"free_passage_cells": max_gap / Architecture.CELL,
 			"skipped": skipped,
 			"transverse": transverse_valid,
@@ -395,17 +384,18 @@ func _capture_corner_variants(level: Node, player: CharacterBody3D,
 		var corner = level.get("_corner_roots").get(corner_id)
 		if not (corner is Node3D):
 			continue
-		var rect: Rect2i = level.call(
-			"_micro_region_rect", "corner", corner_id)
-		var span: Vector2 = level.call("_short_side_span", corner_id)
+		var span: Vector2 = level.call("_wide_branch_span", corner_id)
+		var wall_z: float = level.call(
+			"_inner_wall_continuation_z", corner_id)
 		var target := Vector3(
-			(rect.position.x + rect.size.x * 0.5) * Architecture.CELL,
+			(span.x + span.y) * 0.5,
 			1.0,
-			(span.x + span.y) * 0.5)
+			wall_z)
+		var north := corner_id.begins_with("north")
 		player.global_position = Vector3(
-			13.5 * Architecture.CELL,
+			(span.x + span.y) * 0.5,
 			1.2,
-			(span.x + span.y) * 0.5)
+			wall_z + (3.0 if north else -3.0) * Architecture.CELL)
 		_look_at_flat(player, target)
 		await process_frame
 		await _save_frame(
