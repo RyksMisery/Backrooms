@@ -293,7 +293,11 @@ func _validate_light_family(members: Array, kind: String,
 				errors.append("area range mismatch")
 		elif kind == "bounce":
 			expected_y += Lighting.AREA_LIGHT_BOUNCE_Y_OFFSET
-			if not member.visible \
+			var primary := bool(member.get_meta(
+				"echo_pair_bounce_primary", false))
+			if member.visible != primary \
+					or bool(member.get_meta("pool_want", member.visible)) \
+						!= primary \
 					or absf(float(member.omni_range)
 						- Lighting.AREA_LIGHT_BOUNCE_RANGE) > 0.001:
 				errors.append("bounce source mismatch")
@@ -444,6 +448,7 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 		var transverse_valid := bool(root_node.get_meta(
 			"accent_transverse", false))
 		var attached_valid := true
+		var lf3_occupancy_valid := true
 		for part_name: String in [
 			"corner_column",
 			"corner_partition",
@@ -457,6 +462,8 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 			intervals.append(Vector2(
 				maxf(span_lo, part_aabb.position.x),
 				minf(span_hi, part_aabb.end.x)))
+			lf3_occupancy_valid = lf3_occupancy_valid \
+				and _accent_aabb_in_lf3_occupancy(level, part_aabb)
 			if part_name == "corner_partition":
 				transverse_valid = transverse_valid \
 					and part_aabb.size.x > part_aabb.size.z \
@@ -488,7 +495,8 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 		var skipped := bool(root_node.get_meta(
 			"accent_skipped_for_passage", false))
 		var passage_valid := max_gap + 0.01 >= required_gap
-		var valid := transverse_valid and attached_valid and passage_valid
+		var valid := transverse_valid and attached_valid \
+			and passage_valid and lf3_occupancy_valid
 		if skipped:
 			valid = intervals.is_empty() \
 				and span_hi - span_lo + 0.01 >= Architecture.CELL
@@ -500,9 +508,37 @@ func _validate_corner_passages(level: Node) -> Dictionary:
 			"free_passage_cells": max_gap / Architecture.CELL,
 			"skipped": skipped,
 			"transverse": transverse_valid,
+			"lf3_occupancy": lf3_occupancy_valid,
 			"valid": valid,
 		})
 	return {"items": reports, "valid": all_valid}
+
+
+func _accent_aabb_in_lf3_occupancy(level: Node, box: AABB) -> bool:
+	var blocked: Dictionary = level.get("_lf3_accent_blocked_cells")
+	var epsilon := 0.001
+	var found := false
+	for x in range(
+		floori((box.position.x + epsilon) / Architecture.CELL),
+		floori((box.end.x - epsilon) / Architecture.CELL) + 1,
+	):
+		for z in range(
+			floori((box.position.z + epsilon) / Architecture.CELL),
+			floori((box.end.z - epsilon) / Architecture.CELL) + 1,
+		):
+			var cell := Vector2i(x, z)
+			var cell_rect := Rect2(
+				Vector2(cell) * Architecture.CELL,
+				Vector2.ONE * Architecture.CELL)
+			var accent_rect := Rect2(
+				Vector2(box.position.x, box.position.z),
+				Vector2(box.size.x, box.size.z))
+			if not cell_rect.intersection(accent_rect).has_area():
+				continue
+			found = true
+			if not blocked.has(cell):
+				return false
+	return found
 
 
 func _capture_corner_variants(level: Node, player: CharacterBody3D,
@@ -526,6 +562,9 @@ func _capture_corner_variants(level: Node, player: CharacterBody3D,
 			1.2,
 			wall_z + (3.0 if north else -3.0) * Architecture.CELL)
 		_look_at_flat(player, target)
+		var lighting: RefCounted = level.get("lighting")
+		if lighting != null:
+			lighting.call("update_level_e_area_lighting", player)
 		await process_frame
 		await _save_frame(
 			"cycle_%d_corner_%s.png" % [cycle, corner_id])

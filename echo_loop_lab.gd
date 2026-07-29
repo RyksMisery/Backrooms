@@ -40,6 +40,7 @@ var _landmark_root: Node3D
 var _width_patch_roots := {}
 var _short_light_patch_roots := {}
 var _corner_roots := {}
+var _lf3_accent_blocked_cells := {}
 var _corner_variants := {
 	"north_west": 0, "north_east": 0,
 	"south_west": 0, "south_east": 0,
@@ -150,7 +151,9 @@ func _add_double_ceiling_light(parent: Node3D, first_cell: Vector2i,
 	if not _light_cell_clear(first_cell) \
 			or not _light_cell_clear(second_cell):
 		return false
-	for cell: Vector2i in [first_cell, second_cell]:
+	var pair_cells: Array[Vector2i] = [first_cell, second_cell]
+	for index in range(pair_cells.size()):
+		var cell := pair_cells[index]
 		var family: Dictionary = lighting.add_level_e_area_ceiling_light(
 			parent, Vector3(
 				(float(cell.x) + 0.5) * Architecture.CELL,
@@ -161,6 +164,12 @@ func _add_double_ceiling_light(parent: Node3D, first_cell: Vector2i,
 				(member as Light3D).set_meta("echo_light_cell", cell)
 				(member as Light3D).set_meta("echo_light_region", region)
 				(member as Light3D).set_meta("echo_light_double", true)
+				(member as Light3D).set_meta(
+					"echo_pair_bounce_primary", index == 0)
+		var bounce := family.get("bounce") as OmniLight3D
+		if bounce != null and index != 0:
+			bounce.visible = false
+			bounce.set_meta("pool_want", false)
 	return true
 
 
@@ -612,6 +621,46 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 				root_node, corner_id, wall_z)
 		3:
 			_build_freeform_corner_portal(root_node, corner_id, wall_z)
+	_rebuild_lf3_accent_occupancy()
+
+
+func _rebuild_lf3_accent_occupancy() -> void:
+	_lf3_accent_blocked_cells.clear()
+	for root_node in _corner_roots.values():
+		if not (root_node is Node3D) or not is_instance_valid(root_node):
+			continue
+		for child in (root_node as Node3D).find_children(
+				"*", "MeshInstance3D", true, false):
+			var mesh := child as MeshInstance3D
+			if mesh == null or mesh.mesh == null or String(mesh.name) not in [
+				"corner_column",
+				"corner_partition",
+				"portal_partition_side_a",
+				"portal_partition_side_b",
+			]:
+				continue
+			_add_lf3_accent_aabb(mesh.global_transform * mesh.get_aabb())
+	if lighting != null:
+		lighting.invalidate_lf3_guardian_cache()
+
+
+func _add_lf3_accent_aabb(box: AABB) -> void:
+	var epsilon := 0.001
+	var min_x := floori((box.position.x + epsilon) / Architecture.CELL)
+	var max_x := floori((box.end.x - epsilon) / Architecture.CELL)
+	var min_z := floori((box.position.z + epsilon) / Architecture.CELL)
+	var max_z := floori((box.end.z - epsilon) / Architecture.CELL)
+	for x in range(min_x, max_x + 1):
+		for z in range(min_z, max_z + 1):
+			var cell := Vector2i(x, z)
+			var cell_rect := Rect2(
+				Vector2(cell) * Architecture.CELL,
+				Vector2.ONE * Architecture.CELL)
+			var accent_rect := Rect2(
+				Vector2(box.position.x, box.position.z),
+				Vector2(box.size.x, box.size.z))
+			if cell_rect.intersection(accent_rect).has_area():
+				_lf3_accent_blocked_cells[cell] = true
 
 
 func _wide_branch_span(corner_id: String) -> Vector2:
@@ -820,6 +869,7 @@ func _reset_with_seed(next_seed: int) -> void:
 		if corner is Node and is_instance_valid(corner):
 			(corner as Node).free()
 	_corner_roots.clear()
+	_rebuild_lf3_accent_occupancy()
 	_corner_variants = {
 		"north_west": 0, "north_east": 0,
 		"south_west": 0, "south_east": 0,
@@ -892,6 +942,8 @@ func _lf3_cell_blocks_light(cell: Vector2i) -> bool:
 		Vector2i(Architecture.ROOM_CELLS, Architecture.ROOM_CELLS))
 	if lower_interior.has_point(cell):
 		return false
+	if _lf3_accent_blocked_cells.has(cell):
+		return true
 	return String(_grid.get(cell, "wall")) in ["wall", "pit"]
 
 

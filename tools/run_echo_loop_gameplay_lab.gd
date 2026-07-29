@@ -250,7 +250,11 @@ func _validate_light_family(members: Array, kind: String,
 				errors.append("AreaLight3D range override detected")
 		elif kind == "bounce":
 			expected_y += Lighting.AREA_LIGHT_BOUNCE_Y_OFFSET
-			if not member.visible \
+			var primary := bool(member.get_meta(
+				"echo_pair_bounce_primary", false))
+			if member.visible != primary \
+					or bool(member.get_meta("pool_want", member.visible)) \
+						!= primary \
 					or absf(float(member.omni_range)
 						- Lighting.AREA_LIGHT_BOUNCE_RANGE) > 0.001:
 				errors.append("canonical bounce source mismatch")
