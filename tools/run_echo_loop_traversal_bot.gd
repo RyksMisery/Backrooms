@@ -148,6 +148,7 @@ func _observe_state(level: Node, player: CharacterBody3D,
 	await _capture_corner_variants(level, player, cycle)
 	var portal_result := _validate_portals(level, cycle)
 	var passage_result := _validate_corner_passages(level)
+	var light_result := _validate_echo_lights(level)
 	player.global_position = Vector3(
 		13.5 * Architecture.CELL, 1.2, 30.5 * Architecture.CELL)
 	player.rotation.y = 0.0
@@ -162,7 +163,8 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		<= width_tolerance \
 		and bool(chair_result.get("valid", false)) \
 		and bool(portal_result.get("valid", false)) \
-		and bool(passage_result.get("valid", false))
+		and bool(passage_result.get("valid", false)) \
+		and bool(light_result.get("valid", false))
 	return {
 		"cycle": cycle,
 		"north_width_cells": north_width / Architecture.CELL,
@@ -172,9 +174,66 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		"chairs": chair_result,
 		"portals": portal_result,
 		"corner_passages": passage_result,
+		"lights": light_result,
 		"valid": valid,
 		"error": "" if valid \
-			else "physical width, chair, or portal geometry mismatch",
+			else "physical width, chair, portal, or light geometry mismatch",
+	}
+
+
+func _validate_echo_lights(level: Node) -> Dictionary:
+	var lighting: RefCounted = level.get("lighting")
+	var lamps: Array = lighting.get("lamps") if lighting != null else []
+	var grid: Dictionary = level.get("_grid")
+	var errors: Array[String] = []
+	var cells_by_region := {}
+	for lamp in lamps:
+		if not is_instance_valid(lamp) or not lamp.has_meta("echo_light_cell"):
+			continue
+		var cell: Vector2i = lamp.get_meta("echo_light_cell")
+		var region := String(lamp.get_meta("echo_light_region", ""))
+		if not cells_by_region.has(region):
+			cells_by_region[region] = []
+		cells_by_region[region].append(cell)
+		var expected_x := (float(cell.x) + 0.5) * Architecture.CELL
+		var expected_z := (float(cell.y) + 0.5) * Architecture.CELL
+		if absf(lamp.global_position.x - expected_x) > 0.001 \
+				or absf(lamp.global_position.z - expected_z) > 0.001:
+			errors.append("%s off-grid %s" % [region, cell])
+		for x in range(cell.x - 1, cell.x + 2):
+			for z in range(cell.y - 1, cell.y + 2):
+				var neighbor := Vector2i(x, z)
+				if String(grid.get(neighbor, "wall")) != "floor" \
+						or RunPlan.PIT_RECT.has_point(neighbor):
+					errors.append("%s blocked %s" % [region, cell])
+	var widths: Vector2i = level.get("_runtime_widths")
+	var expected_counts := {
+		"west": 8,
+		"east": 16,
+		"north": 4 if widths.x >= 3 else 0,
+		"south": 4 if widths.y >= 3 else 0,
+	}
+	for region: String in expected_counts:
+		var cells: Array = cells_by_region.get(region, [])
+		if cells.size() != int(expected_counts[region]):
+			errors.append("%s count %d" % [region, cells.size()])
+		for cell: Vector2i in cells:
+			var has_partner := false
+			for other: Vector2i in cells:
+				if absi(cell.x - other.x) + absi(cell.y - other.y) == 1:
+					has_partner = true
+					break
+			if not has_partner:
+				errors.append("%s unpaired %s" % [region, cell])
+	return {
+		"valid": errors.is_empty(),
+		"errors": errors,
+		"counts": {
+			"west": (cells_by_region.get("west", []) as Array).size(),
+			"east": (cells_by_region.get("east", []) as Array).size(),
+			"north": (cells_by_region.get("north", []) as Array).size(),
+			"south": (cells_by_region.get("south", []) as Array).size(),
+		},
 	}
 
 

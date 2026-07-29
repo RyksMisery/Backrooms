@@ -38,6 +38,7 @@ var _mutation_geometry: Node3D
 var _mutation_props: Node3D
 var _landmark_root: Node3D
 var _width_patch_roots := {}
+var _short_light_patch_roots := {}
 var _corner_roots := {}
 var _corner_variants := {
 	"north_west": 0, "north_east": 0,
@@ -122,25 +123,90 @@ func _build_main_geometry() -> void:
 
 
 func _build_main_lights() -> void:
+	if _main_lights != null and is_instance_valid(_main_lights):
+		_main_lights.free()
 	_main_lights = Node3D.new()
 	_main_lights.name = "echo_loop_lights"
 	add_child(_main_lights)
-	for x in [5, 9, 13, 17, 21]:
-		_add_double_ceiling_light(Vector2i(x, 3), Vector2i(1, 0))
-		_add_double_ceiling_light(Vector2i(x, 35), Vector2i(1, 0))
-	for z in [9, 13, 17, 21, 25, 29]:
-		_add_double_ceiling_light(Vector2i(3, z), Vector2i(0, 1))
-		_add_double_ceiling_light(Vector2i(23, z), Vector2i(0, 1))
+	# Wide branches keep an area-specific pattern clear of both inner-wall
+	# continuations. The west pattern also reserves the future pit clearance.
+	for x: int in [4, 7]:
+		for z: int in [11, 26]:
+			_add_double_ceiling_light(
+				_main_lights, Vector2i(x, z), Vector2i.DOWN, "west")
+	for x: int in [19, 22]:
+		for z: int in [11, 16, 21, 26]:
+			_add_double_ceiling_light(
+				_main_lights, Vector2i(x, z), Vector2i.DOWN, "east")
+	_rebuild_short_light_patch("north")
+	_rebuild_short_light_patch("south")
 
 
-func _add_double_ceiling_light(cell: Vector2i, cross_axis: Vector2i) -> void:
-	for side in [-0.5, 0.5]:
-		lighting.add_ceiling_light(_main_lights, Vector3(
-			(float(cell.x) + 0.5 + cross_axis.x * side)
-				* Architecture.CELL,
+func _add_double_ceiling_light(parent: Node3D, first_cell: Vector2i,
+		route_axis: Vector2i, region: String) -> bool:
+	var second_cell := first_cell + route_axis
+	if not _light_cell_clear(first_cell) \
+			or not _light_cell_clear(second_cell):
+		return false
+	for cell: Vector2i in [first_cell, second_cell]:
+		var light: OmniLight3D = lighting.add_wide_ceiling_light(parent, Vector3(
+			(float(cell.x) + 0.5) * Architecture.CELL,
 			Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-			(float(cell.y) + 0.5 + cross_axis.y * side)
-				* Architecture.CELL), true)
+			(float(cell.y) + 0.5) * Architecture.CELL))
+		light.set_meta("echo_light_cell", cell)
+		light.set_meta("echo_light_region", region)
+		light.set_meta("echo_light_double", true)
+	return true
+
+
+func _light_cell_clear(cell: Vector2i) -> bool:
+	for x in range(cell.x - 1, cell.x + 2):
+		for z in range(cell.y - 1, cell.y + 2):
+			var neighbor := Vector2i(x, z)
+			if String(_grid.get(neighbor, "wall")) != "floor":
+				return false
+			# The pit is reserved even before its floor cover disappears.
+			if RunPlan.PIT_RECT.has_point(neighbor):
+				return false
+	return true
+
+
+func _rebuild_short_light_patch(side: String) -> void:
+	var existing = _short_light_patch_roots.get(side)
+	if existing is Node and is_instance_valid(existing):
+		(existing as Node).free()
+	var root_node := Node3D.new()
+	root_node.name = "runtime_lights_%s" % side
+	add_child(root_node)
+	_short_light_patch_roots[side] = root_node
+	var width := _runtime_widths.x if side == "north" \
+		else _runtime_widths.y
+	if width < 3:
+		return
+	var start_z := RunPlan.INTERIOR_MIN.y if side == "north" \
+		else RunPlan.INTERIOR_MAX.y - width
+	var target_z := float(start_z) + float(width) * 0.5
+	var candidates: Array[int] = []
+	for z in range(start_z, start_z + width):
+		candidates.append(z)
+	candidates.sort_custom(func(a: int, b: int) -> bool:
+		var distance_a := absf(float(a) + 0.5 - target_z)
+		var distance_b := absf(float(b) + 0.5 - target_z)
+		return a < b if is_equal_approx(distance_a, distance_b) \
+			else distance_a < distance_b)
+	for z: int in candidates:
+		var left := Vector2i(10, z)
+		var right := Vector2i(14, z)
+		if _light_cell_clear(left) \
+				and _light_cell_clear(left + Vector2i.RIGHT) \
+				and _light_cell_clear(right) \
+				and _light_cell_clear(right + Vector2i.RIGHT):
+			_add_double_ceiling_light(
+				root_node, left, Vector2i.RIGHT, side)
+			_add_double_ceiling_light(
+				root_node, right, Vector2i.RIGHT, side)
+			root_node.set_meta("light_row", z)
+			return
 
 
 func _build_lower_room() -> void:
@@ -377,8 +443,9 @@ func _apply_micro_mutation(kind: String, target: String) -> void:
 			_runtime_widths.x = next
 		else:
 			_runtime_widths.y = next
-		_rebuild_width_patch(target)
 		_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+		_rebuild_width_patch(target)
+		_rebuild_short_light_patch(target)
 	else:
 		var count := int(_corner_mutation_counts.get(target, 0)) + 1
 		_corner_mutation_counts[target] = count
@@ -751,6 +818,8 @@ func _reset_with_seed(next_seed: int) -> void:
 	_build_plan()
 	_build_main_geometry()
 	_build_all_width_patches()
+	_rebuild_short_light_patch("north")
+	_rebuild_short_light_patch("south")
 	_build_landmark()
 	_build_mutation_patch()
 	player.global_position = _cell_center(RunPlan.SPAWN_CELL)

@@ -37,8 +37,9 @@ func _run() -> void:
 		return
 	var light_module: RefCounted = level.get("lighting")
 	var lamps: Array = light_module.get("lamps") if light_module != null else []
-	if lamps.size() < 40:
-		_fail("double ceiling panels missing")
+	var light_report := _validate_echo_lights(level, lamps)
+	if not bool(light_report.get("valid", false)):
+		_fail("invalid ceiling grid: %s" % light_report.get("errors", []))
 		return
 	var initial_static_builds := int(states[0].get("static_build_count", -1))
 	for expected_cycle in range(1, RunPlan.MAX_CYCLE + 1):
@@ -132,6 +133,65 @@ func _cell_center(cell: Vector2i) -> Vector3:
 		(float(cell.x) + 0.5) * Architecture.CELL,
 		1.2,
 		(float(cell.y) + 0.5) * Architecture.CELL)
+
+
+func _validate_echo_lights(level: Node, lamps: Array) -> Dictionary:
+	var grid: Dictionary = level.get("_grid")
+	var errors: Array[String] = []
+	var cells_by_region := {}
+	for lamp in lamps:
+		if not is_instance_valid(lamp) or not lamp.has_meta("echo_light_cell"):
+			continue
+		var cell: Vector2i = lamp.get_meta("echo_light_cell")
+		var region := String(lamp.get_meta("echo_light_region", ""))
+		if not cells_by_region.has(region):
+			cells_by_region[region] = []
+		cells_by_region[region].append(cell)
+		var expected_x := (float(cell.x) + 0.5) * Architecture.CELL
+		var expected_z := (float(cell.y) + 0.5) * Architecture.CELL
+		if absf(lamp.global_position.x - expected_x) > 0.001 \
+				or absf(lamp.global_position.z - expected_z) > 0.001:
+			errors.append("%s panel is off-grid at %s" % [region, cell])
+		for x in range(cell.x - 1, cell.x + 2):
+			for z in range(cell.y - 1, cell.y + 2):
+				var neighbor := Vector2i(x, z)
+				if String(grid.get(neighbor, "wall")) != "floor" \
+						or RunPlan.PIT_RECT.has_point(neighbor):
+					errors.append("%s panel lacks clearance at %s" % [
+						region, cell])
+	for region: String in cells_by_region:
+		var cells: Array = cells_by_region[region]
+		for cell: Vector2i in cells:
+			var has_partner := false
+			for other: Vector2i in cells:
+				if absi(cell.x - other.x) + absi(cell.y - other.y) == 1:
+					has_partner = true
+					break
+			if not has_partner:
+				errors.append("%s panel has no adjacent pair at %s" % [
+					region, cell])
+	var north_width: int = level.get("_runtime_widths").x
+	var south_width: int = level.get("_runtime_widths").y
+	var expected_counts := {
+		"west": 8,
+		"east": 16,
+		"north": 4 if north_width >= 3 else 0,
+		"south": 4 if south_width >= 3 else 0,
+	}
+	for region: String in expected_counts:
+		if (cells_by_region.get(region, []) as Array).size() \
+				!= int(expected_counts[region]):
+			errors.append("%s panel count mismatch" % region)
+	return {
+		"valid": errors.is_empty(),
+		"errors": errors,
+		"counts": {
+			"west": (cells_by_region.get("west", []) as Array).size(),
+			"east": (cells_by_region.get("east", []) as Array).size(),
+			"north": (cells_by_region.get("north", []) as Array).size(),
+			"south": (cells_by_region.get("south", []) as Array).size(),
+		},
+	}
 
 
 func _fail(message: String) -> void:
