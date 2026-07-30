@@ -1,6 +1,12 @@
 extends Node3D
 
 # Независимая лаборатория двунаправленного бесконечного провала.
+# Интеграция в level_e (см. docs/hole_e.md «Интеграция в level_e»): при
+# embedded_mode=true узел встроен резидентом в мир level_e — переиспользует
+# общего игрока/environment вместо собственных, не строит свой HUD/карту,
+# активируется/деактивируется через set_embedded_active().
+
+signal office_door_reached
 
 const Architecture := preload("res://modules/architecture_module.gd")
 const Openings := preload("res://modules/opening_module.gd")
@@ -73,11 +79,20 @@ var _map_gmax := Vector2i.ZERO
 var _light_entries: Array[Dictionary] = []
 var _rng := RandomNumberGenerator.new()
 
+var embedded_mode := false
+var embedded_player: CharacterBody3D
+var embedded_environment: Environment
+var _embedded_active := false
+
 
 func _ready() -> void:
 	architecture = Architecture.new(self)
-	architecture.install_environment(false)
-	architecture.environment.fog_enabled = true
+	if embedded_mode:
+		architecture.environment = embedded_environment
+	else:
+		architecture.install_environment(false)
+	if architecture.environment != null:
+		architecture.environment.fog_enabled = true
 	Architecture.apply_render_profile(get_viewport())
 	_cap_material = StandardMaterial3D.new()
 	_cap_material.albedo_color = Architecture.FOG_COLOR
@@ -94,15 +109,42 @@ func _ready() -> void:
 	_build_caps()
 	_build_lights()
 	_build_map_data()
-	_spawn_player()
-	hud.setup()
-	hud.set_visible(false)
-	map.setup(_map_data, _get_player, Architecture.CELL,
-		["wall", "partition"])
+	if embedded_mode:
+		player = embedded_player
+	else:
+		_spawn_player()
+	if not embedded_mode:
+		hud.setup()
+		hud.set_visible(false)
+		map.setup(_map_data, _get_player, Architecture.CELL,
+			["wall", "partition"])
 	audio.setup(player, lighting.lamps)
 	set_process(true)
+	if embedded_mode:
+		set_embedded_active(false)
 	if "--hole-e-mechanic-test" in OS.get_cmdline_user_args():
 		call_deferred("_run_mechanic_test")
+
+
+# Встраивание в level_e (докстрока — см. верх файла). Вызывается извне сразу
+# после instantiate(), до add_child в дерево level_e.
+func set_embedded_active(active: bool) -> void:
+	if not embedded_mode:
+		return
+	_embedded_active = active
+	visible = active
+	process_mode = Node.PROCESS_MODE_INHERIT if active else Node.PROCESS_MODE_DISABLED
+	if active:
+		audio.resume()
+	else:
+		audio.stop()
+
+
+# Раскрыт ли двунаправленный бесконечный режим (см. «Первый сценарий» п.5) —
+# level_e использует это, чтобы не пытаться доигрывать переход, пока провал
+# ещё не переключился.
+func embedded_reveal_active() -> bool:
+	return _infinite_active
 
 
 func _build_tiles() -> void:
@@ -221,7 +263,36 @@ func _create_side_wall(parent: Node3D, side: String,
 			inner_x + inward.x * Architecture.CELL * 0.3,
 			sign_y, center),
 		inward, "hole_exit_sign")
+	# Дверь закрыта и не интерактивна (collide=true у листа выше), как и все
+	# декоративные тупики лабиринта. Подход к ней в embedded-режиме ведёт
+	# в область maze (см. docs/hole_e.md «Интеграция в level_e») — триггер
+	# стоит с внутренней стороны, до коллизии самой двери.
+	_add_office_door_reach_trigger(root, Vector3(inner_x, 0.0, center), inward)
 	return root
+
+
+func _add_office_door_reach_trigger(root: Node3D, door_local_pos: Vector3,
+		inward: Vector3) -> void:
+	var trigger := Area3D.new()
+	trigger.name = "office_door_reach_trigger"
+	trigger.collision_layer = 0
+	trigger.collision_mask = 1
+	trigger.monitoring = true
+	trigger.monitorable = false
+	var collision := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(Openings.opening_width_m(), 2.2, 0.6)
+	collision.shape = shape
+	trigger.add_child(collision)
+	trigger.position = door_local_pos + inward * 0.5
+	root.add_child(trigger)
+	trigger.body_entered.connect(_on_office_door_reach_body_entered)
+
+
+func _on_office_door_reach_body_entered(body: Node3D) -> void:
+	if not embedded_mode or player == null or body != player:
+		return
+	office_door_reached.emit()
 
 
 func _set_tree_active(root: Node3D, active: bool) -> void:
@@ -283,11 +354,14 @@ func _spawn_player() -> void:
 
 
 func _process(delta: float) -> void:
+	if embedded_mode and not _embedded_active:
+		return
 	if player == null:
 		return
 	lighting.update(player)
 	audio.update(delta)
-	map.update()
+	if not embedded_mode:
+		map.update()
 	_update_light_fade()
 	_update_infinite_reveal()
 	if _infinite_active:
