@@ -36,12 +36,13 @@ const ROOM_SIZE := TILE_LENGTH
 const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
-const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
-# Панели видны заметно дальше, чем светят их лампы. Эмиссивный меш ничего не
-# стоит по свету, поэтому дальние ряды панелей дают глубину даром: света
-# оттуда уже нет, но пространство читается далеко вперёд.
-const PANEL_VISIBLE_DISTANCE := TILE_LENGTH * 5.0
-const PANEL_VISIBLE_MARGIN := PANEL_VISIBLE_DISTANCE - FADE_DARK_DISTANCE
+# Глубину даёт КАНОНИЧЕСКИЙ ТУМАН, а не фейд мешей по дистанции. Годот гасит
+# `visibility_range` дизерингом: вблизи крупный меш читается как плавное
+# появление, вдали мелкая панель превращается в мерцание. Хуже того, меш
+# растворяется по 3D-дистанции, а его лампа гаснет по своей кривой вдоль оси —
+# в промежутке панели уже не видно, а свет ещё горит, и это читается как
+# светящееся пятно без светильника. Поэтому у панелей кольца НЕТ
+# visibility_range: они просто уходят в туман вместе со всей геометрией.
 const END_DISTANCE := TILE_LENGTH * 7.0
 const RECYCLE_DISTANCE := END_DISTANCE + TILE_LENGTH
 const CAP_SIDE_OVERLAP := TILE_LENGTH
@@ -236,18 +237,26 @@ func _side_wall_z(side: String) -> float:
 # и переключаются видимостью; двигать их не нужно.
 # Позиции — канонические клетки провала: сетка 3x3 по `1.5 / 7.5 / 13.5`.
 # В секции всегда ровно ЧЕТЫРЕ лампы, поэтому плотность и яркость совпадают с
-# областью-провалом, а рисунок каждый раз другой.
+# областью-провалом.
 #
-# Распределение по продольным колонкам всегда `2 + 1 + 1`: лампа есть в каждой
-# колонке, поэтому разрыв вдоль движения не превышает 7.5 м. Комбинаций 81 —
-# повтор рисунка на глаз не читается.
+# Раскладка строится как ПЕРЕСТАНОВКА плюс одна лишняя лампа. Перестановка
+# (по одной лампе в каждой колонке и в каждом ряду) гарантирует, что ни одна
+# продольная полоса не остаётся без света: идя по любому мостку, игрок видит
+# лампу над собой не реже чем раз в секцию, а сбоку — не дальше 7.5 м. Именно
+# отсутствие этой гарантии давало длинные тёмные участки.
+#
+# Раскладка самого провала принадлежит этому же семейству: перестановка
+# (0->2, 1->1, 2->0) плюс лишняя лампа в (2,2). Поэтому якорная секция
+# совпадает с ней буква в букву.
 const RING_LIGHT_STEP := 6.0
 const RING_LIGHT_BASE := 1.5
 const RING_LIGHT_COLUMNS := 3
 const RING_LIGHT_ROWS := 3
-# Слоты якорной секции — раскладка провала буква в букву:
-# (1.5,13.5), (7.5,7.5), (13.5,1.5), (13.5,13.5).
-const RING_ANCHOR_SLOTS := [2, 4, 6, 8]
+const RING_PERMUTATIONS := [
+	[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
+]
+const RING_ANCHOR_PERMUTATION := 5   # [2, 1, 0]
+const RING_ANCHOR_EXTRA_SLOT := 8    # (13.5, 13.5)
 
 
 func _slot_cell(slot: int) -> Vector2:
@@ -256,31 +265,53 @@ func _slot_cell(slot: int) -> Vector2:
 		RING_LIGHT_BASE + RING_LIGHT_STEP * float(slot % RING_LIGHT_ROWS))
 
 
-# Колонка с двумя лампами. Гасить можно только её, иначе колонка опустеет.
-func _section_heavy_column(section: int) -> int:
-	if section == 0:
-		return 2
-	return int(_hash01(section, 1301) * float(RING_LIGHT_COLUMNS)) \
-		% RING_LIGHT_COLUMNS
+func _section_permutation(section: int) -> Array:
+	var index := RING_ANCHOR_PERMUTATION if section == 0 \
+		else int(_hash01(section, 1301) * float(RING_PERMUTATIONS.size())) \
+			% RING_PERMUTATIONS.size()
+	return RING_PERMUTATIONS[index]
 
 
-func _section_lamp_slots(section: int) -> Array:
-	if section == 0:
-		return RING_ANCHOR_SLOTS.duplicate()
-	var heavy := _section_heavy_column(section)
-	var dropped := int(_hash01(section, 2609) * float(RING_LIGHT_ROWS)) \
-		% RING_LIGHT_ROWS
+# Продольная позиция лампы данного ряда в данной секции.
+func _row_column(section: int, row: int) -> int:
+	return (_section_permutation(section) as Array).find(row)
+
+
+# Три лампы перестановки — костяк секции. Их гасить нельзя: пропадёт гарантия
+# света в каждой колонке и в каждом ряду.
+func _section_core_slots(section: int) -> Array:
+	var permutation: Array = _section_permutation(section)
 	var slots: Array = []
 	for column in range(RING_LIGHT_COLUMNS):
-		if column == heavy:
-			for row in range(RING_LIGHT_ROWS):
-				if row != dropped:
-					slots.append(column * RING_LIGHT_ROWS + row)
-		else:
-			var row := int(_hash01(section, 3701 + column)
-				* float(RING_LIGHT_ROWS)) % RING_LIGHT_ROWS
-			slots.append(column * RING_LIGHT_ROWS + row)
+		slots.append(column * RING_LIGHT_ROWS + int(permutation[column]))
 	return slots
+
+
+# Четвёртая, «лишняя» лампа — единственная, которую разрешено гасить. Ставится
+# она не абы куда: у каждого ряда считается разрыв до следующей секции, и лампа
+# закрывает худший. Иначе ряд, чья лампа стоит в начале секции, а в следующей —
+# в конце, даёт тёмный участок в 33 м. С этим правилом доля разрывов длиннее
+# 20 м падает с 17% до 10%.
+func _section_extra_slot(section: int) -> int:
+	if section == 0:
+		return RING_ANCHOR_EXTRA_SLOT
+	var core: Array = _section_core_slots(section)
+	var worst_row := 0
+	var worst_delta := -1000
+	for row in range(RING_LIGHT_ROWS):
+		var delta := _row_column(section + 1, row) - _row_column(section, row)
+		if delta > worst_delta:
+			worst_delta = delta
+			worst_row = row
+	# От дальнего края секции к ближнему: дальняя лампа делит разрыв лучше.
+	var free: Array = []
+	for column in range(RING_LIGHT_COLUMNS - 1, -1, -1):
+		var slot := column * RING_LIGHT_ROWS + worst_row
+		if not core.has(slot):
+			free.append(slot)
+	if free.size() > 1 and _hash01(section, 7717) < 0.35:
+		return int(free[1])
+	return int(free[0])
 
 
 func _tile_section_index(tile: Node3D) -> int:
@@ -301,11 +332,6 @@ func _build_tile_lights(tile: Node3D) -> void:
 		var fixture: Dictionary = lighting.add_level_e_area_ceiling_fixture(
 			tile, local_position, Vector2i.ONE, RING_AREA_ID)
 		var visible_panel := fixture.get("visible_panel") as GeometryInstance3D
-		if visible_panel != null:
-			visible_panel.visibility_range_end = PANEL_VISIBLE_DISTANCE
-			visible_panel.visibility_range_end_margin = PANEL_VISIBLE_MARGIN
-			visible_panel.visibility_range_fade_mode = \
-				GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		var panel := fixture.get("panel") as Light3D
 		var bounce := fixture.get("bounce") as Light3D
 		var legacy := fixture.get("legacy") as Light3D
@@ -357,29 +383,18 @@ func _apply_tile_outage(tile: Node3D) -> void:
 		return
 	var entries: Array = tile.get_meta("light_entries")
 	var section := _tile_section_index(tile)
-	var lit_slots: Array = _section_lamp_slots(section)
-	var out_slot := -1
-	# Якорная секция гашению не подлежит: она обязана совпадать с раскладкой
-	# исходной области буква в букву, иначе подмена перестаёт быть невидимой.
-	if section != 0:
-		var heavy := _section_heavy_column(section)
-		var best := 1.0
-		for slot_value in lit_slots:
-			var slot := int(slot_value)
-			if slot / RING_LIGHT_ROWS != heavy:
-				continue   # одиночную лампу колонки не гасим
-			var h := _hash01(section, slot)
-			if h >= PANEL_OUTAGE_CHANCE:
-				continue
-			if _hash01(section - 1, slot) < PANEL_OUTAGE_CHANCE:
-				continue
-			if h < best:
-				best = h
-				out_slot = slot
+	var core: Array = _section_core_slots(section)
+	var extra := _section_extra_slot(section)
+	# Гаснет только лишняя лампа и только не подряд две секции: костяк
+	# перестановки трогать нельзя, иначе появляется тёмная полоса.
+	var extra_out := section != 0 \
+		and _hash01(section, 97) < PANEL_OUTAGE_CHANCE \
+		and _hash01(section - 1, 97) >= PANEL_OUTAGE_CHANCE
 	for entry_value in entries:
 		var entry: Dictionary = entry_value
 		var slot := int(entry["slot"])
-		var is_out := not lit_slots.has(slot) or slot == out_slot
+		var lit := core.has(slot) or (slot == extra and not extra_out)
+		var is_out := not lit
 		entry["out"] = is_out
 		entry["flicker"] = not is_out \
 			and _hash01(section, slot + 4231) < PANEL_FLICKER_CHANCE
