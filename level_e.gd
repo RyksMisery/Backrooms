@@ -759,6 +759,7 @@ var _pit_door_world_pos := Vector3.ZERO   # проём дальней (закр�
 var _pit_door_node_prefix := ""           # рамы/створка — снимаются при reveal
 var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
 var _pit_ring_freed_max_x := -2147483648  # граница блоков, отданных кольцу
+var _pit_door_keep_panels: Array[MeshInstance3D] = []  # панели оставленных ламп
 var _pit_wind_player: AudioStreamPlayer
 var _pit_wind_level := 0.0
 var _pit_wind_from := 0.0
@@ -6148,6 +6149,38 @@ func _prebuild_infinite_pit() -> void:
 	_pit_ring = INFINITE_PIT_MODULE.new(self, ring_architecture,
 		ring_lighting, ring_openings)
 	_pit_ring.prebuild(_pit_interior_origin)
+	_build_pit_door_keep_panels()
+
+
+# Лампы у двери переживают первый этап, а их панели уходят вместе с блоком —
+# получался светящийся источник без светильника («круглая лампа» в воздухе).
+# Поэтому для них заранее строится скрытая копия панели на том же месте: пока
+# блок цел, она невидима и не спорит с оригиналом, а на первом этапе встаёт
+# ровно туда, где была запечённая. Материал — канонический `lamp`.
+func _build_pit_door_keep_panels() -> void:
+	if not _area_by_cell.has(FIRST_RING_CELL):
+		return
+	for p: Vector2 in PIT_LIGHT_POINTS_D:
+		var pos := _local_world(FIRST_RING_CELL.x, FIRST_RING_CELL.y,
+			p.x, p.y, CEIL_H + 0.02)
+		if pos.distance_to(_pit_door_world_pos) > PIT_DOOR_LIGHT_KEEP_RADIUS:
+			continue
+		var panel := MeshInstance3D.new()
+		panel.name = "pit_door_keep_panel_%d" % _pit_door_keep_panels.size()
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(CELL - 0.05, 0.06, CELL - 0.05)
+		panel.mesh = mesh
+		panel.material_override = _mat_lamp
+		panel.position = pos
+		panel.visible = false
+		add_child(panel)
+		_pit_door_keep_panels.append(panel)
+
+
+func _set_pit_door_keep_panels(shown: bool) -> void:
+	for panel: MeshInstance3D in _pit_door_keep_panels:
+		if panel != null and is_instance_valid(panel):
+			panel.visible = shown
 
 
 func _update_infinite_pit(delta: float) -> void:
@@ -6161,6 +6194,7 @@ func _update_infinite_pit(delta: float) -> void:
 		return
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
+		_update_infinite_pit_flicker_audio()
 		_update_infinite_pit_wind(delta)
 		_update_infinite_pit_hum_trim(delta)
 		_pit_audio_refresh_t += delta
@@ -6212,6 +6246,8 @@ func _reveal_infinite_pit_back() -> void:
 	_suspend_streaming_for_infinite()
 	_free_blocks_covered_by_ring(FIRST_RING_CELL.x)
 	_strip_pre_infinite_pit_dressing()
+	# Запечённые панели ушли с блоком — подставляем их копии оставленным лампам.
+	_set_pit_door_keep_panels(true)
 	_pit_ring.reveal_back(_player_ref)
 
 
@@ -6344,6 +6380,21 @@ func _update_infinite_pit_wind(delta: float) -> void:
 			PIT_WIND_BASE_DB + linear_to_db(_pit_wind_level))
 
 
+# Треск мигающей панели кольца идёт тем же каноническим путём, что и у панели
+# перед провалом: позиция ближайшей мигающей лампы отдаётся модулю звука (он
+# сам считает затухание по расстоянию), а на спаде яркости играется тот же
+# flick-сэмпл. Поэтому звук ложится поверх общего гула и ветра, а не заменяет их.
+func _update_infinite_pit_flicker_audio() -> void:
+	if _canonical_audio_module == null or not _final_lamp_audio_enabled:
+		return
+	var position = _pit_ring.flicker_position()
+	if not (position is Vector3):
+		return
+	_canonical_audio_module.set_flicker_position(position)
+	if bool(_pit_ring.consume_flick_trigger()):
+		_canonical_audio_module.play_flick()
+
+
 func _update_infinite_pit_hum_trim(delta: float) -> void:
 	if not _pit_hum_trim_active or _canonical_audio_module == null \
 			or _pit_hum_trim_t >= PIT_HUM_TRIM_SECONDS:
@@ -6382,6 +6433,11 @@ func _reveal_infinite_pit_front() -> void:
 	# гореть у двери на первом этапе.
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring(false)
+	# Лампы у двери сняты — их подставные панели тоже.
+	for panel: MeshInstance3D in _pit_door_keep_panels:
+		if panel != null and is_instance_valid(panel):
+			panel.queue_free()
+	_pit_door_keep_panels.clear()
 	# Свечение потолочных панелей слито в один меш на весь уровень, выборочно
 	# снять его нельзя. Гасится только сейчас: на первом этапе это погасило бы
 	# и лампу над закрытой дверью, что сразу выдало бы смену пространства.

@@ -27,6 +27,7 @@ extends RefCounted
 
 const Architecture := preload("res://modules/architecture_module.gd")
 const Openings := preload("res://modules/opening_module.gd")
+const Lighting := preload("res://modules/lighting_module.gd")
 
 const TILE_COUNT := 17
 const HALF_TILE_COUNT := TILE_COUNT / 2
@@ -81,6 +82,8 @@ var _door_direction := -1.0
 var _last_move_sign := -1.0
 var _max_door_reveal_ms := 0.0
 var _rng := RandomNumberGenerator.new()
+var _flick_triggered := false
+var _flicker_position = null
 var _back_revealed := false
 var _front_revealed := false
 
@@ -280,7 +283,11 @@ func _build_tile_lights(tile: Node3D) -> void:
 				"row": row_index,
 				"out": false,
 				"flicker": false,
-				"phase": 0.0,
+				"flick_seg_i": 0,
+				"flick_seg_t": 0.0,
+				"flick_stutter_t": 0.0,
+				"flick_stutter_v": 1.0,
+				"flick_level": 1.0,
 			}
 			_light_entries.append(entry)
 			tile_entries.append(entry)
@@ -337,7 +344,14 @@ func _apply_tile_outage(tile: Node3D) -> void:
 		entry["out"] = is_out
 		entry["flicker"] = not is_out \
 			and _hash01(station_id, int(entry["row"]) + 4231) < PANEL_FLICKER_CHANCE
-		entry["phase"] = _hash01(station_id, int(entry["row"]) + 8117) * TAU
+		# Стартовый сегмент от хеша: иначе все мигающие панели кольца мигали бы
+		# в унисон.
+		entry["flick_seg_i"] = int(_hash01(station_id, int(entry["row"]) + 8117)
+			* float(Lighting.FLICK_PATTERN.size()))
+		entry["flick_seg_t"] = 0.0
+		entry["flick_stutter_t"] = 0.0
+		entry["flick_stutter_v"] = 1.0
+		entry["flick_level"] = 1.0
 		var visible_panel = entry.get("visible_panel")
 		if visible_panel != null and is_instance_valid(visible_panel):
 			(visible_panel as Node3D).visible = not is_out
@@ -466,6 +480,7 @@ func update(player: Node3D, _delta: float) -> void:
 		return
 	_update_move_sign(player)
 	_update_caps(player)
+	_update_ring_flicker(_delta, player)
 	_update_light_fade(player)
 	# До второго этапа игрок ещё стоит у двери: кольцо не крутится, циклы не
 	# считаются и боковой проём не появляется.
@@ -514,7 +529,7 @@ func _update_light_fade(player: Node3D) -> void:
 		if bool(entry["out"]):
 			level = 0.0
 		elif bool(entry["flicker"]):
-			level *= _flicker_level(float(entry["phase"]))
+			level *= float(entry["flick_level"])
 		var lit := level > 0.001
 		_fade_family_light(entry.get("panel"),
 			float(entry["panel_energy"]), level, lit)
@@ -525,12 +540,77 @@ func _update_light_fade(player: Node3D) -> void:
 				float(entry["legacy_energy"]), level, lit)
 
 
-# Неровное мерцание: произведение трёх несоизмеримых синусов не даёт слышимого
-# периода, поэтому лампа «залипает» нерегулярно, а не мигает метрономом.
-func _flicker_level(phase: float) -> float:
-	var t := float(Time.get_ticks_msec()) * 0.001 + phase
-	var n := sin(t * 37.0) * sin(t * 11.3) * sin(t * 5.1)
-	return 1.0 if n > -0.55 else 0.22
+# Мерцание — тот же принцип, что у панели перед провалом: канонический рисунок
+# сегментов `Lighting.FLICK_PATTERN` со стуттером внутри «dot»-сегмента. Своей
+# кривой кольцо не изобретает, константы общие.
+#
+# Состояние у каждой панели своё (стартовый сегмент — от хеша станции), иначе
+# все мигающие панели кольца мигали бы в унисон.
+func _update_ring_flicker(delta: float, player: Node3D) -> void:
+	_flick_triggered = false
+	_flicker_position = null
+	var nearest := INF
+	for entry_value in _light_entries:
+		var entry: Dictionary = entry_value
+		if not bool(entry["flicker"]) or bool(entry["out"]):
+			continue
+		var previous := float(entry["flick_level"])
+		_advance_flicker(entry, delta)
+		var reference = entry.get("panel")
+		if reference == null or not is_instance_valid(reference):
+			reference = entry.get("legacy")
+		if reference == null or not is_instance_valid(reference):
+			continue
+		var position := (reference as Node3D).global_position
+		var distance := position.distance_to(player.global_position)
+		if distance < nearest:
+			nearest = distance
+			_flicker_position = position
+			# Звук берёт ближайшую мигающую панель: модуль звука ведёт одну
+			# позицию мерцания, и она же даёт затухание по расстоянию.
+			_flick_triggered = float(entry["flick_level"]) < previous - 0.001
+
+
+func _advance_flicker(entry: Dictionary, delta: float) -> void:
+	var pattern: Array = Lighting.FLICK_PATTERN
+	var index := int(entry["flick_seg_i"]) % pattern.size()
+	var seg: Array = pattern[index]
+	var seg_t := float(entry["flick_seg_t"]) + delta
+	if seg_t >= float(seg[1]):
+		seg_t -= float(seg[1])
+		index = (index + 1) % pattern.size()
+		seg = pattern[index]
+	entry["flick_seg_i"] = index
+	entry["flick_seg_t"] = seg_t
+	if String(seg[0]) == "on":
+		entry["flick_level"] = 1.0
+		return
+	var stutter_t := float(entry["flick_stutter_t"]) - delta
+	if stutter_t <= 0.0:
+		stutter_t = randf_range(0.03, 0.12)
+		var roll := randf()
+		if roll < Lighting.FLICK_STUTTER_FULL_CHANCE:
+			entry["flick_stutter_v"] = 1.0
+		elif roll < Lighting.FLICK_STUTTER_FULL_CHANCE \
+				+ Lighting.FLICK_STUTTER_LOW_CHANCE:
+			entry["flick_stutter_v"] = Lighting.FLICK_STUTTER_LOW_LEVEL
+		else:
+			entry["flick_stutter_v"] = randf_range(
+				Lighting.FLICK_STUTTER_LOW_LEVEL, Lighting.FLICK_STUTTER_DIM_MAX)
+	entry["flick_stutter_t"] = stutter_t
+	entry["flick_level"] = float(entry["flick_stutter_v"])
+
+
+# Позиция ближайшей мигающей панели — уровень отдаёт её модулю звука, поэтому
+# треск ложится поверх общего гула и ветра тем же каноническим путём.
+func flicker_position():
+	return _flicker_position
+
+
+func consume_flick_trigger() -> bool:
+	var triggered := _flick_triggered
+	_flick_triggered = false
+	return triggered
 
 
 func _fade_family_light(light_value, base_energy: float, level: float,
