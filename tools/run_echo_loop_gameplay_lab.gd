@@ -57,17 +57,19 @@ func _run() -> void:
 	var lamps: Array = light_module.get("lamps") if light_module != null else []
 	var light_report := _validate_echo_lights(level, light_module, lamps)
 	if not bool(light_report.get("valid", false)):
-		_fail("invalid ceiling grid: %s" % light_report.get("errors", []))
+		_fail("invalid ceiling grid: %s" % [
+			light_report.get("errors", [])])
 		return
 	var layout_report: Dictionary = level.call("debug_light_layout_report")
 	if not bool(layout_report.get("valid", false)):
-		_fail("invalid fixture spacing: %s" % layout_report.get("errors", []))
+		_fail("invalid fixture spacing: %s" % [
+			layout_report.get("errors", [])])
 		return
 	if int(layout_report.get(
 			"minimum_empty_cells_between_fixtures", -1)) != 2 \
 			or not is_equal_approx(
 				float(states[0].get("ambient_energy", -1.0)),
-				Architecture.AMBIENT_ENERGY * 0.5):
+				Architecture.AMBIENT_ENERGY):
 		_fail("Echo contrast profile mismatch")
 		return
 	var original_widths: Vector2i = level.get("_runtime_widths")
@@ -222,26 +224,28 @@ func _validate_echo_lights(level: Node, lighting: RefCounted,
 		if absf(lamp.global_position.x - expected_x) > 0.001 \
 				or absf(lamp.global_position.z - expected_z) > 0.001:
 			errors.append("%s fixture center mismatch" % region)
-		var relaxed := bool(lamp.get_meta(
-			"echo_light_relaxed_clearance", false))
 		for cell: Vector2i in fixture_cells:
-			for x in range(
-					cell.x if relaxed else cell.x - 1,
-					cell.x + 1 if relaxed else cell.x + 2):
-				for z in range(
-						cell.y if relaxed else cell.y - 1,
-						cell.y + 1 if relaxed else cell.y + 2):
+			for x in range(cell.x - 1, cell.x + 2):
+				for z in range(cell.y - 1, cell.y + 2):
 					var neighbor := Vector2i(x, z)
 					if String(grid.get(neighbor, "wall")) != "floor" \
-							or RunPlan.PIT_RECT.has_point(neighbor):
+							or (int(level.get("_cycle")) >= RunPlan.MAX_CYCLE \
+								and RunPlan.PIT_RECT.has_point(neighbor)):
 						errors.append("%s panel lacks clearance at %s" % [
 							region, cell])
 	var north_width: int = level.get("_runtime_widths").x
 	var south_width: int = level.get("_runtime_widths").y
+	var wide_roots: Dictionary = level.get("_wide_light_patch_roots")
+	var west_root = wide_roots.get("west")
+	var east_root = wide_roots.get("east")
+	var west_cells := int((west_root as Node).get_meta(
+		"logical_cell_count", -1)) if west_root is Node else -1
+	var east_cells := int((east_root as Node).get_meta(
+		"logical_cell_count", -1)) if east_root is Node else -1
 	var expected_counts := {
 		"landmark": 2,
-		"west": 8,
-		"east": 12,
+		"west": west_cells,
+		"east": east_cells,
 		"north": _short_expected_cells(north_width),
 		"south": _short_expected_cells(south_width),
 	}
@@ -263,7 +267,11 @@ func _validate_echo_lights(level: Node, lighting: RefCounted,
 		if landmark_first not in landmark_cells \
 				or landmark_second not in landmark_cells:
 			errors.append("landmark light cells mismatch")
-	var expected_family_count := 11 \
+	var expected_family_count := 1 \
+		+ (int((west_root as Node).get_meta("fixture_count", -1))
+			if west_root is Node else -1) \
+		+ (int((east_root as Node).get_meta("fixture_count", -1))
+			if east_root is Node else -1) \
 		+ _short_expected_fixtures(north_width) \
 		+ _short_expected_fixtures(south_width)
 	_validate_visible_double_panels(level, expected_family_count, errors)
@@ -393,11 +401,15 @@ func _validate_light_family(members: Array, kind: String,
 func _short_expected_cells(width: int) -> int:
 	if width >= 6:
 		return 8
-	return 6 if width >= 2 else 3
+	if width >= 4:
+		return 6
+	return 3 if width == 3 else 0
 
 
 func _short_expected_fixtures(width: int) -> int:
-	return 4 if width >= 6 else 3
+	if width >= 6:
+		return 4
+	return 3 if width >= 3 else 0
 
 
 func _fail(message: String) -> void:

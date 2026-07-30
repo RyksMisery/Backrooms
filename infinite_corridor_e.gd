@@ -46,7 +46,9 @@ const FLOOR_COMPARISON_UV_SCALE := CANONICAL_ARCHITECTURE.FLOOR_UV_SCALE
 # Провал: стенка колодца использует ТОТ ЖЕ материал, что и пол (см. _make_story_void_material).
 # Никаких новых shader-features — иначе MoltenVK падает при первой отрисовке провала.
 
-var _live_ambient := 0.010   # коридор: приглушённый ambient (было TUNED_AMBIENT_ENERGY=0.035)
+# Ambient — общий канонический для всех, своих чисел коридор не заводит
+# (docs/lights.md, «Канонический ambient»). Клавиши -/+ остаются отладочными.
+var _live_ambient := CANONICAL_ARCHITECTURE.AMBIENT_ENERGY
 var _live_range := CANONICAL_LIGHTING.LAMP_RANGE
 var _live_energy_mul := 1.0
 var _story_room: Node3D

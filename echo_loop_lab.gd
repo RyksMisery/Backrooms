@@ -22,7 +22,10 @@ const VISIBILITY_MARGIN_M := 0.15
 const PORTAL_PARTITION_T_M := 0.25
 const PORTAL_HEAD_GAP_M := 0.5
 const DARK_PARTITION_LIGHT_CLEARANCE_CELLS := 3
-const AMBIENT_ENERGY_MULTIPLIER := 0.5
+# Ambient — общий канонический для всех, локальных долей и чисел нет
+# (docs/lights.md, «Канонический ambient»). Множитель 0.5 снят вместе с
+# уменьшением канона вдвое.
+const AMBIENT_ENERGY_MULTIPLIER := 1.0
 
 var architecture
 var lighting
@@ -42,6 +45,7 @@ var _mutation_props: Node3D
 var _landmark_root: Node3D
 var _width_patch_roots := {}
 var _short_light_patch_roots := {}
+var _wide_light_patch_roots := {}
 var _corner_roots := {}
 var _lf3_accent_blocked_cells := {}
 var _corner_variants := {
@@ -188,51 +192,30 @@ func _build_main_lights() -> void:
 	if not _add_double_ceiling_light(
 			_main_lights, landmark_cell, landmark_axis, "landmark"):
 		push_error("Echo Loop landmark light has no legal canonical cells")
-	# Wide branches keep an area-specific pattern clear of both inner-wall
-	# continuations. An extra grid row accounts for the real partition and panel
-	# AABB edges, keeping at least 3 CELL of physical gap. The west pattern also
-	# reserves the future pit clearance.
-	var north_pair_first_z := RunPlan.CORE_RECT.position.y \
-		+ DARK_PARTITION_LIGHT_CLEARANCE_CELLS + 1
-	var south_pair_first_z := RunPlan.CORE_RECT.end.y \
-		- DARK_PARTITION_LIGHT_CLEARANCE_CELLS - 3
-	for x: int in [4, 7]:
-		var z_rows: Array = [
-			north_pair_first_z, south_pair_first_z] if x == 4 else [
-			north_pair_first_z + 1, south_pair_first_z - 1]
-		for z: int in z_rows:
-			_add_double_ceiling_light(
-				_main_lights, Vector2i(x, z), Vector2i.DOWN, "west")
-	for x: int in [19, 22]:
-		var z_rows: Array = [13, 17, 21] if x == 19 \
-			else [15, 19, 23]
-		for z: int in z_rows:
-			_add_double_ceiling_light(
-				_main_lights, Vector2i(x, z), Vector2i.DOWN, "east")
+	_rebuild_wide_light_patch("west")
+	_rebuild_wide_light_patch("east")
 	_rebuild_short_light_patch("north")
 	_rebuild_short_light_patch("south")
 
 
 func _add_double_ceiling_light(parent: Node3D, first_cell: Vector2i,
-		route_axis: Vector2i, region: String,
-		allow_wall_adjacent := false) -> bool:
+		route_axis: Vector2i, region: String) -> bool:
 	var second_cell := first_cell + route_axis
 	return _add_ceiling_fixture(parent,
-		[first_cell, second_cell], region, allow_wall_adjacent)
+		[first_cell, second_cell], region)
 
 
 func _add_single_ceiling_light(parent: Node3D, cell: Vector2i,
-		region: String, allow_wall_adjacent := false) -> bool:
-	return _add_ceiling_fixture(
-		parent, [cell], region, allow_wall_adjacent)
+		region: String) -> bool:
+	return _add_ceiling_fixture(parent, [cell], region)
 
 
 func _add_ceiling_fixture(parent: Node3D, cells: Array[Vector2i],
-		region: String, allow_wall_adjacent: bool) -> bool:
+		region: String) -> bool:
 	if cells.is_empty():
 		return false
 	for cell: Vector2i in cells:
-		if not _light_cell_available(cell, allow_wall_adjacent):
+		if not _light_cell_clear(cell):
 			return false
 	var min_cell := cells[0]
 	var max_cell := cells[0]
@@ -259,8 +242,6 @@ func _add_ceiling_fixture(parent: Node3D, cells: Array[Vector2i],
 			(member as Node).set_meta("echo_light_region", region)
 			(member as Node).set_meta(
 				"echo_light_double", cells.size() == 2)
-			(member as Node).set_meta(
-				"echo_light_relaxed_clearance", allow_wall_adjacent)
 			(member as Node).set_meta("echo_pair_bounce_primary", true)
 	return true
 
@@ -271,18 +252,85 @@ func _light_cell_clear(cell: Vector2i) -> bool:
 			var neighbor := Vector2i(x, z)
 			if String(_grid.get(neighbor, "wall")) != "floor":
 				return false
-			# The pit is reserved even before its floor cover disappears.
-			if RunPlan.PIT_RECT.has_point(neighbor):
+			if _lf3_accent_blocked_cells.has(neighbor):
+				return false
+			# Covered floor remains lit until the pit actually opens.
+			if _cycle >= RunPlan.MAX_CYCLE \
+					and RunPlan.PIT_RECT.has_point(neighbor):
 				return false
 	return true
 
 
-func _light_cell_available(cell: Vector2i,
-		allow_wall_adjacent: bool) -> bool:
-	if not allow_wall_adjacent:
-		return _light_cell_clear(cell)
-	return String(_grid.get(cell, "wall")) == "floor" \
-		and not RunPlan.PIT_RECT.has_point(cell)
+func _rebuild_wide_light_patch(branch: String) -> void:
+	var existing = _wide_light_patch_roots.get(branch)
+	if existing is Node and is_instance_valid(existing):
+		(existing as Node).free()
+	var root_node := Node3D.new()
+	root_node.name = "runtime_lights_%s_wide" % branch
+	add_child(root_node)
+	_wide_light_patch_roots[branch] = root_node
+	var x_rows: Array = [4, 7] if branch == "west" else [19, 22]
+	var fixture_count := 0
+	var logical_cell_count := 0
+	for first_z: int in _wide_light_start_rows(branch):
+		var candidate_clear := true
+		for x: int in x_rows:
+			for cell: Vector2i in [
+				Vector2i(x, first_z),
+				Vector2i(x, first_z + 1),
+			]:
+				if not _light_cell_clear(cell):
+					candidate_clear = false
+		if not candidate_clear:
+			continue
+		for x: int in x_rows:
+			var cells: Array[Vector2i] = [
+				Vector2i(x, first_z),
+				Vector2i(x, first_z + 1),
+			]
+			if _fixture_cells_exist(cells):
+				continue
+			if _add_double_ceiling_light(
+					root_node, cells[0], Vector2i.DOWN, branch):
+				fixture_count += 1
+				logical_cell_count += 2
+	root_node.set_meta("fixture_count", fixture_count)
+	root_node.set_meta("logical_cell_count", logical_cell_count)
+	root_node.set_meta("symmetric_rows", true)
+	_refresh_lamp_audio()
+
+
+func _wide_light_start_rows(branch: String) -> Array[int]:
+	var north_variant := int(_corner_variants.get(
+		"north_%s" % branch, 0))
+	var south_variant := int(_corner_variants.get(
+		"south_%s" % branch, 0))
+	var north_dark_partition := north_variant >= 2
+	var south_dark_partition := south_variant >= 2
+	if north_dark_partition and south_dark_partition:
+		return [14, 18, 22]
+	if north_dark_partition:
+		return [16, 20, 24, 28, 32]
+	if south_dark_partition:
+		return [4, 8, 12, 16, 20, 24]
+	return [4, 8, 12, 16, 20, 24, 28, 32]
+
+
+func _fixture_cells_exist(cells: Array[Vector2i]) -> bool:
+	for value in find_children("*", "MeshInstance3D", true, false):
+		var panel := value as MeshInstance3D
+		if panel == null or not panel.has_meta("echo_light_cells"):
+			continue
+		var existing_cells: Array = panel.get_meta("echo_light_cells")
+		if existing_cells.size() != cells.size():
+			continue
+		var all_present := true
+		for cell: Vector2i in cells:
+			if cell not in existing_cells:
+				all_present = false
+		if all_present:
+			return true
+	return false
 
 
 func _rebuild_short_light_patch(side: String) -> void:
@@ -301,27 +349,29 @@ func _rebuild_short_light_patch(side: String) -> void:
 		var row_a := start_z + 1
 		var row_b := start_z + 4
 		for first_cell: Vector2i in [
-			Vector2i(9, row_a),
-			Vector2i(16, row_a),
-			Vector2i(11, row_b),
+			Vector2i(11, row_a),
 			Vector2i(15, row_b),
+			Vector2i(11, row_b),
+			Vector2i(15, row_a),
 		]:
 			_add_double_ceiling_light(
 				root_node, first_cell, Vector2i.RIGHT, side)
 		root_node.set_meta("light_layout", "two_longitudinal_rows")
-	elif width >= 2:
+	elif width >= 4:
 		var pair_z := start_z + floori(float(width - 2) * 0.5)
-		for x: int in [9, 13, 17]:
+		for x: int in [10, 13, 16]:
 			_add_double_ceiling_light(
 				root_node, Vector2i(x, pair_z),
-				Vector2i.DOWN, side, width <= 3)
+				Vector2i.DOWN, side)
 		root_node.set_meta("light_layout", "transverse_edge_center")
-	else:
-		for x: int in [9, 13, 17]:
+	elif width == 3:
+		for x: int in [10, 13, 16]:
 			_add_single_ceiling_light(
-				root_node, Vector2i(x, start_z), side, true)
+				root_node, Vector2i(x, start_z + 1), side)
 		root_node.set_meta("light_layout", "single_edge_center")
-	root_node.set_meta("edge_lights", true)
+	else:
+		root_node.set_meta("light_layout", "unlit_clearance_required")
+	root_node.set_meta("edge_lights", width >= 3)
 	_refresh_lamp_audio()
 
 
@@ -615,6 +665,8 @@ func _apply_pending_mutation() -> void:
 		Time.get_ticks_msec() - _pending_started_ms))
 	_hidden_frames = 0
 	_build_mutation_patch()
+	if _cycle >= RunPlan.MAX_CYCLE:
+		_rebuild_wide_light_patch("west")
 	audio.play_flick()
 
 
@@ -719,6 +771,8 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 		3:
 			_build_freeform_corner_portal(root_node, corner_id, wall_z)
 	_rebuild_lf3_accent_occupancy()
+	_rebuild_wide_light_patch(
+		"west" if corner_id.ends_with("west") else "east")
 
 
 func _rebuild_lf3_accent_occupancy() -> void:
@@ -991,8 +1045,7 @@ func _reset_with_seed(next_seed: int) -> void:
 	lighting.invalidate_lf3_guardian_cache()
 	_build_main_geometry()
 	_build_all_width_patches()
-	_rebuild_short_light_patch("north")
-	_rebuild_short_light_patch("south")
+	_build_main_lights()
 	_refresh_lamp_audio()
 	_build_landmark()
 	_build_mutation_patch()
@@ -1082,6 +1135,48 @@ func debug_light_layout_report() -> Dictionary:
 				errors.append("separate fixtures lack two empty cells: %s / %s" % [
 					fixture_a["cells"], fixture_b["cells"]])
 
+	var wide_rows_report := {}
+	for branch in ["west", "east"]:
+		var x_rows: Array = [4, 7] if branch == "west" else [19, 22]
+		var expected_starts: Array[int] = []
+		for first_z: int in _wide_light_start_rows(branch):
+			var candidate_clear := true
+			for x: int in x_rows:
+				for cell: Vector2i in [
+					Vector2i(x, first_z),
+					Vector2i(x, first_z + 1),
+				]:
+					if not _light_cell_clear(cell):
+						candidate_clear = false
+			if candidate_clear:
+				expected_starts.append(first_z)
+		var actual_by_x := {}
+		for x: int in x_rows:
+			actual_by_x[x] = []
+		for fixture: Dictionary in fixtures:
+			var cells: Array = fixture["cells"]
+			if cells.size() != 2:
+				continue
+			var cell_a: Vector2i = cells[0]
+			var cell_b: Vector2i = cells[1]
+			if cell_a.x != cell_b.x or cell_a.x not in x_rows \
+					or absi(cell_a.y - cell_b.y) != 1:
+				continue
+			var start_z := mini(cell_a.y, cell_b.y)
+			if start_z not in actual_by_x[cell_a.x]:
+				actual_by_x[cell_a.x].append(start_z)
+		for x: int in x_rows:
+			(actual_by_x[x] as Array).sort()
+			if actual_by_x[x] != expected_starts:
+				errors.append("%s row %d is not maximally dense: %s / %s" % [
+					branch, x, actual_by_x[x], expected_starts])
+		if actual_by_x[x_rows[0]] != actual_by_x[x_rows[1]]:
+			errors.append("%s wide rows are not symmetric" % branch)
+		wide_rows_report[branch] = {
+			"expected_starts": expected_starts,
+			"rows": actual_by_x,
+		}
+
 	var minimum_partition_gap := INF
 	for corner_id_value in _corner_roots:
 		var corner_id := String(corner_id_value)
@@ -1134,6 +1229,7 @@ func debug_light_layout_report() -> Dictionary:
 		"minimum_empty_cells_between_fixtures": (
 			-1 if minimum_fixture_distance == 999
 			else minimum_fixture_distance - 1),
+		"wide_rows": wide_rows_report,
 	}
 
 
