@@ -639,6 +639,14 @@ const INFINITE_WORLD_OFFSET := Vector3(10000.0, 0.0, 0.0)
 const INFINITE_ENTRY_LOCAL := Vector3(0.0, 1.2, 12.5)
 const INFINITE_PORTAL_COOLDOWN_MS := 350
 
+# ── Бесконечный провал (механика перенесена из лаборатории hole_e) ──────────
+# Носитель — существующая область-провал, отдельная сцена не встраивается;
+# см. docs/hole_e.md, раздел «Интеграция в level_e».
+const INFINITE_PIT_MODULE := preload("res://modules/infinite_pit_module.gd")
+# Игрок считается «дошедшим до двери», когда он ближе этого расстояния к её
+# проёму. Reveal срабатывает уже от разворота — когда дверь вне фрустума.
+const PIT_REVEAL_DOOR_RADIUS := 4.0
+
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
 # видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
 const FLOOR_CLASSIC_ALBEDO := preload("res://textures/floor.png")
@@ -720,6 +728,12 @@ var _infinite_saved_ambient_energy := 0.0
 var _infinite_saved_fog_enabled := false
 var _infinite_saved_hud_visible := true
 var _infinite_saved_map_visible := false
+var _pit_ring                            # INFINITE_PIT_MODULE, создаётся при reveal
+var _pit_ring_active := false
+var _pit_reached_door := false
+var _pit_door_world_pos := Vector3.ZERO   # проём дальней (закрытой) двери провала
+var _pit_door_node_prefix := ""           # рамы/створка — снимаются при reveal
+var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
 
 
 func _level_e_base_ready() -> void:
@@ -1879,6 +1893,12 @@ func _place_pit_exit_frame(cell: Vector2i, dir: Vector2i, lane: Vector2i) -> voi
 	# статичный лист двери с коллизией, что и у декоративных тупиков лабиринта.
 	_spawn_office_door_panel(scene, area, center, normal,
 		"%s_leaf" % node_id, opening_id, true)
+	# Точка reveal: у этой двери игрок разворачивается. Узлы снимаются уже
+	# в момент разворота (_reveal_infinite_pit), поэтому здесь запоминаем
+	# только координаты и префикс имени.
+	_pit_door_world_pos = _office_opening_center_world_pos(area, center)
+	_pit_interior_origin = _local_world(cell.x, cell.y, 0.0, 0.0, 0.0)
+	_pit_door_node_prefix = node_id
 
 
 # Указатель EXIT над проходом-выходом зала-провала, со стороны провала (юг).
@@ -3955,7 +3975,14 @@ func _recalc_bounds() -> void:
 # ─────────────────────────────────────────────────────────────
 
 func _check_pit_fall(delta: float) -> void:
-	if _player_ref == null or _pit_fall_rects.is_empty():
+	if _player_ref == null:
+		return
+	# После reveal шахты принадлежат кольцу и всё пространство вокруг —
+	# провал, поэтому отдельный список прямоугольников не нужен.
+	if _pit_ring_active:
+		_check_infinite_pit_fall(delta)
+		return
+	if _pit_fall_rects.is_empty():
 		return
 	var p := _player_ref.position
 	if p.y >= 0.3:
@@ -3984,9 +4011,29 @@ func _check_pit_fall(delta: float) -> void:
 		_trigger_flash()
 
 
+# Падение в бесконечном провале: возврат на ближайший мостик кольца, число
+# циклов не растёт и уже раскрытая фаза не сбрасывается.
+func _check_infinite_pit_fall(delta: float) -> void:
+	if _player_ref.position.y >= 0.3:
+		_pit_fall_t = -1.0
+		return
+	if _pit_fall_t < 0.0:
+		_pit_fall_t = PIT_FALL_TIME
+		return
+	_pit_fall_t -= delta
+	if _pit_fall_t <= 0.0:
+		_player_ref.position = _nearest_pit_walk_center(_player_ref.position)
+		_player_ref.velocity = Vector3.ZERO
+		_pit_fall_t = -1.0
+		_trigger_flash()
+
+
 # Ближайший к точке падения центр мостка провала (мировые координаты,
 # накоплены в _build_pit из ARCHITECTURE.pit_layout_cells()["walks"]).
 func _nearest_pit_walk_center(p: Vector3) -> Vector3:
+	# После reveal мостки принадлежат кольцу, а не исходной области.
+	if _pit_ring_active and _pit_ring != null:
+		return _pit_ring.nearest_walk_center(p)
 	if _pit_walk_world_centers.is_empty():
 		return _spawn_pos
 	var best: Vector3 = _pit_walk_world_centers[0]
@@ -6040,6 +6087,93 @@ func _leave_infinite_anomaly() -> void:
 	_infinite_transition_started = false
 
 
+# ─────────────────────────────────────────────────────────────
+#  Бесконечный провал (docs/hole_e.md, «Интеграция в level_e»)
+#  Механика из лаборатории hole_e, носитель — эта область-провал.
+# ─────────────────────────────────────────────────────────────
+
+func _update_infinite_pit(delta: float) -> void:
+	if _player_ref == null or _pit_door_node_prefix == "":
+		return
+	if _pit_ring_active:
+		_pit_ring.update(_player_ref, delta)
+		return
+	if not _pit_reached_door:
+		if _player_ref.global_position.distance_to(_pit_door_world_pos) \
+				<= PIT_REVEAL_DOOR_RADIUS:
+			_pit_reached_door = true
+		return
+	# Reveal — строго от разворота: дверь ушла за камеру. Проверка скорости
+	# или шага назад не заменяет разворот (docs/hole_e.md, п.5).
+	if _player_ref.camera == null \
+			or _player_ref.camera.is_position_in_frustum(_pit_door_world_pos):
+		return
+	_reveal_infinite_pit()
+
+
+func _reveal_infinite_pit() -> void:
+	_pit_ring_active = true
+	# Стриминг уровня встаёт на паузу: перекрытые кольцом блоки не должны
+	# достраиваться обратно.
+	_suspend_streaming_for_infinite()
+	_free_pit_door_nodes()
+	_free_blocks_covered_by_ring()
+	# Канонические модули подключаются композицией; второго набора чисел или
+	# локальных приближений у кольца нет.
+	var ring_architecture = ARCHITECTURE.new(self)
+	var ring_lighting = LIGHTING.new(self, ring_architecture)
+	var ring_openings = OPENINGS.new(self, ring_architecture)
+	_pit_ring = INFINITE_PIT_MODULE.new(self, ring_architecture,
+		ring_lighting, ring_openings)
+	_pit_ring.exit_door_reached.connect(_on_infinite_pit_exit_reached)
+	_pit_ring.activate(_pit_interior_origin, _player_ref)
+
+
+# Дверь, рамы и знак EXIT снимаются вместе: после разворота игрок видит
+# бесконечный провал и в эту сторону тоже, двери там больше нет.
+func _free_pit_door_nodes() -> void:
+	for child in get_children():
+		var node := child as Node3D
+		if node == null:
+			continue
+		if node.name.begins_with(_pit_door_node_prefix) \
+				or node.name.begins_with("pit_exit_sign"):
+			node.queue_free()
+
+
+# Кольцо идёт по X вдоль полосы области-провала, поэтому освобождаются блоки
+# того же ряда: сама область и всё, что западнее (разветвитель, кольцо, хаб).
+# Дорога назад закрывается сознательно — см. docs/hole_e.md.
+func _free_blocks_covered_by_ring() -> void:
+	var pit_block: Vector2i = FIRST_RING_CELL
+	for block: Vector2i in _block_holder.keys().duplicate():
+		if block.y == pit_block.y and block.x <= pit_block.x:
+			_free_block(block)
+
+
+func _on_infinite_pit_exit_reached() -> void:
+	if not _pit_ring_active:
+		return
+	call_deferred("_leave_infinite_pit_to_maze")
+
+
+# Пока боковой выход ведёт прямо в maze. Позже здесь будет ряд ложных комнат
+# с собственным дизайном (слово автора) — точка расширения одна.
+func _leave_infinite_pit_to_maze() -> void:
+	if not _pit_ring_active:
+		return
+	_pit_ring_active = false
+	_pit_ring.deactivate()
+	_pit_ring = null
+	_resume_streaming_after_infinite()
+	_rebuild_all_freed()
+	if _area_by_cell.has(MAZE_AFTER_PIT_CELL):
+		_player_ref.velocity = Vector3.ZERO
+		_player_ref.global_position = _local_world(
+			MAZE_AFTER_PIT_CELL.x, MAZE_AFTER_PIT_CELL.y,
+			1.5, _pit_exit_center(PIT_EXIT_LANE_D), 1.2)
+
+
 func _suspend_streaming_for_infinite() -> void:
 	_stream_generation_epoch += 1
 	_stream_suspended_for_anomaly = true
@@ -6112,6 +6246,7 @@ func _process(delta: float) -> void:
 	if _level_e_streaming_enabled():
 		_update_streaming()
 	_level_e_process_content(delta)
+	_update_infinite_pit(delta)
 	if _hud_label != null:
 		_hud_label.text = _level_e_hud_text()
 

@@ -448,18 +448,29 @@ static func pit_intersection_light_cells() -> Array[Vector2]:
 # Геометрия одной 15×15 секции провала без внешних стен и торцевых капов.
 # В продольной ленте соседние секции отдают стыку по половине общего мостка.
 func build_pit_tile(parent: Node3D, include_ceiling := true,
-		longitudinal_join_walk_cells := 0.0) -> Dictionary:
+		longitudinal_join_walk_cells := 0.0, join_axis := "z") -> Dictionary:
 	var layout := pit_layout_cells()
 	if longitudinal_join_walk_cells > 0.0:
 		var half_join := clampf(
 			longitudinal_join_walk_cells * 0.5,
 			PIT_BORDER_CELLS,
 			float(ROOM_CELLS) * 0.5)
-		layout["walks"][0] = Rect2(
-			0.0, 0.0, float(ROOM_CELLS), half_join)
-		layout["walks"][1] = Rect2(
-			0.0, float(ROOM_CELLS) - half_join,
-			float(ROOM_CELLS), half_join)
+		# Стык двух половин по `0.3 CELL` образует такой же мосток `0.6 CELL`
+		# (docs/hole_e.md). Кайма расширяется на той оси, вдоль которой
+		# секции стыкуются: "z" — кольцо идёт по Z (лаборатория hole_e),
+		# "x" — кольцо идёт по X (провал level_e выходит на восток).
+		if join_axis == "x":
+			layout["walks"][2] = Rect2(
+				0.0, 0.0, half_join, float(ROOM_CELLS))
+			layout["walks"][3] = Rect2(
+				float(ROOM_CELLS) - half_join, 0.0,
+				half_join, float(ROOM_CELLS))
+		else:
+			layout["walks"][0] = Rect2(
+				0.0, 0.0, float(ROOM_CELLS), half_join)
+			layout["walks"][1] = Rect2(
+				0.0, float(ROOM_CELLS) - half_join,
+				float(ROOM_CELLS), half_join)
 	for index in range(layout["walks"].size()):
 		var rect: Rect2 = layout["walks"][index]
 		add_box(parent, "pit_walk_%02d" % index,
