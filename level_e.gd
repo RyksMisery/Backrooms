@@ -756,6 +756,7 @@ var _pit_door_world_pos := Vector3.ZERO   # проём дальней (закр�
 var _pit_door_node_prefix := ""           # рамы/створка — снимаются при reveal
 var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
 var _pit_ring_freed_max_x := -2147483648  # граница блоков, отданных кольцу
+var _pit_door_keep_panels: Array[MeshInstance3D] = []  # панели оставленных ламп
 var _pit_wind_player: AudioStreamPlayer
 var _pit_wind_level := 0.0
 var _pit_wind_from := 0.0
@@ -6145,6 +6146,37 @@ func _prebuild_infinite_pit() -> void:
 	_pit_ring = INFINITE_PIT_MODULE.new(self, ring_architecture,
 		ring_lighting, ring_openings)
 	_pit_ring.prebuild(_pit_interior_origin)
+	_build_pit_door_keep_panels()
+
+
+# Раскладка ближайших ламп не должна меняться в момент подмены: свет области
+# остаётся ровно тем же, пока якорная секция кольца не уедет за кап. Но панели
+# запечены в геометрию блока и уходят вместе с ним, поэтому для каждой лампы
+# провала заранее строится скрытая копия панели на том же месте: пока блок цел
+# — невидима и не спорит с оригиналом, на первом этапе встаёт ровно туда, где
+# была запечённая. Материал — канонический `lamp`.
+func _build_pit_door_keep_panels() -> void:
+	if not _area_by_cell.has(FIRST_RING_CELL):
+		return
+	for p: Vector2 in PIT_LIGHT_POINTS_D:
+		var pos := _local_world(FIRST_RING_CELL.x, FIRST_RING_CELL.y,
+			p.x, p.y, CEIL_H + 0.02)
+		var panel := MeshInstance3D.new()
+		panel.name = "pit_door_keep_panel_%d" % _pit_door_keep_panels.size()
+		var mesh := BoxMesh.new()
+		mesh.size = Vector3(CELL - 0.05, 0.06, CELL - 0.05)
+		panel.mesh = mesh
+		panel.material_override = _mat_lamp
+		panel.position = pos
+		panel.visible = false
+		add_child(panel)
+		_pit_door_keep_panels.append(panel)
+
+
+func _set_pit_door_keep_panels(shown: bool) -> void:
+	for panel: MeshInstance3D in _pit_door_keep_panels:
+		if panel != null and is_instance_valid(panel):
+			panel.visible = shown
 
 
 func _update_infinite_pit(delta: float) -> void:
@@ -6158,6 +6190,8 @@ func _update_infinite_pit(delta: float) -> void:
 		return
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
+		if bool(_pit_ring.consume_anchor_release()):
+			_release_pit_anchor_lights()
 		_update_infinite_pit_flicker_audio()
 		_update_infinite_pit_wind(delta)
 		_update_infinite_pit_hum_trim(delta)
@@ -6210,7 +6244,8 @@ func _reveal_infinite_pit_back() -> void:
 	_suspend_streaming_for_infinite()
 	_free_blocks_covered_by_ring(FIRST_RING_CELL.x)
 	_strip_pre_infinite_pit_dressing()
-	_sweep_stray_lights_in_ring()
+	# Запечённые панели ушли с блоком — подставляем их копии оставленным лампам.
+	_set_pit_door_keep_panels(true)
 	_pit_ring.reveal_back(_player_ref)
 
 
@@ -6223,19 +6258,11 @@ func _reveal_infinite_pit_back() -> void:
 # освобождении блоков панели исчезают, а лампы остаются висеть в пустой
 # потолочной сетке. Их надо снимать вместе с блоками.
 func _strip_pre_infinite_pit_dressing() -> void:
-	# Совпадение по ПРЕФИКСУ, а не по точному имени: одинаковые узлы Godot
-	# переименовывает (`pit_flicker_panel`, `pit_flicker_panel2`, ...), и поиск
-	# по имени находил только первый — остальные оставались висеть.
-	var prefixes := ["pit_entrance_sign", "pit_pocket_sign",
-		"pit_flicker_panel", "pit_flicker_lamp"]
-	for child in get_children():
-		var node := child as Node3D
-		if node == null:
-			continue
-		for prefix in prefixes:
-			if node.name.begins_with(String(prefix)):
-				node.queue_free()
-				break
+	for node_name in ["pit_entrance_sign", "pit_pocket_sign",
+			"pit_flicker_panel", "pit_flicker_lamp"]:
+		var node := get_node_or_null(NodePath(String(node_name)))
+		if node != null:
+			node.queue_free()
 	if _body != null and is_instance_valid(_body):
 		var shape := _body.get_node_or_null(
 			NodePath("pit_entrance_sign_collision"))
@@ -6249,7 +6276,7 @@ func _strip_pre_infinite_pit_dressing() -> void:
 	# чистить его надо ДО освобождения: иначе _update_pit_flicker каждый кадр
 	# приводит уже освобождённый объект к Light3D.
 	_drop_flicker_entries_covered_by_ring()
-	_free_resident_lamps_covered_by_ring()
+	_free_resident_lamps_covered_by_ring(true)
 
 
 # Мерцающие панели-подсказки, попавшие в зону кольца, перестают существовать
@@ -6270,33 +6297,10 @@ func _drop_flicker_entries_covered_by_ring() -> void:
 	_flicker = kept
 
 
-# Подчищающий проход по ВСЕМ прямым детям уровня. Пулы света перечислены
-# поимённо, но источники создаются в разных местах, и любой пропущенный
-# остаётся висеть светящимся пятном без светильника — панель ушла вместе с
-# блоком, а лампа нет. Здесь снимается всё, что попало в полосу кольца,
-# независимо от того, кто его создал. Собственный свет кольца лежит внутри
-# `infinite_pit_ring` и не затрагивается.
-func _sweep_stray_lights_in_ring() -> void:
-	for child in get_children():
-		var node := child as Node3D
-		if node == null or node.name.begins_with("infinite_pit_ring"):
-			continue
-		var lights: Array = node.find_children("*", "Light3D", true, false)
-		if node is Light3D:
-			lights.append(node)
-		for light_value in lights:
-			if not is_instance_valid(light_value):
-				continue
-			var light := light_value as Light3D
-			if light == null:
-				continue
-			if _block_covered_by_ring(_block_of(light.global_position)):
-				light.queue_free()
-
-
-# Лампы области снимаются сразу: секция кольца светит на тех же местах и с той
-# же энергией, поэтому подмена не видна и сводить их постепенно не нужно.
-func _free_resident_lamps_covered_by_ring() -> void:
+# keep_anchor — свет исходной области-провала остаётся нетронутым, пока
+# якорная секция кольца не уедет за кап. Иначе раскладка ближайших ламп
+# меняется прямо в момент подмены и смена света видна даже без разворота.
+func _free_resident_lamps_covered_by_ring(keep_anchor: bool) -> void:
 	# `_model_fill_lights` — подсветка импортных моделей (в т.ч. табличек
 	# «скользко»); без неё остался бы висеть источник у исчезнувшей модели.
 	for array_name in ["_lamps", "_area_lamps", "_area_bounce_lamps",
@@ -6309,7 +6313,10 @@ func _free_resident_lamps_covered_by_ring() -> void:
 			var light := light_value as Node3D
 			if light == null:
 				continue
-			if _block_covered_by_ring(_block_of(light.global_position)):
+			var in_anchor := keep_anchor \
+				and _inside_pit_anchor(light.global_position)
+			if not in_anchor \
+					and _block_covered_by_ring(_block_of(light.global_position)):
 				light.queue_free()
 			else:
 				kept.append(light_value)
@@ -6370,6 +6377,22 @@ func _update_infinite_pit_wind(delta: float) -> void:
 			PIT_WIND_BASE_DB + linear_to_db(_pit_wind_level))
 
 
+# Треск мигающей панели кольца идёт тем же каноническим путём, что и у панели
+# перед провалом: позиция ближайшей мигающей лампы отдаётся модулю звука (он
+# сам считает затухание по расстоянию), а на спаде яркости играется тот же
+# flick-сэмпл. Поэтому звук ложится поверх общего гула и ветра, а не заменяет их.
+# Якорная секция уехала за кап и стала обычным участником кольца со своим
+# светом. Только теперь снимаются лампы исходной области и подставные панели —
+# происходит это в полной темноте за капом, поэтому смены света не видно.
+func _release_pit_anchor_lights() -> void:
+	_drop_flicker_entries_covered_by_ring()
+	_free_resident_lamps_covered_by_ring(false)
+	for panel: MeshInstance3D in _pit_door_keep_panels:
+		if panel != null and is_instance_valid(panel):
+			panel.queue_free()
+	_pit_door_keep_panels.clear()
+
+
 func _update_infinite_pit_flicker_audio() -> void:
 	if _canonical_audio_module == null or not _final_lamp_audio_enabled:
 		return
@@ -6403,6 +6426,15 @@ func _refresh_infinite_pit_audio_lamps() -> void:
 	_canonical_audio_module.refresh_lamps(combined)
 
 
+# Интерьер исходной области-провала (он же якорная секция кольца).
+func _inside_pit_anchor(position: Vector3) -> bool:
+	var size := float(ROOM_CELLS) * CELL
+	return position.x >= _pit_interior_origin.x \
+		and position.x <= _pit_interior_origin.x + size \
+		and position.z >= _pit_interior_origin.z \
+		and position.z <= _pit_interior_origin.z + size
+
+
 func _block_covered_by_ring(block: Vector2i) -> bool:
 	if block.y != FIRST_RING_CELL.y and block.y != FIRST_RING_CELL.y + 1:
 		return false
@@ -6415,10 +6447,12 @@ func _reveal_infinite_pit_front() -> void:
 	_free_pit_door_nodes()
 	_free_blocks_covered_by_ring(2147483647)
 	# Восточные области отдаются кольцу только сейчас, поэтому их резидентные
-	# лампы снимаются вторым проходом.
+	# лампы снимаются вторым проходом — вместе с теми, что были оставлены
+	# гореть у двери на первом этапе.
+	# Свет якорной секции не трогаем и здесь: он снимается только когда она
+	# уедет за кап (_release_pit_anchor_lights).
 	_drop_flicker_entries_covered_by_ring()
-	_free_resident_lamps_covered_by_ring()
-	_sweep_stray_lights_in_ring()
+	_free_resident_lamps_covered_by_ring(true)
 	# Свечение потолочных панелей слито в один меш на весь уровень, выборочно
 	# снять его нельзя. Гасится только сейчас: на первом этапе это погасило бы
 	# и лампу над закрытой дверью, что сразу выдало бы смену пространства.
