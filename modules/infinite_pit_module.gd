@@ -13,10 +13,17 @@ extends RefCounted
 # шаг сетки областей (`PITCH`) здесь не используется — см. docs/hole_e.md,
 # раздел «Геометрия и границы систем».
 #
-# Отличие от лаборатории: боковая дверь здесь — настоящий выход (проходима,
-# без створки), а не декоративный тупик.
-
-signal exit_door_reached
+# Отличие от лаборатории: боковой проём здесь проходим (без створки). Куда он
+# ведёт — пока не решено, это «проход в никуда» (слово автора).
+#
+# Переключение двухэтапное, обе подмены происходят вне поля зрения:
+#   1) `reveal_back()`  — игрок подошёл и смотрит на закрытую дверь; всё, что
+#      за спиной, становится бесконечным провалом. Сама дверь и торцевая
+#      стена остаются на месте, вид вперёд не меняется.
+#   2) `reveal_front()` — игрок отвернулся от двери; торцевая стена с дверью
+#      снимается, и провал становится бесконечным в обе стороны.
+# Кольцо целиком собирается заранее (`prebuild`) и лежит скрытым, поэтому ни
+# один из этапов не создаёт геометрию в кадре.
 
 const Architecture := preload("res://modules/architecture_module.gd")
 const Openings := preload("res://modules/opening_module.gd")
@@ -65,6 +72,10 @@ var _door_direction := -1.0
 var _last_move_sign := -1.0
 var _max_door_reveal_ms := 0.0
 var _rng := RandomNumberGenerator.new()
+var _end_wall: Node3D                 # торцевая стена с дверью (восток якоря)
+var _back_revealed := false
+var _front_revealed := false
+var _door_local_z := 0.0              # z проёма двери внутри секции
 
 
 func _init(level_owner: Node3D, architecture_module, lighting_module,
@@ -76,12 +87,16 @@ func _init(level_owner: Node3D, architecture_module, lighting_module,
 	_rng.randomize()
 
 
+# Предсборка. Вызывается заранее (на загрузке уровня), а не в момент
+# переключения: собрать 17 секций в кадре reveal'а — это гарантированный фриз.
 # anchor_origin — мировая точка min-угла интерьера исходной области-провала
 # (та же фаза сетки, поэтому секция кольца ложится ровно на неё).
-func activate(anchor_origin: Vector3, player: Node3D) -> void:
-	if active:
+# door_world_z — мировая z проёма закрытой двери, задаёт проём торцевой стены.
+func prebuild(anchor_origin: Vector3, door_world_z: float) -> void:
+	if root != null:
 		return
 	_origin = Vector3(anchor_origin.x, 0.0, anchor_origin.z)
+	_door_local_z = door_world_z - _origin.z
 	root = Node3D.new()
 	root.name = "infinite_pit_ring"
 	owner.add_child(root)
@@ -91,15 +106,56 @@ func activate(anchor_origin: Vector3, player: Node3D) -> void:
 	_cap_material.roughness = 1.0
 	_build_tiles()
 	_build_door_pool()
+	_build_end_wall()
 	_cap_west = _make_cap("infinite_pit_cap_west")
 	_cap_east = _make_cap("infinite_pit_cap_east")
-	_cycle_anchor_x = player.global_position.x
+	for tile: Node3D in _tiles:
+		_set_tree_active(tile, false)
+	_set_tree_active(_end_wall, false)
+	_cap_west.visible = false
+	_cap_east.visible = false
+
+
+# Этап 1: игрок смотрит на дверь. Подменяется только то, что за спиной.
+# Якорная секция и всё западнее — уже кольцо; торцевая стена с проёмом двери
+# встаёт на место снесённой перегородки, сами узлы двери уровень не трогает.
+func reveal_back(player: Node3D) -> void:
+	if _back_revealed or root == null:
+		return
+	_back_revealed = true
 	active = true
+	for tile: Node3D in _tiles:
+		if tile.position.x <= _origin.x + 0.01:
+			_set_tree_active(tile, true)
+	_set_tree_active(_end_wall, true)
+	_cap_west.visible = true
+	_cycle_anchor_x = player.global_position.x
 	_update_caps(player)
 
 
+# Этап 2: игрок отвернулся от двери. Торцевая стена снимается, восточные
+# секции включаются — провал бесконечен в обе стороны, дверь не возвращается.
+func reveal_front(player: Node3D) -> void:
+	if _front_revealed or not _back_revealed:
+		return
+	_front_revealed = true
+	_set_tree_active(_end_wall, false)
+	for tile: Node3D in _tiles:
+		_set_tree_active(tile, true)
+	_cap_east.visible = true
+	_update_caps(player)
+
+
+func back_revealed() -> bool:
+	return _back_revealed
+
+
+func front_revealed() -> bool:
+	return _front_revealed
+
+
 func deactivate() -> void:
-	if not active:
+	if root == null:
 		return
 	active = false
 	if root != null and is_instance_valid(root):
@@ -173,6 +229,41 @@ func _build_tile_lights(tile: Node3D) -> void:
 			"light": light,
 			"base_energy": light.light_energy,
 		})
+
+
+# Торцевая (перпендикулярная бесконечной оси) стена на восточном краю якорной
+# секции. Занимает ту же трёхклеточную зону стены, где стояли перегородка и
+# периметральная стена области, и несёт проём ровно под уже существующей
+# дверью уровня — поэтому сами рамы, створка и знак EXIT остаются нетронутыми
+# и вид вперёд в момент подмены не меняется.
+func _build_end_wall() -> void:
+	_end_wall = Node3D.new()
+	_end_wall.name = "anchor_end_wall"
+	_end_wall.position = _origin + Vector3(ROOM_SIZE, 0.0, 0.0)
+	root.add_child(_end_wall)
+	var width := Openings.opening_width_m()
+	var height := Openings.opening_height_m()
+	var lo := _door_local_z - width * 0.5
+	var hi := _door_local_z + width * 0.5
+	var x_center := WALL_DEPTH * 0.5
+	architecture.add_box(_end_wall, "end_before_door",
+		Vector3(WALL_DEPTH, Architecture.CEIL_H, lo),
+		Vector3(x_center, Architecture.CEIL_H * 0.5, lo * 0.5),
+		"wall", true, true)
+	architecture.add_box(_end_wall, "end_after_door",
+		Vector3(WALL_DEPTH, Architecture.CEIL_H, ROOM_SIZE - hi),
+		Vector3(x_center, Architecture.CEIL_H * 0.5,
+			(hi + ROOM_SIZE) * 0.5),
+		"wall", true, true)
+	architecture.add_box(_end_wall, "end_door_lintel",
+		Vector3(WALL_DEPTH, Architecture.CEIL_H - height, width),
+		Vector3(x_center, (height + Architecture.CEIL_H) * 0.5,
+			_door_local_z),
+		"wall", true)
+	architecture.add_box(_end_wall, "end_door_threshold",
+		Vector3(WALL_DEPTH, Architecture.SLAB_T, width),
+		Vector3(x_center, -Architecture.SLAB_T * 0.5, _door_local_z),
+		"floor", true)
 
 
 # Тёмный кап: плоскость цвета тумана, не освещается и не даёт тени, края
@@ -252,20 +343,9 @@ func _build_open_side_wall(parent: Node3D, side: String) -> void:
 		Vector3(center, (height + Architecture.CEIL_H) * 0.5,
 			inner_z + inward.z * Architecture.CELL * 0.3),
 		inward, "infinite_pit_exit_sign_%s" % side)
-	var trigger := Area3D.new()
-	trigger.name = "infinite_pit_exit_trigger_%s" % side
-	trigger.collision_layer = 0
-	trigger.collision_mask = 1
-	trigger.monitoring = true
-	trigger.monitorable = false
-	var collision := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(width, 2.2, 0.6)
-	collision.shape = shape
-	trigger.add_child(collision)
-	trigger.position = Vector3(center, 1.1, inner_z + inward.z * 0.4)
-	parent.add_child(trigger)
-	trigger.body_entered.connect(_on_exit_door_body_entered)
+	# Куда ведёт этот проём — пока не решено: «просто проход в никуда»
+	# (слово автора). Триггера и назначения намеренно нет; здесь же потом
+	# появится вход в ряд ложных комнат.
 
 
 func _set_tree_active(node: Node3D, is_active: bool) -> void:
@@ -291,6 +371,10 @@ func update(player: Node3D, _delta: float) -> void:
 	_update_move_sign(player)
 	_update_caps(player)
 	_update_light_fade(player)
+	# До второго этапа игрок ещё стоит у двери: кольцо не крутится, циклы не
+	# считаются и боковой проём не появляется.
+	if not _front_revealed:
+		return
 	_recycle_tiles(player)
 	_update_cycles(player)
 	_update_exit_door(player)
@@ -427,10 +511,6 @@ func _clear_exit_door() -> void:
 	_door_host = null
 	_door_side = ""
 	_next_door_cycle = _cycle_count + DOOR_PERIOD_CYCLES
-
-
-func _on_exit_door_body_entered(_body: Node3D) -> void:
-	exit_door_reached.emit()
 
 
 # ── Сервис для уровня ──────────────────────────────────────────────────────

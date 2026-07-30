@@ -5512,6 +5512,7 @@ func _ready() -> void:
 	_apply_tuned_mode()
 	if _level_e_main_layout_features_enabled():
 		_setup_infinite_connector_trigger()
+		_prebuild_infinite_pit()
 		_setup_model_fill_system()
 	_lf3_capture_reference_shadow_profiles()
 	lf3_set_shadow_mode(true)
@@ -6092,32 +6093,11 @@ func _leave_infinite_anomaly() -> void:
 #  Механика из лаборатории hole_e, носитель — эта область-провал.
 # ─────────────────────────────────────────────────────────────
 
-func _update_infinite_pit(delta: float) -> void:
-	if _player_ref == null or _pit_door_node_prefix == "":
+# Кольцо собирается заранее и лежит скрытым: собирать 17 секций в момент
+# переключения — гарантированный фриз в кадре.
+func _prebuild_infinite_pit() -> void:
+	if _pit_ring != null or _pit_door_node_prefix == "":
 		return
-	if _pit_ring_active:
-		_pit_ring.update(_player_ref, delta)
-		return
-	if not _pit_reached_door:
-		if _player_ref.global_position.distance_to(_pit_door_world_pos) \
-				<= PIT_REVEAL_DOOR_RADIUS:
-			_pit_reached_door = true
-		return
-	# Reveal — строго от разворота: дверь ушла за камеру. Проверка скорости
-	# или шага назад не заменяет разворот (docs/hole_e.md, п.5).
-	if _player_ref.camera == null \
-			or _player_ref.camera.is_position_in_frustum(_pit_door_world_pos):
-		return
-	_reveal_infinite_pit()
-
-
-func _reveal_infinite_pit() -> void:
-	_pit_ring_active = true
-	# Стриминг уровня встаёт на паузу: перекрытые кольцом блоки не должны
-	# достраиваться обратно.
-	_suspend_streaming_for_infinite()
-	_free_pit_door_nodes()
-	_free_blocks_covered_by_ring()
 	# Канонические модули подключаются композицией; второго набора чисел или
 	# локальных приближений у кольца нет.
 	var ring_architecture = ARCHITECTURE.new(self)
@@ -6125,12 +6105,45 @@ func _reveal_infinite_pit() -> void:
 	var ring_openings = OPENINGS.new(self, ring_architecture)
 	_pit_ring = INFINITE_PIT_MODULE.new(self, ring_architecture,
 		ring_lighting, ring_openings)
-	_pit_ring.exit_door_reached.connect(_on_infinite_pit_exit_reached)
-	_pit_ring.activate(_pit_interior_origin, _player_ref)
+	_pit_ring.prebuild(_pit_interior_origin, _pit_door_world_pos.z)
 
 
-# Дверь, рамы и знак EXIT снимаются вместе: после разворота игрок видит
-# бесконечный провал и в эту сторону тоже, двери там больше нет.
+func _update_infinite_pit(delta: float) -> void:
+	if _player_ref == null or _pit_ring == null or _player_ref.camera == null:
+		return
+	if _pit_ring_active:
+		_pit_ring.update(_player_ref, delta)
+	var door_in_view := _player_ref.camera.is_position_in_frustum(
+		_pit_door_world_pos)
+	if not _pit_ring.back_revealed():
+		# Этап 1: игрок подошёл и смотрит на дверь — подменяется только то,
+		# что за спиной. Вид вперёд не трогается.
+		if door_in_view and _player_ref.global_position.distance_to(
+				_pit_door_world_pos) <= PIT_REVEAL_DOOR_RADIUS:
+			_reveal_infinite_pit_back()
+		return
+	if not _pit_ring.front_revealed() and not door_in_view:
+		# Этап 2: отвернулся — снимаем дверь вместе с торцевой стеной.
+		_reveal_infinite_pit_front()
+
+
+func _reveal_infinite_pit_back() -> void:
+	_pit_ring_active = true
+	# Стриминг уровня встаёт на паузу: перекрытые кольцом блоки не должны
+	# достраиваться обратно.
+	_suspend_streaming_for_infinite()
+	_free_blocks_covered_by_ring(FIRST_RING_CELL.x)
+	_pit_ring.reveal_back(_player_ref)
+
+
+# Дверь, рамы и знак EXIT снимаются вместе с торцевой стеной: развернувшись
+# обратно, игрок видит бесконечный провал и в эту сторону тоже.
+func _reveal_infinite_pit_front() -> void:
+	_free_pit_door_nodes()
+	_free_blocks_covered_by_ring(2147483647)
+	_pit_ring.reveal_front(_player_ref)
+
+
 func _free_pit_door_nodes() -> void:
 	for child in get_children():
 		var node := child as Node3D
@@ -6142,36 +6155,13 @@ func _free_pit_door_nodes() -> void:
 
 
 # Кольцо идёт по X вдоль полосы области-провала, поэтому освобождаются блоки
-# того же ряда: сама область и всё, что западнее (разветвитель, кольцо, хаб).
+# того же ряда. На первом этапе — сама область и всё, что западнее
+# (разветвитель, кольцо, хаб); на втором — и восточные тоже.
 # Дорога назад закрывается сознательно — см. docs/hole_e.md.
-func _free_blocks_covered_by_ring() -> void:
-	var pit_block: Vector2i = FIRST_RING_CELL
+func _free_blocks_covered_by_ring(max_block_x: int) -> void:
 	for block: Vector2i in _block_holder.keys().duplicate():
-		if block.y == pit_block.y and block.x <= pit_block.x:
+		if block.y == FIRST_RING_CELL.y and block.x <= max_block_x:
 			_free_block(block)
-
-
-func _on_infinite_pit_exit_reached() -> void:
-	if not _pit_ring_active:
-		return
-	call_deferred("_leave_infinite_pit_to_maze")
-
-
-# Пока боковой выход ведёт прямо в maze. Позже здесь будет ряд ложных комнат
-# с собственным дизайном (слово автора) — точка расширения одна.
-func _leave_infinite_pit_to_maze() -> void:
-	if not _pit_ring_active:
-		return
-	_pit_ring_active = false
-	_pit_ring.deactivate()
-	_pit_ring = null
-	_resume_streaming_after_infinite()
-	_rebuild_all_freed()
-	if _area_by_cell.has(MAZE_AFTER_PIT_CELL):
-		_player_ref.velocity = Vector3.ZERO
-		_player_ref.global_position = _local_world(
-			MAZE_AFTER_PIT_CELL.x, MAZE_AFTER_PIT_CELL.y,
-			1.5, _pit_exit_center(PIT_EXIT_LANE_D), 1.2)
 
 
 func _suspend_streaming_for_infinite() -> void:
