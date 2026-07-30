@@ -37,6 +37,11 @@ const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
 const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
+# Панели видны заметно дальше, чем светят их лампы. Эмиссивный меш ничего не
+# стоит по свету, поэтому дальние ряды панелей дают глубину даром: света
+# оттуда уже нет, но пространство читается далеко вперёд.
+const PANEL_VISIBLE_DISTANCE := TILE_LENGTH * 5.0
+const PANEL_VISIBLE_MARGIN := PANEL_VISIBLE_DISTANCE - FADE_DARK_DISTANCE
 const END_DISTANCE := TILE_LENGTH * 7.0
 const RECYCLE_DISTANCE := END_DISTANCE + TILE_LENGTH
 const CAP_SIDE_OVERLAP := TILE_LENGTH
@@ -229,59 +234,53 @@ func _side_wall_z(side: String) -> float:
 # то, КАКОЙ из углов пропущен. Плотность и яркость при этом не меняются.
 # Объединение вариантов — пять позиций, поэтому светильники строятся один раз
 # и переключаются видимостью; двигать их не нужно.
-const RING_LIGHT_CENTER := Vector2(7.5, 7.5)
-const RING_LIGHT_CORNERS := [
-	Vector2(1.5, 1.5),
-	Vector2(1.5, 13.5),
-	Vector2(13.5, 1.5),
-	Vector2(13.5, 13.5),
-]
-
-
-# Вариант 0 пропускает угол (1.5, 1.5) — это и есть раскладка провала.
-# Якорной секции всегда достаётся вариант 0: индексы считаются ОТ неё.
+# Позиции — канонические клетки провала: сетка 3x3 по `1.5 / 7.5 / 13.5`.
+# В секции всегда ровно ЧЕТЫРЕ лампы, поэтому плотность и яркость совпадают с
+# областью-провалом, а рисунок каждый раз другой.
 #
-# Соседним секциям запрещено повторять вариант, иначе одинаковая раскладка
-# идёт сериями и повтор снова читается. Сравнение идёт с ИТОГОВЫМ значением
-# предыдущей секции, а не с сырым хешем: иначе правило обходится там, где
-# предыдущая секция сама была повёрнута.
-func _tile_variant(section: int) -> int:
+# Распределение по продольным колонкам всегда `2 + 1 + 1`: лампа есть в каждой
+# колонке, поэтому разрыв вдоль движения не превышает 7.5 м. Комбинаций 81 —
+# повтор рисунка на глаз не читается.
+const RING_LIGHT_STEP := 6.0
+const RING_LIGHT_BASE := 1.5
+const RING_LIGHT_COLUMNS := 3
+const RING_LIGHT_ROWS := 3
+# Слоты якорной секции — раскладка провала буква в букву:
+# (1.5,13.5), (7.5,7.5), (13.5,1.5), (13.5,13.5).
+const RING_ANCHOR_SLOTS := [2, 4, 6, 8]
+
+
+func _slot_cell(slot: int) -> Vector2:
+	return Vector2(
+		RING_LIGHT_BASE + RING_LIGHT_STEP * float(slot / RING_LIGHT_ROWS),
+		RING_LIGHT_BASE + RING_LIGHT_STEP * float(slot % RING_LIGHT_ROWS))
+
+
+# Колонка с двумя лампами. Гасить можно только её, иначе колонка опустеет.
+func _section_heavy_column(section: int) -> int:
 	if section == 0:
-		return 0
-	return _rotate_variant(section, _tile_variant_step(section - 1))
+		return 2
+	return int(_hash01(section, 1301) * float(RING_LIGHT_COLUMNS)) \
+		% RING_LIGHT_COLUMNS
 
 
-# То же правило на шаг назад. Рекурсии нет: глубина фиксирована двумя шагами,
-# дальше берётся сырой хеш.
-func _tile_variant_step(section: int) -> int:
+func _section_lamp_slots(section: int) -> Array:
 	if section == 0:
-		return 0
-	return _rotate_variant(section, _variant_raw(section - 1))
-
-
-func _rotate_variant(section: int, previous: int) -> int:
-	var count := RING_LIGHT_CORNERS.size()
-	var value := _variant_raw(section)
-	if value != previous:
-		return value
-	return (value + 1 + int(_hash01(section, 6491) * float(count - 1))) % count
-
-
-func _variant_raw(section: int) -> int:
-	var count := RING_LIGHT_CORNERS.size()
-	return int(_hash01(section, 5171) * float(count)) % count
-
-
-# Сколько углов остаётся в той же продольной позиции (по X), что и данный.
-func _column_corner_count(corner: int, skipped_corner: int) -> int:
-	var column: float = (RING_LIGHT_CORNERS[corner] as Vector2).x
-	var count := 0
-	for index in range(RING_LIGHT_CORNERS.size()):
-		if index == skipped_corner:
-			continue
-		if is_equal_approx((RING_LIGHT_CORNERS[index] as Vector2).x, column):
-			count += 1
-	return count
+		return RING_ANCHOR_SLOTS.duplicate()
+	var heavy := _section_heavy_column(section)
+	var dropped := int(_hash01(section, 2609) * float(RING_LIGHT_ROWS)) \
+		% RING_LIGHT_ROWS
+	var slots: Array = []
+	for column in range(RING_LIGHT_COLUMNS):
+		if column == heavy:
+			for row in range(RING_LIGHT_ROWS):
+				if row != dropped:
+					slots.append(column * RING_LIGHT_ROWS + row)
+		else:
+			var row := int(_hash01(section, 3701 + column)
+				* float(RING_LIGHT_ROWS)) % RING_LIGHT_ROWS
+			slots.append(column * RING_LIGHT_ROWS + row)
+	return slots
 
 
 func _tile_section_index(tile: Node3D) -> int:
@@ -289,11 +288,9 @@ func _tile_section_index(tile: Node3D) -> int:
 
 
 func _build_tile_lights(tile: Node3D) -> void:
-	var points: Array[Vector2] = [RING_LIGHT_CENTER]
-	points.append_array(RING_LIGHT_CORNERS)
 	var tile_entries: Array = []
-	for slot in range(points.size()):
-		var cell: Vector2 = points[slot]
+	for slot in range(RING_LIGHT_COLUMNS * RING_LIGHT_ROWS):
+		var cell := _slot_cell(slot)
 		var local_position := Vector3(
 			cell.x * Architecture.CELL,
 			Architecture.CEIL_H + 0.02,
@@ -305,8 +302,8 @@ func _build_tile_lights(tile: Node3D) -> void:
 			tile, local_position, Vector2i.ONE, RING_AREA_ID)
 		var visible_panel := fixture.get("visible_panel") as GeometryInstance3D
 		if visible_panel != null:
-			visible_panel.visibility_range_end = FADE_DARK_DISTANCE
-			visible_panel.visibility_range_end_margin = PANEL_FADE_MARGIN
+			visible_panel.visibility_range_end = PANEL_VISIBLE_DISTANCE
+			visible_panel.visibility_range_end_margin = PANEL_VISIBLE_MARGIN
 			visible_panel.visibility_range_fade_mode = \
 				GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		var panel := fixture.get("panel") as Light3D
@@ -360,21 +357,17 @@ func _apply_tile_outage(tile: Node3D) -> void:
 		return
 	var entries: Array = tile.get_meta("light_entries")
 	var section := _tile_section_index(tile)
-	var skipped_corner := _tile_variant(section)
+	var lit_slots: Array = _section_lamp_slots(section)
 	var out_slot := -1
-	var best := 1.0
 	# Якорная секция гашению не подлежит: она обязана совпадать с раскладкой
 	# исходной области буква в букву, иначе подмена перестаёт быть невидимой.
 	if section != 0:
-		for slot in range(1, entries.size()):
-			var corner := slot - 1
-			if corner == skipped_corner:
-				continue
-			# Гасить можно только угол, у которого в той же продольной
-			# позиции остаётся второй: иначе колонка пустеет и разрыв вдоль
-			# движения вырастает с 7.5 до 15 м.
-			if _column_corner_count(corner, skipped_corner) < 2:
-				continue
+		var heavy := _section_heavy_column(section)
+		var best := 1.0
+		for slot_value in lit_slots:
+			var slot := int(slot_value)
+			if slot / RING_LIGHT_ROWS != heavy:
+				continue   # одиночную лампу колонки не гасим
 			var h := _hash01(section, slot)
 			if h >= PANEL_OUTAGE_CHANCE:
 				continue
@@ -386,9 +379,7 @@ func _apply_tile_outage(tile: Node3D) -> void:
 	for entry_value in entries:
 		var entry: Dictionary = entry_value
 		var slot := int(entry["slot"])
-		# slot 0 — центр, он есть во всех вариантах; углы нумеруются с 1.
-		var missing := slot > 0 and slot - 1 == skipped_corner
-		var is_out := missing or slot == out_slot
+		var is_out := not lit_slots.has(slot) or slot == out_slot
 		entry["out"] = is_out
 		entry["flicker"] = not is_out \
 			and _hash01(section, slot + 4231) < PANEL_FLICKER_CHANCE

@@ -6210,6 +6210,7 @@ func _reveal_infinite_pit_back() -> void:
 	_suspend_streaming_for_infinite()
 	_free_blocks_covered_by_ring(FIRST_RING_CELL.x)
 	_strip_pre_infinite_pit_dressing()
+	_sweep_stray_lights_in_ring()
 	_pit_ring.reveal_back(_player_ref)
 
 
@@ -6222,11 +6223,19 @@ func _reveal_infinite_pit_back() -> void:
 # освобождении блоков панели исчезают, а лампы остаются висеть в пустой
 # потолочной сетке. Их надо снимать вместе с блоками.
 func _strip_pre_infinite_pit_dressing() -> void:
-	for node_name in ["pit_entrance_sign", "pit_pocket_sign",
-			"pit_flicker_panel", "pit_flicker_lamp"]:
-		var node := get_node_or_null(NodePath(String(node_name)))
-		if node != null:
-			node.queue_free()
+	# Совпадение по ПРЕФИКСУ, а не по точному имени: одинаковые узлы Godot
+	# переименовывает (`pit_flicker_panel`, `pit_flicker_panel2`, ...), и поиск
+	# по имени находил только первый — остальные оставались висеть.
+	var prefixes := ["pit_entrance_sign", "pit_pocket_sign",
+		"pit_flicker_panel", "pit_flicker_lamp"]
+	for child in get_children():
+		var node := child as Node3D
+		if node == null:
+			continue
+		for prefix in prefixes:
+			if node.name.begins_with(String(prefix)):
+				node.queue_free()
+				break
 	if _body != null and is_instance_valid(_body):
 		var shape := _body.get_node_or_null(
 			NodePath("pit_entrance_sign_collision"))
@@ -6259,6 +6268,30 @@ func _drop_flicker_entries_covered_by_ring() -> void:
 			continue
 		kept.append(entry_value)
 	_flicker = kept
+
+
+# Подчищающий проход по ВСЕМ прямым детям уровня. Пулы света перечислены
+# поимённо, но источники создаются в разных местах, и любой пропущенный
+# остаётся висеть светящимся пятном без светильника — панель ушла вместе с
+# блоком, а лампа нет. Здесь снимается всё, что попало в полосу кольца,
+# независимо от того, кто его создал. Собственный свет кольца лежит внутри
+# `infinite_pit_ring` и не затрагивается.
+func _sweep_stray_lights_in_ring() -> void:
+	for child in get_children():
+		var node := child as Node3D
+		if node == null or node.name.begins_with("infinite_pit_ring"):
+			continue
+		var lights: Array = node.find_children("*", "Light3D", true, false)
+		if node is Light3D:
+			lights.append(node)
+		for light_value in lights:
+			if not is_instance_valid(light_value):
+				continue
+			var light := light_value as Light3D
+			if light == null:
+				continue
+			if _block_covered_by_ring(_block_of(light.global_position)):
+				light.queue_free()
 
 
 # Лампы области снимаются сразу: секция кольца светит на тех же местах и с той
@@ -6385,6 +6418,7 @@ func _reveal_infinite_pit_front() -> void:
 	# лампы снимаются вторым проходом.
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring()
+	_sweep_stray_lights_in_ring()
 	# Свечение потолочных панелей слито в один меш на весь уровень, выборочно
 	# снять его нельзя. Гасится только сейчас: на первом этапе это погасило бы
 	# и лампу над закрытой дверью, что сразу выдало бы смену пространства.
