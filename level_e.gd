@@ -646,7 +646,6 @@ const INFINITE_PORTAL_COOLDOWN_MS := 350
 const HOLE_ANOMALY_SCENE := preload("res://hole_e.tscn")
 const HOLE_WORLD_OFFSET := Vector3(-10000.0, 0.0, 0.0)
 const HOLE_ENTRY_LOCAL := Vector3(7.5 * 1.25, 1.2, (15.0 + 1.0) * 1.25)
-const HOLE_ENTRY_YAW := 0.0
 const HOLE_PORTAL_COOLDOWN_MS := 350
 
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
@@ -6122,7 +6121,8 @@ func _on_hole_connector_body_entered(body: Node3D) -> void:
 
 
 func _enter_hole_anomaly() -> void:
-	if _hole_anomaly == null or not is_instance_valid(_hole_anomaly):
+	if _hole_anomaly == null or not is_instance_valid(_hole_anomaly) \
+			or _hole_connector_trigger == null:
 		_hole_transition_started = false
 		return
 	_suspend_streaming_for_infinite()
@@ -6130,11 +6130,29 @@ func _enter_hole_anomaly() -> void:
 	_hole_anomaly_active = true
 	_hole_portal_cooldown_until = Time.get_ticks_msec() + HOLE_PORTAL_COOLDOWN_MS
 	_hole_anomaly.call("set_embedded_active", true)
-	_trigger_flash()
-	_player_ref.velocity = Vector3.ZERO
-	_player_ref.global_position = _hole_anomaly.global_transform * HOLE_ENTRY_LOCAL
-	_player_ref.rotation.y = HOLE_ENTRY_YAW
+	# Бесшовный портал (без вспышки/ноклипа) — тот же приём, что и у
+	# infinite_corridor_e: поза/скорость игрока переносятся относительно
+	# двух рамок, а не жёстко переставляются. Дверь закрыта физически, но
+	# триггер стоит перед ней, так что игрок не успевает в неё упереться.
+	_transfer_player_between_portals(
+		_pit_hole_portal_transform(), _hole_entry_portal_transform())
 	_hole_transition_started = false
+
+
+# Провал выходит на восток (+X); hole_e у себя смотрит на север (-Z, см.
+# hole_e.gd _spawn_player). Поворот на 90° в исходной рамке — тот же трюк,
+# что _level_infinite_portal_transform для infinite_corridor_e. Если после
+# перехода игрок окажется развёрнут не туда — знак PI*0.5 нужно поменять
+# на -PI*0.5, это единственная непроверенная деталь (нет рантайма Godot
+# в этой сессии).
+func _pit_hole_portal_transform() -> Transform3D:
+	return Transform3D(Basis(Vector3.UP, PI * 0.5),
+		_hole_connector_trigger.global_position)
+
+
+func _hole_entry_portal_transform() -> Transform3D:
+	return Transform3D(Basis.IDENTITY,
+		_hole_anomaly.global_transform * HOLE_ENTRY_LOCAL)
 
 
 # Боковая дверь hole_e после трёх циклов (см. docs/hole_e.md) ведёт в область
