@@ -646,6 +646,9 @@ const INFINITE_PIT_MODULE := preload("res://modules/infinite_pit_module.gd")
 # Игрок считается «дошедшим до двери», когда он ближе этого расстояния к её
 # проёму. Reveal срабатывает уже от разворота — когда дверь вне фрустума.
 const PIT_REVEAL_DOOR_RADIUS := 4.0
+# Запас сверх геометрического края кадра: страхует от подмены, замеченной
+# самым краем экрана. Больше значение — позже переключение.
+const PIT_REVEAL_MARGIN_DEG := 4.0
 
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
 # видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
@@ -6106,7 +6109,7 @@ func _prebuild_infinite_pit() -> void:
 	var ring_openings = OPENINGS.new(self, ring_architecture)
 	_pit_ring = INFINITE_PIT_MODULE.new(self, ring_architecture,
 		ring_lighting, ring_openings)
-	_pit_ring.prebuild(_pit_interior_origin, _pit_door_world_pos.z)
+	_pit_ring.prebuild(_pit_interior_origin)
 
 
 func _update_infinite_pit(delta: float) -> void:
@@ -6120,17 +6123,42 @@ func _update_infinite_pit(delta: float) -> void:
 		return
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
-	var door_in_view := camera.is_position_in_frustum(_pit_door_world_pos)
 	if not bool(_pit_ring.back_revealed()):
-		# Этап 1: игрок подошёл и смотрит на дверь — подменяется только то,
-		# что за спиной. Вид вперёд не трогается.
-		if door_in_view and _player_ref.global_position.distance_to(
-				_pit_door_world_pos) <= PIT_REVEAL_DOOR_RADIUS:
+		# Этап 1: игрок подошёл к двери и смотрит на неё — подменяется только
+		# то, что за спиной (запад). Вид вперёд не трогается.
+		if _player_ref.global_position.distance_to(_pit_door_world_pos) \
+				<= PIT_REVEAL_DOOR_RADIUS \
+				and _camera_turned_away_from(camera, Vector3.LEFT):
 			_reveal_infinite_pit_back()
 		return
-	if not bool(_pit_ring.front_revealed()) and not door_in_view:
-		# Этап 2: отвернулся — снимаем дверь вместе с торцевой стеной.
+	if not bool(_pit_ring.front_revealed()) \
+			and _camera_turned_away_from(camera, Vector3.RIGHT):
+		# Этап 2: отвернулся от двери — снимаем её, восток тоже становится
+		# бесконечным провалом.
 		_reveal_infinite_pit_front()
+
+
+# Подменяемая половина пространства должна быть ЦЕЛИКОМ вне кадра, иначе
+# перестройка видна боковым зрением. Требуемый угол считается из реального
+# FOV и пропорций вьюпорта, а не подбирается константой: при широком FOV
+# (у игрока он доходит до 105°) «дверь в кадре» — слишком слабое условие.
+func _camera_turned_away_from(camera: Camera3D, swap_dir: Vector3) -> bool:
+	var forward := -camera.global_basis.z
+	var horizontal := Vector2(forward.x, forward.z)
+	if horizontal.length() < 0.001:
+		return false
+	horizontal = horizontal.normalized()
+	var half_fov := deg_to_rad(camera.fov) * 0.5
+	var half_horizontal := half_fov
+	if camera.keep_aspect == Camera3D.KEEP_HEIGHT:
+		var size := camera.get_viewport().get_visible_rect().size
+		half_horizontal = atan(tan(half_fov) * (size.x / maxf(size.y, 1.0)))
+	var required := PI * 0.5 - half_horizontal \
+		- deg_to_rad(PIT_REVEAL_MARGIN_DEG)
+	if required <= 0.0:
+		return false
+	var away := Vector2(-swap_dir.x, -swap_dir.z).normalized()
+	return horizontal.dot(away) >= cos(required)
 
 
 func _reveal_infinite_pit_back() -> void:
@@ -6164,9 +6192,16 @@ func _free_pit_door_nodes() -> void:
 # того же ряда. На первом этапе — сама область и всё, что западнее
 # (разветвитель, кольцо, хаб); на втором — и восточные тоже.
 # Дорога назад закрывается сознательно — см. docs/hole_e.md.
+#
+# Ряд y+1 освобождается тоже: при нарезке `[3 клетки стены][15 интерьера]`
+# южная стена области принадлежит СЛЕДУЮЩЕМУ ряду блоков и оказалась бы в тех
+# же координатах, что южная стена секции кольца, — две копланарные стены дают
+# мерцание. Северная стена лежит в самом ряду провала и снимается вместе с ним.
 func _free_blocks_covered_by_ring(max_block_x: int) -> void:
 	for block: Vector2i in _block_holder.keys().duplicate():
-		if block.y == FIRST_RING_CELL.y and block.x <= max_block_x:
+		if block.x > max_block_x:
+			continue
+		if block.y == FIRST_RING_CELL.y or block.y == FIRST_RING_CELL.y + 1:
 			_free_block(block)
 
 

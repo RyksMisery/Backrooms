@@ -72,10 +72,8 @@ var _door_direction := -1.0
 var _last_move_sign := -1.0
 var _max_door_reveal_ms := 0.0
 var _rng := RandomNumberGenerator.new()
-var _end_wall: Node3D                 # торцевая стена с дверью (восток якоря)
 var _back_revealed := false
 var _front_revealed := false
-var _door_local_z := 0.0              # z проёма двери внутри секции
 
 
 func _init(level_owner: Node3D, architecture_module, lighting_module,
@@ -91,12 +89,16 @@ func _init(level_owner: Node3D, architecture_module, lighting_module,
 # переключения: собрать 17 секций в кадре reveal'а — это гарантированный фриз.
 # anchor_origin — мировая точка min-угла интерьера исходной области-провала
 # (та же фаза сетки, поэтому секция кольца ложится ровно на неё).
-# door_world_z — мировая z проёма закрытой двери, задаёт проём торцевой стены.
-func prebuild(anchor_origin: Vector3, door_world_z: float) -> void:
+#
+# Торцевой стены у якорной секции нет намеренно: восточная стена области
+# вместе с нишей, перегородкой, дверью и знаком EXIT лежит в СОСЕДНЕМ блоке
+# (нарезка — `[3 клетки стены][15 клеток интерьера]`), поэтому при
+# освобождении блока провала она остаётся нетронутой. Строить её заново
+# нельзя — получится вторая дверь с другим окружением и светом.
+func prebuild(anchor_origin: Vector3) -> void:
 	if root != null:
 		return
 	_origin = Vector3(anchor_origin.x, 0.0, anchor_origin.z)
-	_door_local_z = door_world_z - _origin.z
 	root = Node3D.new()
 	root.name = "infinite_pit_ring"
 	owner.add_child(root)
@@ -106,19 +108,17 @@ func prebuild(anchor_origin: Vector3, door_world_z: float) -> void:
 	_cap_material.roughness = 1.0
 	_build_tiles()
 	_build_door_pool()
-	_build_end_wall()
 	_cap_west = _make_cap("infinite_pit_cap_west")
 	_cap_east = _make_cap("infinite_pit_cap_east")
 	for tile: Node3D in _tiles:
 		_set_tree_active(tile, false)
-	_set_tree_active(_end_wall, false)
 	_cap_west.visible = false
 	_cap_east.visible = false
 
 
-# Этап 1: игрок смотрит на дверь. Подменяется только то, что за спиной.
-# Якорная секция и всё западнее — уже кольцо; торцевая стена с проёмом двери
-# встаёт на место снесённой перегородки, сами узлы двери уровень не трогает.
+# Этап 1: игрок смотрит на дверь. Подменяется только то, что за спиной —
+# якорная секция и всё западнее. Восточная стена области с нишей и дверью
+# принадлежит соседнему блоку и не трогается, поэтому вид вперёд тот же.
 func reveal_back(player: Node3D) -> void:
 	if _back_revealed or root == null:
 		return
@@ -127,19 +127,17 @@ func reveal_back(player: Node3D) -> void:
 	for tile: Node3D in _tiles:
 		if tile.position.x <= _origin.x + 0.01:
 			_set_tree_active(tile, true)
-	_set_tree_active(_end_wall, true)
 	_cap_west.visible = true
 	_cycle_anchor_x = player.global_position.x
 	_update_caps(player)
 
 
-# Этап 2: игрок отвернулся от двери. Торцевая стена снимается, восточные
-# секции включаются — провал бесконечен в обе стороны, дверь не возвращается.
+# Этап 2: игрок отвернулся от двери. Восточные секции включаются — провал
+# бесконечен в обе стороны, дверь не возвращается.
 func reveal_front(player: Node3D) -> void:
 	if _front_revealed or not _back_revealed:
 		return
 	_front_revealed = true
-	_set_tree_active(_end_wall, false)
 	for tile: Node3D in _tiles:
 		_set_tree_active(tile, true)
 	_cap_east.visible = true
@@ -229,41 +227,6 @@ func _build_tile_lights(tile: Node3D) -> void:
 			"light": light,
 			"base_energy": light.light_energy,
 		})
-
-
-# Торцевая (перпендикулярная бесконечной оси) стена на восточном краю якорной
-# секции. Занимает ту же трёхклеточную зону стены, где стояли перегородка и
-# периметральная стена области, и несёт проём ровно под уже существующей
-# дверью уровня — поэтому сами рамы, створка и знак EXIT остаются нетронутыми
-# и вид вперёд в момент подмены не меняется.
-func _build_end_wall() -> void:
-	_end_wall = Node3D.new()
-	_end_wall.name = "anchor_end_wall"
-	_end_wall.position = _origin + Vector3(ROOM_SIZE, 0.0, 0.0)
-	root.add_child(_end_wall)
-	var width := Openings.opening_width_m()
-	var height := Openings.opening_height_m()
-	var lo := _door_local_z - width * 0.5
-	var hi := _door_local_z + width * 0.5
-	var x_center := WALL_DEPTH * 0.5
-	architecture.add_box(_end_wall, "end_before_door",
-		Vector3(WALL_DEPTH, Architecture.CEIL_H, lo),
-		Vector3(x_center, Architecture.CEIL_H * 0.5, lo * 0.5),
-		"wall", true, true)
-	architecture.add_box(_end_wall, "end_after_door",
-		Vector3(WALL_DEPTH, Architecture.CEIL_H, ROOM_SIZE - hi),
-		Vector3(x_center, Architecture.CEIL_H * 0.5,
-			(hi + ROOM_SIZE) * 0.5),
-		"wall", true, true)
-	architecture.add_box(_end_wall, "end_door_lintel",
-		Vector3(WALL_DEPTH, Architecture.CEIL_H - height, width),
-		Vector3(x_center, (height + Architecture.CEIL_H) * 0.5,
-			_door_local_z),
-		"wall", true)
-	architecture.add_box(_end_wall, "end_door_threshold",
-		Vector3(WALL_DEPTH, Architecture.SLAB_T, width),
-		Vector3(x_center, -Architecture.SLAB_T * 0.5, _door_local_z),
-		"floor", true)
 
 
 # Тёмный кап: плоскость цвета тумана, не освещается и не даёт тени, края
