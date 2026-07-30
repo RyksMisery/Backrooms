@@ -638,15 +638,6 @@ const INFINITE_CONNECTOR_DEPTH_CELLS := 2
 const INFINITE_WORLD_OFFSET := Vector3(10000.0, 0.0, 0.0)
 const INFINITE_ENTRY_LOCAL := Vector3(0.0, 1.2, 12.5)
 const INFINITE_PORTAL_COOLDOWN_MS := 350
-# Единственный провал level_e переключается в hole_e через дальнюю (закрытую)
-# дверь — см. docs/hole_e.md «Интеграция в level_e». HOLE_ENTRY_LOCAL
-# повторяет собственную точку входа hole_e.gd (_spawn_player: 7.5 CELL,
-# PLAYER_HEIGHT, (ROOM_CELLS+1) CELL) — общий модуль ARCHITECTURE гарантирует
-# совпадение чисел без дублирования.
-const HOLE_ANOMALY_SCENE := preload("res://hole_e.tscn")
-const HOLE_WORLD_OFFSET := Vector3(-10000.0, 0.0, 0.0)
-const HOLE_ENTRY_LOCAL := Vector3(7.5 * 1.25, 1.2, (15.0 + 1.0) * 1.25)
-const HOLE_PORTAL_COOLDOWN_MS := 350
 
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
 # видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
@@ -729,11 +720,6 @@ var _infinite_saved_ambient_energy := 0.0
 var _infinite_saved_fog_enabled := false
 var _infinite_saved_hud_visible := true
 var _infinite_saved_map_visible := false
-var _hole_connector_trigger: Area3D
-var _hole_anomaly: Node3D
-var _hole_transition_started := false
-var _hole_anomaly_active := false
-var _hole_portal_cooldown_until := 0
 
 
 func _level_e_base_ready() -> void:
@@ -1888,9 +1874,9 @@ func _place_pit_exit_frame(cell: Vector2i, dir: Vector2i, lane: Vector2i) -> voi
 	var opening_id := "pit_exit:%d_%d:pass" % [cell.x, cell.y]
 	_spawn_office_opening_frames(scene, area, center, normal, node_id, opening_id)
 	# Единственный провал: дальняя дверь всегда закрыта и не интерактивна —
-	# приманка к переключению в hole_e, а не настоящий проход (см.
-	# docs/hole_e.md «Интеграция в level_e»). Тот же закрытый статичный лист
-	# двери с коллизией, что и у декоративных тупиков лабиринта.
+	# приманка, которая приводит игрока к развороту у двери (там срабатывает
+	# reveal бесконечного провала), а не настоящий проход. Тот же закрытый
+	# статичный лист двери с коллизией, что и у декоративных тупиков лабиринта.
 	_spawn_office_door_panel(scene, area, center, normal,
 		"%s_leaf" % node_id, opening_id, true)
 
@@ -3990,9 +3976,8 @@ func _check_pit_fall(delta: float) -> void:
 	_pit_fall_t -= delta
 	if _pit_fall_t <= 0.0:
 		# Ноклип на устойчивый мостик провала (не в начало уровня) — единый
-		# провал переопределяет базовое правило падения, см. docs/hole_e.md
-		# «Интеграция в level_e»: бесконечное сваливание исключено, ориентация
-		# игрока не сбрасывается.
+		# провал переопределяет базовое правило падения, см. docs/gameplay.md
+		# «Провал»: бесконечное сваливание исключено, ориентация не сбрасывается.
 		_player_ref.position = _nearest_pit_walk_center(p)
 		_player_ref.velocity = Vector3.ZERO
 		_pit_fall_t = -1.0
@@ -5480,7 +5465,6 @@ func _ready() -> void:
 	_apply_tuned_mode()
 	if _level_e_main_layout_features_enabled():
 		_setup_infinite_connector_trigger()
-		_setup_hole_connector_trigger()
 		_setup_model_fill_system()
 	_lf3_capture_reference_shadow_profiles()
 	lf3_set_shadow_mode(true)
@@ -6056,130 +6040,6 @@ func _leave_infinite_anomaly() -> void:
 	_infinite_transition_started = false
 
 
-func _setup_hole_connector_trigger() -> void:
-	if preview_template != "":
-		return
-	for cfg in _pit_exit_configs():
-		var cell: Vector2i = cfg["cell"]
-		var lane: Vector2i = cfg["lane"]
-		if not _area_by_cell.has(cell):
-			continue
-		var al := _pit_exit_axis_line(cfg["dir"])
-		if al.is_empty():
-			continue
-		var area: Dictionary = _area_by_cell[cell]
-		var cx := _pit_exit_center(lane)
-		var center := _pit_exit_local_pos(al, cx)
-		var normal: Vector2 = al["normal"]
-		var normal3 := Vector3(normal.x, 0.0, normal.y).normalized()
-		var door_pos := _office_opening_center_world_pos(area, center)
-		var trigger := Area3D.new()
-		trigger.name = "hole_anomaly_transition_%d_%d" % [cell.x, cell.y]
-		trigger.collision_layer = 0
-		trigger.collision_mask = 1
-		trigger.monitoring = true
-		trigger.monitorable = false
-		var collision := CollisionShape3D.new()
-		var shape := BoxShape3D.new()
-		shape.size = Vector3(_opening_width(), 2.2, 0.6)
-		collision.shape = shape
-		trigger.add_child(collision)
-		# Подход к закрытой двери изнутри провала, до её коллизии (дверь не
-		# открывается — см. _place_pit_exit_frame / docs/hole_e.md).
-		trigger.position = door_pos + normal3 * 0.5
-		add_child(trigger)
-		trigger.body_entered.connect(_on_hole_connector_body_entered)
-		_hole_connector_trigger = trigger
-	_setup_embedded_hole_anomaly()
-
-
-func _setup_embedded_hole_anomaly() -> void:
-	var anomaly := HOLE_ANOMALY_SCENE.instantiate() as Node3D
-	if anomaly == null:
-		push_error("Hole anomaly scene could not be instantiated")
-		return
-	anomaly.name = "embedded_hole_e"
-	anomaly.position = HOLE_WORLD_OFFSET
-	anomaly.visible = false
-	anomaly.process_mode = Node.PROCESS_MODE_DISABLED
-	anomaly.set("embedded_mode", true)
-	anomaly.set("embedded_player", _player_ref)
-	anomaly.set("embedded_environment", _env)
-	add_child(anomaly)
-	_hole_anomaly = anomaly
-	anomaly.call("set_embedded_active", false)
-	if anomaly.has_signal("office_door_reached"):
-		anomaly.connect("office_door_reached", _on_hole_office_door_reached)
-
-
-func _on_hole_connector_body_entered(body: Node3D) -> void:
-	if _hole_transition_started or _hole_anomaly_active or _infinite_anomaly_active \
-			or body != _player_ref or Time.get_ticks_msec() < _hole_portal_cooldown_until:
-		return
-	_hole_transition_started = true
-	call_deferred("_enter_hole_anomaly")
-
-
-func _enter_hole_anomaly() -> void:
-	if _hole_anomaly == null or not is_instance_valid(_hole_anomaly) \
-			or _hole_connector_trigger == null:
-		_hole_transition_started = false
-		return
-	_suspend_streaming_for_infinite()
-	_save_level_state_for_anomaly()
-	_hole_anomaly_active = true
-	_hole_portal_cooldown_until = Time.get_ticks_msec() + HOLE_PORTAL_COOLDOWN_MS
-	_hole_anomaly.call("set_embedded_active", true)
-	# Бесшовный портал (без вспышки/ноклипа) — тот же приём, что и у
-	# infinite_corridor_e: поза/скорость игрока переносятся относительно
-	# двух рамок, а не жёстко переставляются. Дверь закрыта физически, но
-	# триггер стоит перед ней, так что игрок не успевает в неё упереться.
-	_transfer_player_between_portals(
-		_pit_hole_portal_transform(), _hole_entry_portal_transform())
-	_hole_transition_started = false
-
-
-# Провал выходит на восток (+X); hole_e у себя смотрит на север (-Z, см.
-# hole_e.gd _spawn_player). Поворот на 90° в исходной рамке — тот же трюк,
-# что _level_infinite_portal_transform для infinite_corridor_e. Если после
-# перехода игрок окажется развёрнут не туда — знак PI*0.5 нужно поменять
-# на -PI*0.5, это единственная непроверенная деталь (нет рантайма Godot
-# в этой сессии).
-func _pit_hole_portal_transform() -> Transform3D:
-	return Transform3D(Basis(Vector3.UP, PI * 0.5),
-		_hole_connector_trigger.global_position)
-
-
-func _hole_entry_portal_transform() -> Transform3D:
-	return Transform3D(Basis.IDENTITY,
-		_hole_anomaly.global_transform * HOLE_ENTRY_LOCAL)
-
-
-# Боковая дверь hole_e после трёх циклов (см. docs/hole_e.md) ведёт в область
-# maze — уже существующий maze_after_pit сразу за закрытой дверью провала,
-# та же геометрия, что раньше была прямым проходом.
-func _on_hole_office_door_reached() -> void:
-	if not _hole_anomaly_active or Time.get_ticks_msec() < _hole_portal_cooldown_until:
-		return
-	call_deferred("_leave_hole_anomaly_to_maze")
-
-
-func _leave_hole_anomaly_to_maze() -> void:
-	if not _hole_anomaly_active:
-		return
-	_hole_portal_cooldown_until = Time.get_ticks_msec() + HOLE_PORTAL_COOLDOWN_MS
-	_hole_anomaly_active = false
-	_hole_anomaly.call("set_embedded_active", false)
-	_restore_level_state_after_anomaly()
-	_resume_streaming_after_infinite()
-	_trigger_flash()
-	_player_ref.velocity = Vector3.ZERO
-	if _area_by_cell.has(MAZE_AFTER_PIT_CELL):
-		_player_ref.global_position = _local_world(
-			MAZE_AFTER_PIT_CELL.x, MAZE_AFTER_PIT_CELL.y,
-			1.5, _pit_exit_center(PIT_EXIT_LANE_D), 1.2)
-
-
 func _suspend_streaming_for_infinite() -> void:
 	_stream_generation_epoch += 1
 	_stream_suspended_for_anomaly = true
@@ -6246,7 +6106,7 @@ func _stop_level_audio_for_anomaly() -> void:
 
 
 func _process(delta: float) -> void:
-	if _infinite_anomaly_active or _hole_anomaly_active:
+	if _infinite_anomaly_active:
 		return
 	_level_e_base_process(delta)
 	if _level_e_streaming_enabled():

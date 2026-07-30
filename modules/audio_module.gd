@@ -65,22 +65,6 @@ func play_flick() -> void:
 	flick_player.play(0.0)
 
 
-# Полная тишина (для встраиваемых лабораторий, когда узел неактивен —
-# не полагаемся только на process_mode, AudioStreamPlayer продолжал бы играть).
-func stop() -> void:
-	if hum_player != null:
-		hum_player.stop()
-	if flick_player != null:
-		flick_player.stop()
-	hum_volume = 0.0
-	flick_volume = 0.0
-
-
-func resume() -> void:
-	if hum_player != null and not hum_player.playing:
-		hum_player.play()
-
-
 func update(delta: float) -> void:
 	if player == null:
 		return
