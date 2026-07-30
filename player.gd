@@ -14,6 +14,18 @@ const CROUCH_CAM_Y  = -0.4
 const CAM_FOV_DEFAULT  := 75.0
 const CAM_LEVEL_SPEED  := 3.0
 const CAM_LEVEL_MOVE_THRESHOLD := 0.4
+
+# ── Покачивание камеры при ходьбе ──────────────────────────────────────────
+# Фаза берётся из той же накопленной дистанции, что и звук шагов, поэтому
+# нижняя точка просадки всегда совпадает с шагом, а не плывёт относительно
+# него. Единица фазы `_gait` — полный цикл походки, то есть ДВА шага:
+# перевал с ноги на ногу происходит раз в цикл, просадка — дважды.
+const BOB_VERTICAL := 0.035        # м, просадка на каждый шаг
+const BOB_LATERAL  := 0.045        # м, перевал с ноги на ногу
+const BOB_ROLL     := 0.016        # рад, крен в сторону опорной ноги
+const BOB_ATTACK   := 6.0          # скорость нарастания амплитуды
+const BOB_RELEASE  := 9.0          # скорость затухания при остановке
+const BOB_MOVE_THRESHOLD := 0.3    # та же граница движения, что у шагов
 const MOBILE_CONTROLS_SCENE := preload("res://mobile_controls.tscn")
 const MOBILE_LOOK_SENSITIVITY := 0.006
 const MOBILE_LOOK_ZONE_X := 0.45
@@ -28,6 +40,9 @@ var camera: Camera3D
 
 var _step_player: AudioStreamPlayer
 var _step_dist = 0.0
+var _gait := 0.0          # фаза походки, 1.0 = два шага
+var _bob_amount := 0.0    # огибающая амплитуды (0 в покое)
+var _cam_base := Vector3.ZERO   # база камеры; покачивание — смещение от неё
 
 var _is_crouching := false
 var _col_shape: CollisionShape3D
@@ -43,6 +58,8 @@ func _ready():
 			if child is Camera3D:
 				camera = child
 				break
+	if camera != null:
+		_cam_base = camera.position
 	_col_shape = get_node_or_null("CollisionShape3D")
 	# Против «залипания» движения о стыки множества box-коллайдеров (пол/стены
 	# собраны из сотен боксов → ghost-контакты на внутренних рёбрах):
@@ -120,7 +137,10 @@ func _execute_teleport() -> void:
 func _toggle_crouch() -> void:
 	_is_crouching = !_is_crouching
 	if camera:
-		camera.position.y = CROUCH_CAM_Y if _is_crouching else STAND_CAM_Y
+		# Присед двигает БАЗУ камеры: покачивание — смещение от неё, иначе они
+		# каждый кадр перезаписывали бы друг другу position.y.
+		_cam_base.y = CROUCH_CAM_Y if _is_crouching else STAND_CAM_Y
+		camera.position.y = _cam_base.y
 	if _col_shape and _col_shape.shape is CapsuleShape3D:
 		var cap = _col_shape.shape as CapsuleShape3D
 		if _is_crouching:
@@ -153,6 +173,33 @@ func _input(event):
 
 func _process(delta: float) -> void:
 	_update_camera_leveling(delta)
+	_apply_camera_bob(delta)
+
+
+# Смещение камеры от базы: перевал в сторону опорной ноги, просадка на каждый
+# шаг и небольшой крен — именно крен читается как «переваливается», одного
+# вертикального качания для этого мало.
+#
+# Амплитуда идёт через огибающую с разными скоростями нарастания и затухания,
+# поэтому старт и остановка не дают рывка. Фаза при остановке замирает, а не
+# сбрасывается, — иначе на затухающей амплитуде был бы виден скачок.
+func _apply_camera_bob(delta: float) -> void:
+	if camera == null:
+		return
+	var horiz := Vector2(velocity.x, velocity.z).length()
+	var moving := horiz > BOB_MOVE_THRESHOLD and is_on_floor()
+	var target := clampf(horiz / SPEED, 0.0, 1.0) if moving else 0.0
+	var rate := BOB_ATTACK if target > _bob_amount else BOB_RELEASE
+	_bob_amount = lerpf(_bob_amount, target, 1.0 - exp(-rate * delta))
+	if _bob_amount <= 0.0005:
+		_bob_amount = 0.0
+	var lateral := sin(_gait * TAU)
+	var vertical := -cos(_gait * TAU * 2.0)
+	camera.position = _cam_base + Vector3(
+		lateral * BOB_LATERAL * _bob_amount,
+		vertical * BOB_VERTICAL * _bob_amount,
+		0.0)
+	camera.rotation.z = -lateral * BOB_ROLL * _bob_amount
 
 # Плавное выравнивание вертикали камеры при движении
 func _update_camera_leveling(delta: float) -> void:
@@ -190,9 +237,16 @@ func _physics_process(delta):
 	var horiz = Vector2(velocity.x, velocity.z).length()
 	if horiz > 0.3 and is_on_floor():
 		_step_dist += horiz * delta
+		# Фаза походки растёт из той же дистанции, что и шаги, поэтому просадка
+		# камеры и звук шага не расходятся. Пол-цикла на шаг.
+		_gait = fmod(_gait + horiz * delta / STEP_STRIDE * 0.5, 1.0)
 		if _step_dist >= STEP_STRIDE:
 			_step_dist = fmod(_step_dist, STEP_STRIDE)
 			_step_player.pitch_scale = randf_range(0.92, 1.08)
 			_step_player.play()
 	else:
 		_step_dist = 0.0
+		# _step_dist обнуляется, поэтому фазу подтягиваем к ближайшему касанию:
+		# иначе после остановки качание разошлось бы со звуком шагов. Амплитуда
+		# в этот момент уже нулевая, так что подтяжка не видна.
+		_gait = fmod(round(_gait * 2.0) / 2.0, 1.0)
