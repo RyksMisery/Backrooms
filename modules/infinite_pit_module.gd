@@ -36,13 +36,17 @@ const ROOM_SIZE := TILE_LENGTH
 const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
-# Глубину даёт КАНОНИЧЕСКИЙ ТУМАН, а не фейд мешей по дистанции. Годот гасит
-# `visibility_range` дизерингом: вблизи крупный меш читается как плавное
-# появление, вдали мелкая панель превращается в мерцание. Хуже того, меш
-# растворяется по 3D-дистанции, а его лампа гаснет по своей кривой вдоль оси —
-# в промежутке панели уже не видно, а свет ещё горит, и это читается как
-# светящееся пятно без светильника. Поэтому у панелей кольца НЕТ
-# visibility_range: они просто уходят в туман вместе со всей геометрией.
+const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
+# Лампа гаснет чуть РАНЬШЕ, чем исчезает её панель.
+#
+# Панель гасится `visibility_range`, то есть по 3D-дистанции до меша, а свет
+# считался по разнице вдоль оси движения. Для панели, смещённой вбок и вверх,
+# 3D-дистанция всегда больше: при боковом смещении в полсекции панель
+# исчезала уже на 37.7 м, а её лампа горела до 42.2 — в этой полосе оставалось
+# светящееся пятно без светильника. Теперь обе величины считаются от ОДНОЙ
+# точки (самой панели) и по одной метрике, а этот запас гарантирует нужный
+# порядок даже при расхождении в пару метров.
+const LIGHT_LEAD_DISTANCE := 2.5
 const END_DISTANCE := TILE_LENGTH * 7.0
 const RECYCLE_DISTANCE := END_DISTANCE + TILE_LENGTH
 const CAP_SIDE_OVERLAP := TILE_LENGTH
@@ -332,6 +336,11 @@ func _build_tile_lights(tile: Node3D) -> void:
 		var fixture: Dictionary = lighting.add_level_e_area_ceiling_fixture(
 			tile, local_position, Vector2i.ONE, RING_AREA_ID)
 		var visible_panel := fixture.get("visible_panel") as GeometryInstance3D
+		if visible_panel != null:
+			visible_panel.visibility_range_end = FADE_DARK_DISTANCE
+			visible_panel.visibility_range_end_margin = PANEL_FADE_MARGIN
+			visible_panel.visibility_range_fade_mode = \
+				GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		var panel := fixture.get("panel") as Light3D
 		var bounce := fixture.get("bounce") as Light3D
 		var legacy := fixture.get("legacy") as Light3D
@@ -562,14 +571,20 @@ func _update_light_fade(player: Node3D) -> void:
 		# Гасится всё семейство целиком: area-панель, потолочный bounce и
 		# legacy Omni, если он замещает панель. Иначе за капом остался бы
 		# светить недогашенный член семейства.
-		var reference = entry.get("panel")
+		# Точка отсчёта — САМА ПАНЕЛЬ и 3D-дистанция: ровно то, по чему Годот
+		# гасит её `visibility_range`. Иначе свет и панель расходятся.
+		var reference = entry.get("visible_panel")
+		if reference == null or not is_instance_valid(reference):
+			reference = entry.get("panel")
 		if reference == null or not is_instance_valid(reference):
 			reference = entry.get("legacy")
 		if reference == null or not is_instance_valid(reference):
 			continue
-		var distance := absf(
-			(reference as Node3D).global_position.x - player.global_position.x)
-		var level := clampf((FADE_DARK_DISTANCE - distance) / span, 0.0, 1.0)
+		var distance := (reference as Node3D).global_position.distance_to(
+			player.global_position)
+		var level := clampf(
+			(FADE_DARK_DISTANCE - LIGHT_LEAD_DISTANCE - distance) / span,
+			0.0, 1.0)
 		level = smoothstep(0.0, 1.0, level)
 		if bool(entry["out"]):
 			level = 0.0

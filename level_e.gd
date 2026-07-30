@@ -756,7 +756,6 @@ var _pit_door_world_pos := Vector3.ZERO   # проём дальней (закр�
 var _pit_door_node_prefix := ""           # рамы/створка — снимаются при reveal
 var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
 var _pit_ring_freed_max_x := -2147483648  # граница блоков, отданных кольцу
-var _pit_saved_fog_enabled := false
 var _pit_wind_player: AudioStreamPlayer
 var _pit_wind_level := 0.0
 var _pit_wind_from := 0.0
@@ -6212,12 +6211,6 @@ func _reveal_infinite_pit_back() -> void:
 	_free_blocks_covered_by_ring(FIRST_RING_CELL.x)
 	_strip_pre_infinite_pit_dressing()
 	_sweep_stray_lights_in_ring()
-	# Глубину в бесконечном провале даёт КАНОНИЧЕСКИЙ ТУМАН — тот же, что
-	# включает лаборатория hole_e. Без него дальняя часть кольца просто
-	# чёрная: пространство не читается, а торцевой кап нечем прятать.
-	if _env != null:
-		_pit_saved_fog_enabled = _env.fog_enabled
-		_env.fog_enabled = true
 	_pit_ring.reveal_back(_player_ref)
 
 
