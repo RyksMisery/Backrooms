@@ -757,6 +757,8 @@ var _pit_door_node_prefix := ""           # рамы/створка — сним
 var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
 var _pit_ring_freed_max_x := -2147483648  # граница блоков, отданных кольцу
 var _pit_door_keep_panels: Array[MeshInstance3D] = []  # панели оставленных ламп
+var _pit_anchor_lamps: Array[Dictionary] = []   # лампы области в кроссфейде
+var _pit_anchor_fade_t := 0.0
 var _pit_wind_player: AudioStreamPlayer
 var _pit_wind_level := 0.0
 var _pit_wind_from := 0.0
@@ -6190,8 +6192,7 @@ func _update_infinite_pit(delta: float) -> void:
 		return
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
-		if bool(_pit_ring.consume_anchor_release()):
-			_release_pit_anchor_lights()
+		_update_pit_anchor_crossfade(delta)
 		_update_infinite_pit_flicker_audio()
 		_update_infinite_pit_wind(delta)
 		_update_infinite_pit_hum_trim(delta)
@@ -6246,6 +6247,7 @@ func _reveal_infinite_pit_back() -> void:
 	_strip_pre_infinite_pit_dressing()
 	# Запечённые панели ушли с блоком — подставляем их копии оставленным лампам.
 	_set_pit_door_keep_panels(true)
+	_collect_pit_anchor_lamps()
 	_pit_ring.reveal_back(_player_ref)
 
 
@@ -6381,16 +6383,53 @@ func _update_infinite_pit_wind(delta: float) -> void:
 # перед провалом: позиция ближайшей мигающей лампы отдаётся модулю звука (он
 # сам считает затухание по расстоянию), а на спаде яркости играется тот же
 # flick-сэмпл. Поэтому звук ложится поверх общего гула и ветра, а не заменяет их.
-# Якорная секция уехала за кап и стала обычным участником кольца со своим
-# светом. Только теперь снимаются лампы исходной области и подставные панели —
-# происходит это в полной темноте за капом, поэтому смены света не видно.
-func _release_pit_anchor_lights() -> void:
+# Кроссфейд раскладки. Секция кольца светится плотнее, чем область-провал, и
+# мгновенная замена читается ступенькой: либо вспышкой, либо тёмным пятном
+# старой раскладки, если оставить её насовсем. Поэтому лампы области сводятся
+# ровно за то же время, за которое кольцо вводит свой свет. Панели-копии
+# держатся до конца сведения, иначе на затухающих лампах снова появятся
+# источники без светильника.
+func _update_pit_anchor_crossfade(delta: float) -> void:
+	if _pit_anchor_lamps.is_empty():
+		return
+	var seconds: float = maxf(0.001, float(_pit_ring.reveal_fade_seconds()))
+	_pit_anchor_fade_t = minf(seconds, _pit_anchor_fade_t + delta)
+	var level := 1.0 - smoothstep(0.0, 1.0, _pit_anchor_fade_t / seconds)
+	for record_value in _pit_anchor_lamps:
+		var record: Dictionary = record_value
+		var light_value = record["light"]
+		if not is_instance_valid(light_value):
+			continue
+		var light := light_value as Light3D
+		light.light_energy = float(record["base_energy"]) * level
+		light.visible = level > 0.001
+	if _pit_anchor_fade_t < seconds:
+		return
+	_pit_anchor_lamps.clear()
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring(false)
 	for panel: MeshInstance3D in _pit_door_keep_panels:
 		if panel != null and is_instance_valid(panel):
 			panel.queue_free()
 	_pit_door_keep_panels.clear()
+
+
+# Лампы исходной области, которые участвуют в кроссфейде.
+func _collect_pit_anchor_lamps() -> void:
+	_pit_anchor_lamps.clear()
+	_pit_anchor_fade_t = 0.0
+	for array_name in ["_lamps", "_area_lamps", "_area_bounce_lamps",
+			"_legacy_aux_lights", "_area_aux_lights"]:
+		for light_value in get(String(array_name)):
+			if light_value == null or not is_instance_valid(light_value):
+				continue
+			var light := light_value as Light3D
+			if light == null or not _inside_pit_anchor(light.global_position):
+				continue
+			_pit_anchor_lamps.append({
+				"light": light,
+				"base_energy": light.light_energy,
+			})
 
 
 func _update_infinite_pit_flicker_audio() -> void:
@@ -6450,7 +6489,7 @@ func _reveal_infinite_pit_front() -> void:
 	# лампы снимаются вторым проходом — вместе с теми, что были оставлены
 	# гореть у двери на первом этапе.
 	# Свет якорной секции не трогаем и здесь: он снимается только когда она
-	# уедет за кап (_release_pit_anchor_lights).
+	# сведён кроссфейдом (_update_pit_anchor_crossfade).
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring(true)
 	# Свечение потолочных панелей слито в один меш на весь уровень, выборочно

@@ -56,6 +56,10 @@ const RING_AREA_ID := "infinite_pit"
 const PANEL_OUTAGE_CHANCE := 0.35
 # Редкая мигающая панель. 0.0 полностью выключает эффект.
 const PANEL_FLICKER_CHANCE := 0.05
+# Свет кольца вводится не мгновенно. Без этого в кадре включения все лампы
+# секций горят на полной энергии — затухание по расстоянию применяется только
+# следующим вызовом update(), и это читается как вспышка.
+const REVEAL_FADE_SECONDS := 1.5
 
 var owner: Node3D
 var architecture
@@ -84,9 +88,7 @@ var _max_door_reveal_ms := 0.0
 var _rng := RandomNumberGenerator.new()
 var _flick_triggered := false
 var _flicker_position = null
-var _anchor_tile: Node3D
-var _anchor_released := false
-var _anchor_release_pending := false
+var _reveal_gain := 0.0
 var _back_revealed := false
 var _front_revealed := false
 
@@ -141,6 +143,10 @@ func reveal_back(player: Node3D) -> void:
 	_cap_west.visible = true
 	_cycle_anchor_x = player.global_position.x
 	_update_caps(player)
+	# Затухание применяется В ЭТОМ ЖЕ кадре, иначе первый кадр рисуется с
+	# лампами на полной энергии — вспышка.
+	_reveal_gain = 0.0
+	_update_light_fade(player)
 
 
 # Этап 2: игрок отвернулся от двери. Восточные секции включаются — провал
@@ -153,6 +159,7 @@ func reveal_front(player: Node3D) -> void:
 		_set_tree_active(tile, true)
 	_cap_east.visible = true
 	_update_caps(player)
+	_update_light_fade(player)
 
 
 func back_revealed() -> bool:
@@ -198,10 +205,6 @@ func _build_tiles() -> void:
 			tile.add_child(wall)
 			_build_solid_side_wall(wall, side)
 			tile.set_meta("wall_%s" % side, wall)
-		# Якорная секция совпадает с исходной областью-провалом. Её свет
-		# принадлежит уровню до первого рециклинга — см. _apply_tile_outage.
-		if logical_index == 0:
-			_anchor_tile = tile
 		_build_tile_lights(tile)
 		_tiles.append(tile)
 
@@ -321,19 +324,6 @@ func _build_tile_lights(tile: Node3D) -> void:
 #    читается как рисунок сильнее всего.
 func _apply_tile_outage(tile: Node3D) -> void:
 	if not tile.has_meta("light_entries"):
-		return
-	# Якорная секция до первого рециклинга светится ЛАМПАМИ УРОВНЯ: раскладка
-	# ближайших ламп не должна меняться в момент подмены, иначе смена света
-	# заметна даже без разворота. Свои светильники секция включает только
-	# уехав за кап, то есть в полной темноте.
-	if tile == _anchor_tile and not _anchor_released:
-		for entry_value in tile.get_meta("light_entries"):
-			var suppressed: Dictionary = entry_value
-			suppressed["out"] = true
-			suppressed["flicker"] = false
-			var suppressed_panel = suppressed.get("visible_panel")
-			if suppressed_panel != null and is_instance_valid(suppressed_panel):
-				(suppressed_panel as Node3D).visible = false
 		return
 	var entries: Array = tile.get_meta("light_entries")
 	var station_count := int(tile.get_meta("station_count", 4))
@@ -506,6 +496,7 @@ func update(player: Node3D, _delta: float) -> void:
 		return
 	_update_move_sign(player)
 	_update_caps(player)
+	_reveal_gain = minf(1.0, _reveal_gain + _delta / REVEAL_FADE_SECONDS)
 	_update_ring_flicker(_delta, player)
 	_update_light_fade(player)
 	# До второго этапа игрок ещё стоит у двери: кольцо не крутится, циклы не
@@ -552,6 +543,7 @@ func _update_light_fade(player: Node3D) -> void:
 			(reference as Node3D).global_position.x - player.global_position.x)
 		var level := clampf((FADE_DARK_DISTANCE - distance) / span, 0.0, 1.0)
 		level = smoothstep(0.0, 1.0, level)
+		level *= _reveal_gain
 		if bool(entry["out"]):
 			level = 0.0
 		elif bool(entry["flicker"]):
@@ -661,14 +653,12 @@ func _recycle_tiles(player: Node3D) -> void:
 		if center < px - RECYCLE_DISTANCE:
 			tile.position.x += span
 			_drop_door_if_host(tile)
-			_release_anchor_if_needed(tile)
 			# Новый индекс в мире — новый рисунок негорящих панелей. Иначе
 			# кольцо крутило бы одни и те же TILE_COUNT рисунков по кругу.
 			_apply_tile_outage(tile)
 		elif center > px + RECYCLE_DISTANCE:
 			tile.position.x -= span
 			_drop_door_if_host(tile)
-			_release_anchor_if_needed(tile)
 			_apply_tile_outage(tile)
 
 
@@ -736,21 +726,6 @@ func _pick_door_host(target_x: float) -> Node3D:
 	return best
 
 
-# Якорная секция уехала за кап — с этого момента она обычный участник кольца
-# со своим светом, а уровень может снимать лампы исходной области.
-func _release_anchor_if_needed(tile: Node3D) -> void:
-	if tile != _anchor_tile or _anchor_released:
-		return
-	_anchor_released = true
-	_anchor_release_pending = true
-
-
-func consume_anchor_release() -> bool:
-	var pending := _anchor_release_pending
-	_anchor_release_pending = false
-	return pending
-
-
 func _drop_door_if_host(tile: Node3D) -> void:
 	if _door_host == tile:
 		_clear_exit_door()
@@ -804,6 +779,12 @@ func ring_lamps() -> Array:
 		if lamp != null and is_instance_valid(lamp):
 			result.append(lamp)
 	return result
+
+
+# Длительность ввода света — уровень сводит свои лампы за то же время, чтобы
+# смена раскладки прошла кроссфейдом, а не ступенькой.
+func reveal_fade_seconds() -> float:
+	return REVEAL_FADE_SECONDS
 
 
 func cycle_count() -> int:
