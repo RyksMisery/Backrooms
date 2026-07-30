@@ -643,6 +643,7 @@ const INFINITE_PORTAL_COOLDOWN_MS := 350
 # Носитель — существующая область-провал, отдельная сцена не встраивается;
 # см. docs/hole_e.md, раздел «Интеграция в level_e».
 const INFINITE_PIT_MODULE := preload("res://modules/infinite_pit_module.gd")
+const INFINITE_PIT_BOT := preload("res://tools/infinite_pit_bot.gd")
 # Игрок считается «дошедшим до двери», когда он ближе этого расстояния к её
 # проёму. Reveal срабатывает уже от разворота — когда дверь вне фрустума.
 const PIT_REVEAL_DOOR_RADIUS := 4.0
@@ -5552,6 +5553,11 @@ func _ready() -> void:
 	if _level_e_main_layout_features_enabled():
 		_setup_infinite_connector_trigger()
 		_prebuild_infinite_pit()
+		# Бот бесконечного провала запускается сам, если рядом лежит маркер
+		# `.run_infinite_pit_bot`. Тогда достаточно нажать Play в редакторе,
+		# командная строка не нужна. Маркер снимается после прогона.
+		if INFINITE_PIT_BOT.marker_present():
+			call_deferred("_run_infinite_pit_bot")
 		_setup_model_fill_system()
 	_lf3_capture_reference_shadow_profiles()
 	lf3_set_shadow_mode(true)
@@ -6135,6 +6141,22 @@ func _leave_infinite_anomaly() -> void:
 
 # Кольцо собирается заранее и лежит скрытым: собирать 17 секций в момент
 # переключения — гарантированный фриз в кадре.
+func _run_infinite_pit_bot() -> void:
+	for _frame in range(30):
+		await get_tree().process_frame
+	var bot = INFINITE_PIT_BOT.new()
+	var result: Dictionary = await bot.run(get_tree(), self)
+	if bool(result.get("ok", false)):
+		print("INFINITE_PIT_BOT_OK: %s" % String(result["dir"]))
+	else:
+		push_error("INFINITE_PIT_BOT_FAILED: %s"
+			% String(result.get("error", "unknown")))
+	# Маркер снимается, чтобы следующий запуск игры был обычным.
+	DirAccess.remove_absolute(
+		ProjectSettings.globalize_path(INFINITE_PIT_BOT.MARKER_PATH))
+	get_tree().quit(0)
+
+
 func _prebuild_infinite_pit() -> void:
 	if _pit_ring != null or _pit_door_node_prefix == "":
 		return
