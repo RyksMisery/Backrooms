@@ -45,6 +45,9 @@ const DOOR_PASSED_MARGIN := TILE_LENGTH * 0.75
 const DOOR_CENTER_TOLERANCE := Architecture.CELL * 0.5
 # Проём двери — в канонической клетке центра секции, как в лаборатории.
 const DOOR_CENTER_X := 7.5
+# area_id семейства света: кольцо не является областью occupancy-графа, но
+# каноническому конструктору идентификатор нужен.
+const RING_AREA_ID := "infinite_pit"
 
 var owner: Node3D
 var architecture
@@ -229,18 +232,34 @@ func _build_tile_lights(tile: Node3D) -> void:
 			cell.x * Architecture.CELL,
 			Architecture.CEIL_H + 0.02,
 			cell.y * Architecture.CELL)
-		var panel_index := tile.get_child_count()
-		var light: OmniLight3D = lighting.add_ceiling_light(
-			tile, local_position, true)
-		var panel := tile.get_child(panel_index) as GeometryInstance3D
-		if panel != null:
-			panel.visibility_range_end = FADE_DARK_DISTANCE
-			panel.visibility_range_end_margin = PANEL_FADE_MARGIN
-			panel.visibility_range_fade_mode = \
+		# Канонический default: семейство `level_e_area` (панель + AreaLight3D
+		# + потолочный bounce + скрытый legacy Omni), тот же конструктор и те
+		# же числа, что у фиксированной области-провала. Свой профиль
+		# источника кольцо не заводит — см. docs/lights.md, «Обязательный
+		# световой default новой области».
+		var fixture: Dictionary = lighting.add_level_e_area_ceiling_fixture(
+			tile, local_position, Vector2i.ONE, RING_AREA_ID)
+		var visible_panel := fixture.get("visible_panel") as GeometryInstance3D
+		if visible_panel != null:
+			visible_panel.visibility_range_end = FADE_DARK_DISTANCE
+			visible_panel.visibility_range_end_margin = PANEL_FADE_MARGIN
+			visible_panel.visibility_range_fade_mode = \
 				GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+		var panel := fixture.get("panel") as Light3D
+		var bounce := fixture.get("bounce") as Light3D
+		var legacy := fixture.get("legacy") as Light3D
+		# Если AreaLight3D в сборке нет, семейство вырождается в legacy Omni —
+		# тогда показываем его, иначе секция осталась бы вовсе без света.
+		if panel == null and legacy != null:
+			legacy.visible = true
 		_light_entries.append({
-			"light": light,
-			"base_energy": light.light_energy,
+			"panel": panel,
+			"bounce": bounce,
+			"legacy": legacy,
+			"panel_energy": panel.light_energy if panel != null else 0.0,
+			"bounce_energy": bounce.light_energy if bounce != null else 0.0,
+			"legacy_energy": legacy.light_energy if legacy != null else 0.0,
+			"legacy_active": panel == null,
 		})
 
 
@@ -384,16 +403,37 @@ func _update_caps(player: Node3D) -> void:
 func _update_light_fade(player: Node3D) -> void:
 	var span := maxf(0.001, FADE_DARK_DISTANCE - FADE_FULL_DISTANCE)
 	for entry: Dictionary in _light_entries:
-		var light_value = entry.get("light")
-		if not is_instance_valid(light_value):
+		# Гасится всё семейство целиком: area-панель, потолочный bounce и
+		# legacy Omni, если он замещает панель. Иначе за капом остался бы
+		# светить недогашенный член семейства.
+		var reference = entry.get("panel")
+		if reference == null or not is_instance_valid(reference):
+			reference = entry.get("legacy")
+		if reference == null or not is_instance_valid(reference):
 			continue
-		var light := light_value as OmniLight3D
 		var distance := absf(
-			light.global_position.x - player.global_position.x)
+			(reference as Node3D).global_position.x - player.global_position.x)
 		var level := clampf((FADE_DARK_DISTANCE - distance) / span, 0.0, 1.0)
 		level = smoothstep(0.0, 1.0, level)
-		light.light_energy = float(entry["base_energy"]) * level
-		light.visible = level > 0.001
+		var lit := level > 0.001
+		_fade_family_light(entry.get("panel"),
+			float(entry["panel_energy"]), level, lit)
+		_fade_family_light(entry.get("bounce"),
+			float(entry["bounce_energy"]), level, lit)
+		if bool(entry["legacy_active"]):
+			_fade_family_light(entry.get("legacy"),
+				float(entry["legacy_energy"]), level, lit)
+
+
+func _fade_family_light(light_value, base_energy: float, level: float,
+		lit: bool) -> void:
+	if light_value == null or not is_instance_valid(light_value):
+		return
+	var light := light_value as Light3D
+	if light == null:
+		return
+	light.light_energy = base_energy * level
+	light.visible = lit
 
 
 # Секция переставляется только ещё на одну полную секцию дальше капа — в
