@@ -19,6 +19,9 @@ var flick_player: AudioStreamPlayer
 var hum_volume := 0.0
 var flick_volume := 0.0
 var flick_position: Variant = null
+# Подрез громкости гула, дБ (0 — без изменений). Потребитель может вводить его
+# плавно; сам модуль значение не сглаживает.
+var hum_trim_db := 0.0
 
 
 func _init(level_owner: Node3D) -> void:
@@ -74,7 +77,7 @@ func update(delta: float) -> void:
 	for point: Vector2 in lamp_points:
 		density += exp(-position_2d.distance_squared_to(point) / sigma_squared)
 	hum_volume = _approach(hum_volume, clampf(density / HUM_FULL, 0.0, 1.0), delta)
-	_set_volume(hum_player, HUM_BASE_DB, hum_volume)
+	_set_volume(hum_player, HUM_BASE_DB + hum_trim_db, hum_volume)
 	if flick_position is Vector3:
 		var fp := flick_position as Vector3
 		var distance := position_2d.distance_to(Vector2(fp.x, fp.z))

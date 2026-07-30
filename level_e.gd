@@ -666,6 +666,10 @@ const PIT_DOOR_LIGHT_KEEP_RADIUS := 6.0
 # Лампы кольца переставляются вместе с секциями, поэтому список для гула
 # обновляется периодически, а не один раз.
 const PIT_AUDIO_REFRESH_SECONDS := 0.5
+# Гул ламп в бесконечном провале притушен, чтобы ветер читался поверх него.
+# Вводится плавно — резкая смена громкости слышна как скачок.
+const PIT_HUM_TRIM_DB := -6.0
+const PIT_HUM_TRIM_SECONDS := 8.0
 
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
 # видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
@@ -764,6 +768,8 @@ var _pit_wind_seg_len := PIT_WIND_FADE_SECONDS
 var _pit_wind_rising := true
 var _pit_wind_rng := RandomNumberGenerator.new()
 var _pit_audio_refresh_t := 0.0
+var _pit_hum_trim_active := false
+var _pit_hum_trim_t := 0.0
 
 
 func _level_e_base_ready() -> void:
@@ -6156,6 +6162,7 @@ func _update_infinite_pit(delta: float) -> void:
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
 		_update_infinite_pit_wind(delta)
+		_update_infinite_pit_hum_trim(delta)
 		_pit_audio_refresh_t += delta
 		if _pit_audio_refresh_t >= PIT_AUDIO_REFRESH_SECONDS:
 			_pit_audio_refresh_t = 0.0
@@ -6337,6 +6344,15 @@ func _update_infinite_pit_wind(delta: float) -> void:
 			PIT_WIND_BASE_DB + linear_to_db(_pit_wind_level))
 
 
+func _update_infinite_pit_hum_trim(delta: float) -> void:
+	if not _pit_hum_trim_active or _canonical_audio_module == null \
+			or _pit_hum_trim_t >= PIT_HUM_TRIM_SECONDS:
+		return
+	_pit_hum_trim_t = minf(PIT_HUM_TRIM_SECONDS, _pit_hum_trim_t + delta)
+	var phase := smoothstep(0.0, 1.0, _pit_hum_trim_t / PIT_HUM_TRIM_SECONDS)
+	_canonical_audio_module.hum_trim_db = PIT_HUM_TRIM_DB * phase
+
+
 # Гул ламп в бесконечном провале должен остаться, а ветер — лечь поверх.
 # Лампы кольца живут в собственном модуле света, поэтому в список для звука
 # они попадают только отсюда; секции переставляются, поэтому список
@@ -6372,6 +6388,7 @@ func _reveal_infinite_pit_front() -> void:
 	if _lamp_glow_mi != null and is_instance_valid(_lamp_glow_mi):
 		_lamp_glow_mi.visible = false
 	_start_infinite_pit_wind()
+	_pit_hum_trim_active = true
 	_pit_ring.reveal_front(_player_ref)
 
 
