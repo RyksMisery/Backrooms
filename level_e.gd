@@ -4033,7 +4033,8 @@ func _check_infinite_pit_fall(delta: float) -> void:
 func _nearest_pit_walk_center(p: Vector3) -> Vector3:
 	# После reveal мостки принадлежат кольцу, а не исходной области.
 	if _pit_ring_active and _pit_ring != null:
-		return _pit_ring.nearest_walk_center(p)
+		var ring_center: Vector3 = _pit_ring.nearest_walk_center(p)
+		return ring_center
 	if _pit_walk_world_centers.is_empty():
 		return _spawn_pos
 	var best: Vector3 = _pit_walk_world_centers[0]
@@ -6109,20 +6110,25 @@ func _prebuild_infinite_pit() -> void:
 
 
 func _update_infinite_pit(delta: float) -> void:
-	if _player_ref == null or _pit_ring == null or _player_ref.camera == null:
+	if _player_ref == null or _pit_ring == null:
+		return
+	# `camera` объявлена в скрипте игрока, а _player_ref типизирован как
+	# CharacterBody3D — поэтому забираем её в типизированную переменную,
+	# иначе вывод типа у результата вызова невозможен.
+	var camera: Camera3D = _player_ref.camera
+	if camera == null:
 		return
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
-	var door_in_view := _player_ref.camera.is_position_in_frustum(
-		_pit_door_world_pos)
-	if not _pit_ring.back_revealed():
+	var door_in_view := camera.is_position_in_frustum(_pit_door_world_pos)
+	if not bool(_pit_ring.back_revealed()):
 		# Этап 1: игрок подошёл и смотрит на дверь — подменяется только то,
 		# что за спиной. Вид вперёд не трогается.
 		if door_in_view and _player_ref.global_position.distance_to(
 				_pit_door_world_pos) <= PIT_REVEAL_DOOR_RADIUS:
 			_reveal_infinite_pit_back()
 		return
-	if not _pit_ring.front_revealed() and not door_in_view:
+	if not bool(_pit_ring.front_revealed()) and not door_in_view:
 		# Этап 2: отвернулся — снимаем дверь вместе с торцевой стеной.
 		_reveal_infinite_pit_front()
 
