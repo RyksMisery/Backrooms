@@ -6200,6 +6200,10 @@ func _strip_pre_infinite_pit_dressing() -> void:
 		_flick_spot.queue_free()
 	_flick_spot = null
 	_has_flicker = false
+	# `_flicker` держит собственные ссылки на те же лампы и панели, поэтому
+	# чистить его надо ДО освобождения: иначе _update_pit_flicker каждый кадр
+	# приводит уже освобождённый объект к Light3D.
+	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring()
 	# Свечение потолочных панелей слито в один меш на весь уровень, поэтому
 	# выборочно снять его нельзя: гасим целиком — вне кольца оно всё равно
@@ -6208,14 +6212,36 @@ func _strip_pre_infinite_pit_dressing() -> void:
 		_lamp_glow_mi.visible = false
 
 
+# Мерцающие панели-подсказки, попавшие в зону кольца, перестают существовать
+# вместе со своими лампами — запись о них тоже снимается.
+func _drop_flicker_entries_covered_by_ring() -> void:
+	var kept: Array = []
+	for entry_value in _flicker:
+		var entry: Dictionary = entry_value
+		# Валидность проверяется ДО приведения типа: каст освобождённого
+		# объекта сам по себе бросает «Trying to cast a freed object».
+		var light_value = entry.get("light", null)
+		if light_value == null or not is_instance_valid(light_value):
+			continue
+		var light := light_value as Node3D
+		if _block_covered_by_ring(_block_of(light.global_position)):
+			continue
+		kept.append(entry_value)
+	_flicker = kept
+
+
 func _free_resident_lamps_covered_by_ring() -> void:
+	# `_model_fill_lights` — подсветка импортных моделей (в т.ч. табличек
+	# «скользко»); без неё остался бы висеть источник у исчезнувшей модели.
 	for array_name in ["_lamps", "_area_lamps", "_area_bounce_lamps",
-			"_legacy_aux_lights", "_area_aux_lights"]:
+			"_legacy_aux_lights", "_area_aux_lights", "_model_fill_lights"]:
 		var source: Array = get(String(array_name))
 		var kept: Array = []
 		for light_value in source:
+			if light_value == null or not is_instance_valid(light_value):
+				continue
 			var light := light_value as Node3D
-			if light == null or not is_instance_valid(light):
+			if light == null:
 				continue
 			if _block_covered_by_ring(_block_of(light.global_position)):
 				light.queue_free()
@@ -6241,6 +6267,7 @@ func _reveal_infinite_pit_front() -> void:
 	_free_blocks_covered_by_ring(2147483647)
 	# Восточные области отдаются кольцу только сейчас, поэтому их резидентные
 	# лампы снимаются вторым проходом.
+	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring()
 	_pit_ring.reveal_front(_player_ref)
 
