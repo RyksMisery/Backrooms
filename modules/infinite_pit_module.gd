@@ -206,10 +206,30 @@ func _side_wall_z(side: String) -> float:
 		else ROOM_SIZE + WALL_DEPTH * 0.5
 
 
+# Девять панелей над внутренними пересечениями плюс три над стыком секций.
+#
+# Стык двух половинных каём образует такой же мосток `0.6 CELL`, как
+# внутренние, поэтому по симметрии он тоже должен быть освещён — иначе через
+# каждые 15 клеток в решётке появляется тёмная поперечная полоса. Секция
+# владеет стыком у своего западного края, так что дубля у соседей нет.
+# Клетка берётся тем же `opening_anchor`, что и остальные, без своего
+# tie-break.
+func _tile_light_cells() -> Array[Vector2]:
+	var cells := Architecture.pit_intersection_light_cells()
+	var join_x := Architecture.opening_anchor(0.0)
+	var lateral: Array[float] = []
+	for cell: Vector2 in cells:
+		if not lateral.has(cell.y):
+			lateral.append(cell.y)
+	for z: float in lateral:
+		cells.append(Vector2(join_x, z))
+	return cells
+
+
 # Панели строго над пересечениями внутренних мостков — общий якорь
 # `Architecture.pit_intersection_light_cells`, без локальных сдвигов.
 func _build_tile_lights(tile: Node3D) -> void:
-	for cell: Vector2 in Architecture.pit_intersection_light_cells():
+	for cell: Vector2 in _tile_light_cells():
 		var local_position := Vector3(
 			cell.x * Architecture.CELL,
 			Architecture.CEIL_H + 0.02,

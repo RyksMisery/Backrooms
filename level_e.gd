@@ -737,6 +737,7 @@ var _pit_reached_door := false
 var _pit_door_world_pos := Vector3.ZERO   # проём дальней (закрытой) двери провала
 var _pit_door_node_prefix := ""           # рамы/створка — снимаются при reveal
 var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
+var _pit_ring_freed_max_x := -2147483648  # граница блоков, отданных кольцу
 
 
 func _level_e_base_ready() -> void:
@@ -4944,6 +4945,9 @@ func _spawn_flicker_panel(pos: Vector3) -> void:
 	mi.mesh = bm
 	mi.material_override = mat
 	mi.position = pos
+	# Имена нужны, чтобы снять оформление старого провала при переключении
+	# в бесконечный режим (_strip_pre_infinite_pit_dressing).
+	mi.name = "pit_flicker_panel"
 	add_child(mi)
 	var l := OmniLight3D.new()
 	l.omni_range = LAMP_RANGE
@@ -4952,6 +4956,7 @@ func _spawn_flicker_panel(pos: Vector3) -> void:
 	l.shadow_enabled = false
 	l.light_energy = LAMP_ENERGY
 	l.position = pos + Vector3(0, -LIGHTING.SOURCE_BASE_DROP, 0)
+	l.name = "pit_flicker_lamp"
 	_apply_runtime_light_rules(l)
 	add_child(l)
 	_legacy_aux_lights.append(l)
@@ -5969,6 +5974,7 @@ func _place_pit_warning_sign() -> void:
 	box.size = Vector3(0.55, 0.62, 0.3) * 1.5
 	cs.shape = box
 	cs.position = pos + Vector3(0.0, 0.31 * 1.5, 0.0)
+	cs.name = "pit_entrance_sign_collision"
 	_body.add_child(cs)
 	var inst2 := scene.instantiate() as Node3D
 	if inst2 != null:
@@ -6167,7 +6173,65 @@ func _reveal_infinite_pit_back() -> void:
 	# достраиваться обратно.
 	_suspend_streaming_for_infinite()
 	_free_blocks_covered_by_ring(FIRST_RING_CELL.x)
+	_strip_pre_infinite_pit_dressing()
 	_pit_ring.reveal_back(_player_ref)
+
+
+# Оформление обычной области-провала в бесконечном режиме неуместно и выдаёт
+# старое пространство: таблички «скользко», мигающий светильник над входом и
+# его направленный свет.
+#
+# Отдельно — резидентные источники: `_spawn_lamp_source` добавляет OmniLight
+# прямо в уровень, а не в узел блока (per-block только панели), поэтому при
+# освобождении блоков панели исчезают, а лампы остаются висеть в пустой
+# потолочной сетке. Их надо снимать вместе с блоками.
+func _strip_pre_infinite_pit_dressing() -> void:
+	for node_name in ["pit_entrance_sign", "pit_pocket_sign",
+			"pit_flicker_panel", "pit_flicker_lamp"]:
+		var node := get_node_or_null(NodePath(String(node_name)))
+		if node != null:
+			node.queue_free()
+	if _body != null and is_instance_valid(_body):
+		var shape := _body.get_node_or_null(
+			NodePath("pit_entrance_sign_collision"))
+		if shape != null:
+			shape.queue_free()
+	if _flick_spot != null and is_instance_valid(_flick_spot):
+		_flick_spot.queue_free()
+	_flick_spot = null
+	_has_flicker = false
+	_free_resident_lamps_covered_by_ring()
+	# Свечение потолочных панелей слито в один меш на весь уровень, поэтому
+	# выборочно снять его нельзя: гасим целиком — вне кольца оно всё равно
+	# не видно, а у кольца собственные панели.
+	if _lamp_glow_mi != null and is_instance_valid(_lamp_glow_mi):
+		_lamp_glow_mi.visible = false
+
+
+func _free_resident_lamps_covered_by_ring() -> void:
+	for array_name in ["_lamps", "_area_lamps", "_area_bounce_lamps",
+			"_legacy_aux_lights", "_area_aux_lights"]:
+		var source: Array = get(String(array_name))
+		var kept: Array = []
+		for light_value in source:
+			var light := light_value as Node3D
+			if light == null or not is_instance_valid(light):
+				continue
+			if _block_covered_by_ring(_block_of(light.global_position)):
+				light.queue_free()
+			else:
+				kept.append(light_value)
+		source.assign(kept)
+	# Громкость гула считается от расстояния до ламп: без обновления списка
+	# исчезнувшие лампы продолжали бы звучать.
+	if _canonical_audio_module != null:
+		_canonical_audio_module.refresh_lamps(_lamps)
+
+
+func _block_covered_by_ring(block: Vector2i) -> bool:
+	if block.y != FIRST_RING_CELL.y and block.y != FIRST_RING_CELL.y + 1:
+		return false
+	return block.x <= _pit_ring_freed_max_x
 
 
 # Дверь, рамы и знак EXIT снимаются вместе с торцевой стеной: развернувшись
@@ -6175,6 +6239,9 @@ func _reveal_infinite_pit_back() -> void:
 func _reveal_infinite_pit_front() -> void:
 	_free_pit_door_nodes()
 	_free_blocks_covered_by_ring(2147483647)
+	# Восточные области отдаются кольцу только сейчас, поэтому их резидентные
+	# лампы снимаются вторым проходом.
+	_free_resident_lamps_covered_by_ring()
 	_pit_ring.reveal_front(_player_ref)
 
 
@@ -6198,11 +6265,11 @@ func _free_pit_door_nodes() -> void:
 # же координатах, что южная стена секции кольца, — две копланарные стены дают
 # мерцание. Северная стена лежит в самом ряду провала и снимается вместе с ним.
 func _free_blocks_covered_by_ring(max_block_x: int) -> void:
+	_pit_ring_freed_max_x = max_block_x
 	for block: Vector2i in _block_holder.keys().duplicate():
-		if block.x > max_block_x:
+		if not _block_covered_by_ring(block):
 			continue
-		if block.y == FIRST_RING_CELL.y or block.y == FIRST_RING_CELL.y + 1:
-			_free_block(block)
+		_free_block(block)
 
 
 func _suspend_streaming_for_infinite() -> void:
