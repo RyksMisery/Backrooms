@@ -660,9 +660,6 @@ const PIT_WIND_FADE_SECONDS := 6.0
 const PIT_WIND_LOW_RANGE := Vector2(0.45, 0.60)
 const PIT_WIND_HIGH_RANGE := Vector2(0.90, 1.00)
 const PIT_WIND_SEGMENT_RANGE := Vector2(5.0, 13.0)
-# Лампа справа от двери должна гореть до второго переключения, иначе смена
-# пространства видна сразу. Радиус — вокруг проёма закрытой двери.
-const PIT_DOOR_LIGHT_KEEP_RADIUS := 6.0
 # Лампы кольца переставляются вместе с секциями, поэтому список для гула
 # обновляется периодически, а не один раз.
 const PIT_AUDIO_REFRESH_SECONDS := 0.5
@@ -6152,19 +6149,18 @@ func _prebuild_infinite_pit() -> void:
 	_build_pit_door_keep_panels()
 
 
-# Лампы у двери переживают первый этап, а их панели уходят вместе с блоком —
-# получался светящийся источник без светильника («круглая лампа» в воздухе).
-# Поэтому для них заранее строится скрытая копия панели на том же месте: пока
-# блок цел, она невидима и не спорит с оригиналом, а на первом этапе встаёт
-# ровно туда, где была запечённая. Материал — канонический `lamp`.
+# Раскладка ближайших ламп не должна меняться в момент подмены: свет области
+# остаётся ровно тем же, пока якорная секция кольца не уедет за кап. Но панели
+# запечены в геометрию блока и уходят вместе с ним, поэтому для каждой лампы
+# провала заранее строится скрытая копия панели на том же месте: пока блок цел
+# — невидима и не спорит с оригиналом, на первом этапе встаёт ровно туда, где
+# была запечённая. Материал — канонический `lamp`.
 func _build_pit_door_keep_panels() -> void:
 	if not _area_by_cell.has(FIRST_RING_CELL):
 		return
 	for p: Vector2 in PIT_LIGHT_POINTS_D:
 		var pos := _local_world(FIRST_RING_CELL.x, FIRST_RING_CELL.y,
 			p.x, p.y, CEIL_H + 0.02)
-		if pos.distance_to(_pit_door_world_pos) > PIT_DOOR_LIGHT_KEEP_RADIUS:
-			continue
 		var panel := MeshInstance3D.new()
 		panel.name = "pit_door_keep_panel_%d" % _pit_door_keep_panels.size()
 		var mesh := BoxMesh.new()
@@ -6194,6 +6190,8 @@ func _update_infinite_pit(delta: float) -> void:
 		return
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
+		if bool(_pit_ring.consume_anchor_release()):
+			_release_pit_anchor_lights()
 		_update_infinite_pit_flicker_audio()
 		_update_infinite_pit_wind(delta)
 		_update_infinite_pit_hum_trim(delta)
@@ -6299,10 +6297,10 @@ func _drop_flicker_entries_covered_by_ring() -> void:
 	_flicker = kept
 
 
-# keep_near_door — первый этап: лампы вокруг закрытой двери остаются гореть,
-# иначе погасшая лампа справа от неё сразу выдаёт смену пространства. На
-# втором этапе дверь снимается, и исключение больше не нужно.
-func _free_resident_lamps_covered_by_ring(keep_near_door: bool) -> void:
+# keep_anchor — свет исходной области-провала остаётся нетронутым, пока
+# якорная секция кольца не уедет за кап. Иначе раскладка ближайших ламп
+# меняется прямо в момент подмены и смена света видна даже без разворота.
+func _free_resident_lamps_covered_by_ring(keep_anchor: bool) -> void:
 	# `_model_fill_lights` — подсветка импортных моделей (в т.ч. табличек
 	# «скользко»); без неё остался бы висеть источник у исчезнувшей модели.
 	for array_name in ["_lamps", "_area_lamps", "_area_bounce_lamps",
@@ -6315,10 +6313,9 @@ func _free_resident_lamps_covered_by_ring(keep_near_door: bool) -> void:
 			var light := light_value as Node3D
 			if light == null:
 				continue
-			var near_door := keep_near_door \
-				and light.global_position.distance_to(_pit_door_world_pos) \
-					<= PIT_DOOR_LIGHT_KEEP_RADIUS
-			if not near_door \
+			var in_anchor := keep_anchor \
+				and _inside_pit_anchor(light.global_position)
+			if not in_anchor \
 					and _block_covered_by_ring(_block_of(light.global_position)):
 				light.queue_free()
 			else:
@@ -6384,6 +6381,18 @@ func _update_infinite_pit_wind(delta: float) -> void:
 # перед провалом: позиция ближайшей мигающей лампы отдаётся модулю звука (он
 # сам считает затухание по расстоянию), а на спаде яркости играется тот же
 # flick-сэмпл. Поэтому звук ложится поверх общего гула и ветра, а не заменяет их.
+# Якорная секция уехала за кап и стала обычным участником кольца со своим
+# светом. Только теперь снимаются лампы исходной области и подставные панели —
+# происходит это в полной темноте за капом, поэтому смены света не видно.
+func _release_pit_anchor_lights() -> void:
+	_drop_flicker_entries_covered_by_ring()
+	_free_resident_lamps_covered_by_ring(false)
+	for panel: MeshInstance3D in _pit_door_keep_panels:
+		if panel != null and is_instance_valid(panel):
+			panel.queue_free()
+	_pit_door_keep_panels.clear()
+
+
 func _update_infinite_pit_flicker_audio() -> void:
 	if _canonical_audio_module == null or not _final_lamp_audio_enabled:
 		return
@@ -6417,6 +6426,15 @@ func _refresh_infinite_pit_audio_lamps() -> void:
 	_canonical_audio_module.refresh_lamps(combined)
 
 
+# Интерьер исходной области-провала (он же якорная секция кольца).
+func _inside_pit_anchor(position: Vector3) -> bool:
+	var size := float(ROOM_CELLS) * CELL
+	return position.x >= _pit_interior_origin.x \
+		and position.x <= _pit_interior_origin.x + size \
+		and position.z >= _pit_interior_origin.z \
+		and position.z <= _pit_interior_origin.z + size
+
+
 func _block_covered_by_ring(block: Vector2i) -> bool:
 	if block.y != FIRST_RING_CELL.y and block.y != FIRST_RING_CELL.y + 1:
 		return false
@@ -6431,13 +6449,10 @@ func _reveal_infinite_pit_front() -> void:
 	# Восточные области отдаются кольцу только сейчас, поэтому их резидентные
 	# лампы снимаются вторым проходом — вместе с теми, что были оставлены
 	# гореть у двери на первом этапе.
+	# Свет якорной секции не трогаем и здесь: он снимается только когда она
+	# уедет за кап (_release_pit_anchor_lights).
 	_drop_flicker_entries_covered_by_ring()
-	_free_resident_lamps_covered_by_ring(false)
-	# Лампы у двери сняты — их подставные панели тоже.
-	for panel: MeshInstance3D in _pit_door_keep_panels:
-		if panel != null and is_instance_valid(panel):
-			panel.queue_free()
-	_pit_door_keep_panels.clear()
+	_free_resident_lamps_covered_by_ring(true)
 	# Свечение потолочных панелей слито в один меш на весь уровень, выборочно
 	# снять его нельзя. Гасится только сейчас: на первом этапе это погасило бы
 	# и лампу над закрытой дверью, что сразу выдало бы смену пространства.

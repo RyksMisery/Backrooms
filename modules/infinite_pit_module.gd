@@ -84,6 +84,9 @@ var _max_door_reveal_ms := 0.0
 var _rng := RandomNumberGenerator.new()
 var _flick_triggered := false
 var _flicker_position = null
+var _anchor_tile: Node3D
+var _anchor_released := false
+var _anchor_release_pending := false
 var _back_revealed := false
 var _front_revealed := false
 
@@ -195,6 +198,10 @@ func _build_tiles() -> void:
 			tile.add_child(wall)
 			_build_solid_side_wall(wall, side)
 			tile.set_meta("wall_%s" % side, wall)
+		# Якорная секция совпадает с исходной областью-провалом. Её свет
+		# принадлежит уровню до первого рециклинга — см. _apply_tile_outage.
+		if logical_index == 0:
+			_anchor_tile = tile
 		_build_tile_lights(tile)
 		_tiles.append(tile)
 
@@ -266,10 +273,15 @@ func _build_tile_lights(tile: Node3D) -> void:
 			var panel := fixture.get("panel") as Light3D
 			var bounce := fixture.get("bounce") as Light3D
 			var legacy := fixture.get("legacy") as Light3D
-			# Если AreaLight3D в сборке нет, семейство вырождается в legacy Omni —
-			# тогда показываем его, иначе секция осталась бы вовсе без света.
-			if panel == null and legacy != null:
-				legacy.visible = true
+			# Правило семейства уровня: когда AreaLight3D в сборке нет,
+			# area-режим выключен — работает legacy Omni, а area-панель и
+			# потолочный bounce прячутся. Оставленный включённым bounce висит
+			# в 0.75 м под потолком и даёт круглое световое пятно.
+			var area_on := panel != null
+			if legacy != null:
+				legacy.visible = not area_on
+			if bounce != null:
+				bounce.visible = area_on
 			var entry := {
 				"visible_panel": visible_panel,
 				"panel": panel,
@@ -279,6 +291,7 @@ func _build_tile_lights(tile: Node3D) -> void:
 				"bounce_energy": bounce.light_energy if bounce != null else 0.0,
 				"legacy_energy": legacy.light_energy if legacy != null else 0.0,
 				"legacy_active": panel == null,
+				"bounce_active": panel != null,
 				"station": station_index,
 				"row": row_index,
 				"out": false,
@@ -308,6 +321,19 @@ func _build_tile_lights(tile: Node3D) -> void:
 #    читается как рисунок сильнее всего.
 func _apply_tile_outage(tile: Node3D) -> void:
 	if not tile.has_meta("light_entries"):
+		return
+	# Якорная секция до первого рециклинга светится ЛАМПАМИ УРОВНЯ: раскладка
+	# ближайших ламп не должна меняться в момент подмены, иначе смена света
+	# заметна даже без разворота. Свои светильники секция включает только
+	# уехав за кап, то есть в полной темноте.
+	if tile == _anchor_tile and not _anchor_released:
+		for entry_value in tile.get_meta("light_entries"):
+			var suppressed: Dictionary = entry_value
+			suppressed["out"] = true
+			suppressed["flicker"] = false
+			var suppressed_panel = suppressed.get("visible_panel")
+			if suppressed_panel != null and is_instance_valid(suppressed_panel):
+				(suppressed_panel as Node3D).visible = false
 		return
 	var entries: Array = tile.get_meta("light_entries")
 	var station_count := int(tile.get_meta("station_count", 4))
@@ -533,8 +559,9 @@ func _update_light_fade(player: Node3D) -> void:
 		var lit := level > 0.001
 		_fade_family_light(entry.get("panel"),
 			float(entry["panel_energy"]), level, lit)
-		_fade_family_light(entry.get("bounce"),
-			float(entry["bounce_energy"]), level, lit)
+		if bool(entry["bounce_active"]):
+			_fade_family_light(entry.get("bounce"),
+				float(entry["bounce_energy"]), level, lit)
 		if bool(entry["legacy_active"]):
 			_fade_family_light(entry.get("legacy"),
 				float(entry["legacy_energy"]), level, lit)
@@ -634,12 +661,14 @@ func _recycle_tiles(player: Node3D) -> void:
 		if center < px - RECYCLE_DISTANCE:
 			tile.position.x += span
 			_drop_door_if_host(tile)
+			_release_anchor_if_needed(tile)
 			# Новый индекс в мире — новый рисунок негорящих панелей. Иначе
 			# кольцо крутило бы одни и те же TILE_COUNT рисунков по кругу.
 			_apply_tile_outage(tile)
 		elif center > px + RECYCLE_DISTANCE:
 			tile.position.x -= span
 			_drop_door_if_host(tile)
+			_release_anchor_if_needed(tile)
 			_apply_tile_outage(tile)
 
 
@@ -705,6 +734,21 @@ func _pick_door_host(target_x: float) -> Node3D:
 			best_distance = distance
 			best = tile
 	return best
+
+
+# Якорная секция уехала за кап — с этого момента она обычный участник кольца
+# со своим светом, а уровень может снимать лампы исходной области.
+func _release_anchor_if_needed(tile: Node3D) -> void:
+	if tile != _anchor_tile or _anchor_released:
+		return
+	_anchor_released = true
+	_anchor_release_pending = true
+
+
+func consume_anchor_release() -> bool:
+	var pending := _anchor_release_pending
+	_anchor_release_pending = false
+	return pending
 
 
 func _drop_door_if_host(tile: Node3D) -> void:
