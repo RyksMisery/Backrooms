@@ -32,7 +32,10 @@ const CEILING_FILL_LAYER := 1 << 1
 
 const BACKGROUND_COLOR := Color(0.18, 0.15, 0.07)
 const AMBIENT_COLOR := Color(0.95, 0.86, 0.28)
-const AMBIENT_ENERGY := 0.010
+# Канонический ambient. С 2026-07-30 уменьшен вдвое (было 0.010) — см.
+# docs/lights.md, «Канонический ambient». Потребители, задающие ambient как
+# долю от канона (например echo_loop_lab), следуют за этим значением.
+const AMBIENT_ENERGY := 0.005
 const FOG_COLOR := Color(0.22, 0.18, 0.10)
 const FOG_DENSITY := 0.015
 const MAC_RENDER_SCALE := 0.65
