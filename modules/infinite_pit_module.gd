@@ -514,6 +514,12 @@ func nearest_walk_center(world_position: Vector3) -> Vector3:
 	return best
 
 
+# Лампы кольца принадлежат собственному модулю света, а не пулам уровня.
+# Уровню они нужны для гула: без них звук ламп в бесконечном провале пропал бы.
+func ring_lamps() -> Array:
+	return lighting.lamps
+
+
 func cycle_count() -> int:
 	return _cycle_count
 
