@@ -48,6 +48,13 @@ const DOOR_CENTER_X := 7.5
 # area_id семейства света: кольцо не является областью occupancy-графа, но
 # каноническому конструктору идентификатор нужен.
 const RING_AREA_ID := "infinite_pit"
+# Часть панелей не горит. Рисунок выводится из АБСОЛЮТНОГО индекса станции в
+# мире, а не из узла секции: секции переставляются по кругу, и закреплённый за
+# узлом рисунок повторялся бы каждые TILE_COUNT секций. При этом он остаётся
+# детерминированным — развернулся, прошёл назад, те же лампы на тех же местах.
+const PANEL_OUTAGE_CHANCE := 0.35
+# Редкая мигающая панель. 0.0 полностью выключает эффект.
+const PANEL_FLICKER_CHANCE := 0.05
 
 var owner: Node3D
 var architecture
@@ -212,55 +219,144 @@ func _side_wall_z(side: String) -> float:
 # владеет стыком у своего западного края, так что дубля у соседей нет.
 # Клетка берётся тем же `opening_anchor`, что и остальные, без своего
 # tie-break.
-func _tile_light_cells() -> Array[Vector2]:
+func _tile_light_grid() -> Dictionary:
 	var cells := Architecture.pit_intersection_light_cells()
-	var join_x := Architecture.opening_anchor(0.0)
-	var lateral: Array[float] = []
+	var stations: Array[float] = []
+	var rows: Array[float] = []
 	for cell: Vector2 in cells:
-		if not lateral.has(cell.y):
-			lateral.append(cell.y)
-	for z: float in lateral:
-		cells.append(Vector2(join_x, z))
-	return cells
+		if not stations.has(cell.x):
+			stations.append(cell.x)
+		if not rows.has(cell.y):
+			rows.append(cell.y)
+	stations.append(Architecture.opening_anchor(0.0))
+	stations.sort()
+	rows.sort()
+	return {"stations": stations, "rows": rows}
 
 
 # Панели строго над пересечениями внутренних мостков — общий якорь
 # `Architecture.pit_intersection_light_cells`, без локальных сдвигов.
 func _build_tile_lights(tile: Node3D) -> void:
-	for cell: Vector2 in _tile_light_cells():
-		var local_position := Vector3(
-			cell.x * Architecture.CELL,
-			Architecture.CEIL_H + 0.02,
-			cell.y * Architecture.CELL)
-		# Канонический default: семейство `level_e_area` (панель + AreaLight3D
-		# + потолочный bounce + скрытый legacy Omni), тот же конструктор и те
-		# же числа, что у фиксированной области-провала. Свой профиль
-		# источника кольцо не заводит — см. docs/lights.md, «Обязательный
-		# световой default новой области».
-		var fixture: Dictionary = lighting.add_level_e_area_ceiling_fixture(
-			tile, local_position, Vector2i.ONE, RING_AREA_ID)
-		var visible_panel := fixture.get("visible_panel") as GeometryInstance3D
-		if visible_panel != null:
-			visible_panel.visibility_range_end = FADE_DARK_DISTANCE
-			visible_panel.visibility_range_end_margin = PANEL_FADE_MARGIN
-			visible_panel.visibility_range_fade_mode = \
-				GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
-		var panel := fixture.get("panel") as Light3D
-		var bounce := fixture.get("bounce") as Light3D
-		var legacy := fixture.get("legacy") as Light3D
-		# Если AreaLight3D в сборке нет, семейство вырождается в legacy Omni —
-		# тогда показываем его, иначе секция осталась бы вовсе без света.
-		if panel == null and legacy != null:
-			legacy.visible = true
-		_light_entries.append({
-			"panel": panel,
-			"bounce": bounce,
-			"legacy": legacy,
-			"panel_energy": panel.light_energy if panel != null else 0.0,
-			"bounce_energy": bounce.light_energy if bounce != null else 0.0,
-			"legacy_energy": legacy.light_energy if legacy != null else 0.0,
-			"legacy_active": panel == null,
-		})
+	var grid := _tile_light_grid()
+	var stations: Array = grid["stations"]
+	var rows: Array = grid["rows"]
+	var tile_entries: Array = []
+	for station_index in range(stations.size()):
+		for row_index in range(rows.size()):
+			var local_position := Vector3(
+				float(stations[station_index]) * Architecture.CELL,
+				Architecture.CEIL_H + 0.02,
+				float(rows[row_index]) * Architecture.CELL)
+			# Канонический default: семейство `level_e_area` (панель + AreaLight3D
+			# + потолочный bounce + скрытый legacy Omni), тот же конструктор и те
+			# же числа, что у фиксированной области-провала. Свой профиль
+			# источника кольцо не заводит — см. docs/lights.md, «Обязательный
+			# световой default новой области».
+			var fixture: Dictionary = lighting.add_level_e_area_ceiling_fixture(
+				tile, local_position, Vector2i.ONE, RING_AREA_ID)
+			var visible_panel := fixture.get("visible_panel") as GeometryInstance3D
+			if visible_panel != null:
+				visible_panel.visibility_range_end = FADE_DARK_DISTANCE
+				visible_panel.visibility_range_end_margin = PANEL_FADE_MARGIN
+				visible_panel.visibility_range_fade_mode = \
+					GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+			var panel := fixture.get("panel") as Light3D
+			var bounce := fixture.get("bounce") as Light3D
+			var legacy := fixture.get("legacy") as Light3D
+			# Если AreaLight3D в сборке нет, семейство вырождается в legacy Omni —
+			# тогда показываем его, иначе секция осталась бы вовсе без света.
+			if panel == null and legacy != null:
+				legacy.visible = true
+			var entry := {
+				"visible_panel": visible_panel,
+				"panel": panel,
+				"bounce": bounce,
+				"legacy": legacy,
+				"panel_energy": panel.light_energy if panel != null else 0.0,
+				"bounce_energy": bounce.light_energy if bounce != null else 0.0,
+				"legacy_energy": legacy.light_energy if legacy != null else 0.0,
+				"legacy_active": panel == null,
+				"station": station_index,
+				"row": row_index,
+				"out": false,
+				"flicker": false,
+				"phase": 0.0,
+			}
+			_light_entries.append(entry)
+			tile_entries.append(entry)
+	tile.set_meta("light_entries", tile_entries)
+	tile.set_meta("station_count", stations.size())
+	_apply_tile_outage(tile)
+
+
+# Рисунок негорящих панелей секции. Выводится из АБСОЛЮТНОГО индекса станции
+# в мире, поэтому при рециклинге секция уезжает на новый индекс и получает
+# новый рисунок — цикла в TILE_COUNT секций не возникает. Хеш детерминирован,
+# так что на обратном пути рисунок тот же.
+#
+# Два ограничения:
+#  • в ряду не гаснут две станции подряд — иначе появляются длинные тёмные
+#    участки (шаг станций 3.75..5 м);
+#  • на станции не гаснут все ряды сразу — сплошная поперечная тёмная полоса
+#    читается как рисунок сильнее всего.
+func _apply_tile_outage(tile: Node3D) -> void:
+	if not tile.has_meta("light_entries"):
+		return
+	var entries: Array = tile.get_meta("light_entries")
+	var station_count := int(tile.get_meta("station_count", 4))
+	var tile_index := int(round(tile.position.x / TILE_LENGTH))
+	var row_count := 0
+	for entry_value in entries:
+		row_count = maxi(row_count, int((entry_value as Dictionary)["row"]) + 1)
+	var out_state: Dictionary = {}
+	for station_index in range(station_count):
+		var station := tile_index * station_count + station_index
+		var out_rows: Array = []
+		for row_index in range(row_count):
+			if _panel_out(station, row_index):
+				out_rows.append(row_index)
+		# Сплошная поперечная полоса запрещена: оставляем гореть ряд с
+		# наименьшим хешем — выбор детерминирован.
+		if out_rows.size() >= row_count and row_count > 0:
+			var keep := int(out_rows[0])
+			var best := _hash01(station, keep + 977)
+			for row_value in out_rows:
+				var h := _hash01(station, int(row_value) + 977)
+				if h < best:
+					best = h
+					keep = int(row_value)
+			out_rows.erase(keep)
+		for row_index in range(row_count):
+			out_state[Vector2i(station_index, row_index)] = \
+				out_rows.has(row_index)
+	for entry_value in entries:
+		var entry: Dictionary = entry_value
+		var key := Vector2i(int(entry["station"]), int(entry["row"]))
+		var station_id := tile_index * station_count + int(entry["station"])
+		var is_out := bool(out_state.get(key, false))
+		entry["out"] = is_out
+		entry["flicker"] = not is_out \
+			and _hash01(station_id, int(entry["row"]) + 4231) < PANEL_FLICKER_CHANCE
+		entry["phase"] = _hash01(station_id, int(entry["row"]) + 8117) * TAU
+		var visible_panel = entry.get("visible_panel")
+		if visible_panel != null and is_instance_valid(visible_panel):
+			(visible_panel as Node3D).visible = not is_out
+
+
+# Гаснет, только если станция выпала по вероятности И предыдущая станция того
+# же ряда не выпала. Условие нерекурсивное, поэтому одинаково считается и на
+# стыке секций — индекс станции сквозной.
+func _panel_out(station: int, row: int) -> bool:
+	if _hash01(station, row) >= PANEL_OUTAGE_CHANCE:
+		return false
+	return _hash01(station - 1, row) >= PANEL_OUTAGE_CHANCE
+
+
+static func _hash01(a: int, b: int) -> float:
+	var h: int = (a * 73856093) ^ (b * 19349663)
+	h = (h ^ (h >> 13)) * 1274126177
+	h = h ^ (h >> 16)
+	return float(h & 0x7fffffff) / 2147483647.0
 
 
 # Торцевой кап закрывает дальний конец кольца. Материал — обычный стеновой,
@@ -415,6 +511,10 @@ func _update_light_fade(player: Node3D) -> void:
 			(reference as Node3D).global_position.x - player.global_position.x)
 		var level := clampf((FADE_DARK_DISTANCE - distance) / span, 0.0, 1.0)
 		level = smoothstep(0.0, 1.0, level)
+		if bool(entry["out"]):
+			level = 0.0
+		elif bool(entry["flicker"]):
+			level *= _flicker_level(float(entry["phase"]))
 		var lit := level > 0.001
 		_fade_family_light(entry.get("panel"),
 			float(entry["panel_energy"]), level, lit)
@@ -423,6 +523,14 @@ func _update_light_fade(player: Node3D) -> void:
 		if bool(entry["legacy_active"]):
 			_fade_family_light(entry.get("legacy"),
 				float(entry["legacy_energy"]), level, lit)
+
+
+# Неровное мерцание: произведение трёх несоизмеримых синусов не даёт слышимого
+# периода, поэтому лампа «залипает» нерегулярно, а не мигает метрономом.
+func _flicker_level(phase: float) -> float:
+	var t := float(Time.get_ticks_msec()) * 0.001 + phase
+	var n := sin(t * 37.0) * sin(t * 11.3) * sin(t * 5.1)
+	return 1.0 if n > -0.55 else 0.22
 
 
 func _fade_family_light(light_value, base_energy: float, level: float,
@@ -446,9 +554,13 @@ func _recycle_tiles(player: Node3D) -> void:
 		if center < px - RECYCLE_DISTANCE:
 			tile.position.x += span
 			_drop_door_if_host(tile)
+			# Новый индекс в мире — новый рисунок негорящих панелей. Иначе
+			# кольцо крутило бы одни и те же TILE_COUNT рисунков по кругу.
+			_apply_tile_outage(tile)
 		elif center > px + RECYCLE_DISTANCE:
 			tile.position.x -= span
 			_drop_door_if_host(tile)
+			_apply_tile_outage(tile)
 
 
 # Цикл засчитывается только при полном переносе на длину секции; кружение
@@ -557,7 +669,17 @@ func nearest_walk_center(world_position: Vector3) -> Vector3:
 # Лампы кольца принадлежат собственному модулю света, а не пулам уровня.
 # Уровню они нужны для гула: без них звук ламп в бесконечном провале пропал бы.
 func ring_lamps() -> Array:
-	return lighting.lamps
+	# Негорящие панели из списка исключены: гул должен прореживаться там, где
+	# темно, иначе звук выдаёт лампу, которой не видно.
+	var result: Array = []
+	for entry_value in _light_entries:
+		var entry: Dictionary = entry_value
+		if bool(entry["out"]):
+			continue
+		var lamp = entry.get("legacy")
+		if lamp != null and is_instance_valid(lamp):
+			result.append(lamp)
+	return result
 
 
 func cycle_count() -> int:
