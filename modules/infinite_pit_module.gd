@@ -56,7 +56,6 @@ var active := false
 var _origin := Vector3.ZERO          # мир: min-угол интерьера якорной секции
 var _tiles: Array[Node3D] = []
 var _light_entries: Array[Dictionary] = []
-var _cap_material: StandardMaterial3D
 var _cap_west: Node3D
 var _cap_east: Node3D
 var _cycle_count := 0
@@ -102,10 +101,6 @@ func prebuild(anchor_origin: Vector3) -> void:
 	root = Node3D.new()
 	root.name = "infinite_pit_ring"
 	owner.add_child(root)
-	_cap_material = StandardMaterial3D.new()
-	_cap_material.albedo_color = Architecture.FOG_COLOR
-	_cap_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_cap_material.roughness = 1.0
 	_build_tiles()
 	_build_door_pool()
 	_cap_west = _make_cap("infinite_pit_cap_west")
@@ -249,9 +244,12 @@ func _build_tile_lights(tile: Node3D) -> void:
 		})
 
 
-# Тёмный кап: плоскость цвета тумана, не освещается и не даёт тени, края
-# вынесены за боковые стены ещё на полную секцию — боковую грань в дальней
-# темноте увидеть нельзя (docs/hole_e.md, «Плавность и свет»).
+# Торцевой кап закрывает дальний конец кольца. Материал — обычный стеновой,
+# а не самосветящийся цвет тумана: неосвещаемая плоскость читалась вдали как
+# светлый прямоугольник ярче окружающей темноты. Освещаемая стена гаснет по
+# тем же кривым, что и боковые, и на дистанции капа неотличима от них.
+# Края вынесены за боковые стены ещё на полную секцию, поэтому боковую грань
+# в дальней темноте увидеть нельзя (docs/hole_e.md, «Плавность и свет»).
 func _make_cap(node_name: String) -> Node3D:
 	var cap := MeshInstance3D.new()
 	cap.name = node_name
@@ -261,7 +259,7 @@ func _make_cap(node_name: String) -> Node3D:
 		Architecture.CEIL_H + Architecture.SLAB_T * 2.0 + CAP_SIDE_OVERLAP,
 		ROOM_SIZE + (WALL_DEPTH + CAP_SIDE_OVERLAP) * 2.0)
 	cap.mesh = mesh
-	cap.material_override = _cap_material
+	cap.material_override = architecture.materials["wall"]
 	cap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(cap)
 	return cap

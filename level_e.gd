@@ -649,6 +649,12 @@ const PIT_REVEAL_DOOR_RADIUS := 4.0
 # Запас сверх геометрического края кадра: страхует от подмены, замеченной
 # самым краем экрана. Больше значение — позже переключение.
 const PIT_REVEAL_MARGIN_DEG := 4.0
+# Ветер бесконечного провала: петля вырезана из sounds/cold-wind.mp3 на самом
+# ровном по громкости участке, стык сведён равномощностным кроссфейдом.
+const PIT_WIND_STREAM_PATH := "res://sounds/wind_infinite_loop.wav"
+const PIT_WIND_BASE_DB := -10.0
+const PIT_WIND_SILENT_DB := -80.0
+const PIT_WIND_FADE_SECONDS := 6.0
 
 # Сравнение пола (T): как в infinite_corridor_e. Классика и floor1 с разным
 # видимым масштабом рисунка. Только albedo+uv, triplanar/tint базового мат-ла.
@@ -738,6 +744,8 @@ var _pit_door_world_pos := Vector3.ZERO   # проём дальней (закр�
 var _pit_door_node_prefix := ""           # рамы/створка — снимаются при reveal
 var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
 var _pit_ring_freed_max_x := -2147483648  # граница блоков, отданных кольцу
+var _pit_wind_player: AudioStreamPlayer
+var _pit_wind_level := 0.0
 
 
 func _level_e_base_ready() -> void:
@@ -6129,6 +6137,7 @@ func _update_infinite_pit(delta: float) -> void:
 		return
 	if _pit_ring_active:
 		_pit_ring.update(_player_ref, delta)
+		_update_infinite_pit_wind(delta)
 	if not bool(_pit_ring.back_revealed()):
 		# Этап 1: игрок подошёл к двери и смотрит на неё — подменяется только
 		# то, что за спиной (запад). Вид вперёд не трогается.
@@ -6205,11 +6214,6 @@ func _strip_pre_infinite_pit_dressing() -> void:
 	# приводит уже освобождённый объект к Light3D.
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring()
-	# Свечение потолочных панелей слито в один меш на весь уровень, поэтому
-	# выборочно снять его нельзя: гасим целиком — вне кольца оно всё равно
-	# не видно, а у кольца собственные панели.
-	if _lamp_glow_mi != null and is_instance_valid(_lamp_glow_mi):
-		_lamp_glow_mi.visible = false
 
 
 # Мерцающие панели-подсказки, попавшие в зону кольца, перестают существовать
@@ -6254,6 +6258,37 @@ func _free_resident_lamps_covered_by_ring() -> void:
 		_canonical_audio_module.refresh_lamps(_lamps)
 
 
+# Ветер включается только на втором этапе: на первом игрок ещё смотрит на
+# дверь, и новый звук выдал бы смену пространства раньше времени.
+func _start_infinite_pit_wind() -> void:
+	if _pit_wind_player != null:
+		return
+	var stream := load(PIT_WIND_STREAM_PATH) as AudioStreamWAV
+	if stream == null:
+		push_warning("Infinite pit wind stream is not imported yet")
+		return
+	var looped := stream.duplicate() as AudioStreamWAV
+	looped.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	looped.loop_begin = 0
+	looped.loop_end = int(round(
+		looped.get_length() * float(looped.mix_rate)))
+	_pit_wind_player = AudioStreamPlayer.new()
+	_pit_wind_player.name = "infinite_pit_wind"
+	_pit_wind_player.stream = looped
+	_pit_wind_player.volume_db = PIT_WIND_SILENT_DB
+	add_child(_pit_wind_player)
+	_pit_wind_player.play()
+
+
+func _update_infinite_pit_wind(delta: float) -> void:
+	if _pit_wind_player == null or _pit_wind_level >= 1.0:
+		return
+	_pit_wind_level = minf(1.0, _pit_wind_level + delta / PIT_WIND_FADE_SECONDS)
+	_pit_wind_player.volume_db = PIT_WIND_SILENT_DB if _pit_wind_level <= 0.0001 \
+		else maxf(PIT_WIND_SILENT_DB,
+			PIT_WIND_BASE_DB + linear_to_db(_pit_wind_level))
+
+
 func _block_covered_by_ring(block: Vector2i) -> bool:
 	if block.y != FIRST_RING_CELL.y and block.y != FIRST_RING_CELL.y + 1:
 		return false
@@ -6269,6 +6304,12 @@ func _reveal_infinite_pit_front() -> void:
 	# лампы снимаются вторым проходом.
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring()
+	# Свечение потолочных панелей слито в один меш на весь уровень, выборочно
+	# снять его нельзя. Гасится только сейчас: на первом этапе это погасило бы
+	# и лампу над закрытой дверью, что сразу выдало бы смену пространства.
+	if _lamp_glow_mi != null and is_instance_valid(_lamp_glow_mi):
+		_lamp_glow_mi.visible = false
+	_start_infinite_pit_wind()
 	_pit_ring.reveal_front(_player_ref)
 
 
