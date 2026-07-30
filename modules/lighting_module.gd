@@ -220,16 +220,33 @@ func add_wide_ceiling_light(parent: Node3D,
 # потолочный bounce-fill и скрытый legacy Omni для runtime fallback.
 func add_level_e_area_ceiling_light(parent: Node3D,
 		local_position: Vector3, area_id := "preview") -> Dictionary:
-	architecture.add_box(parent, "lamp_panel",
-		Vector3(Architecture.CELL - PANEL_INSET, PANEL_THICKNESS,
-			Architecture.CELL - PANEL_INSET), local_position,
-		"lamp", false, false)
+	return add_level_e_area_ceiling_fixture(
+		parent, local_position, Vector2i.ONE, area_id)
+
+
+# Канонический прямоугольный footprint: один непрерывный видимый меш и одна
+# согласованная level_e_area-семья независимо от числа логических клеток.
+func add_level_e_area_ceiling_fixture(parent: Node3D,
+		local_position: Vector3, footprint_cells: Vector2i,
+		area_id := "preview") -> Dictionary:
+	var safe_footprint := Vector2i(
+		maxi(absi(footprint_cells.x), 1),
+		maxi(absi(footprint_cells.y), 1))
+	var fixture_size := Vector2(
+		float(safe_footprint.x) * Architecture.CELL - PANEL_INSET,
+		float(safe_footprint.y) * Architecture.CELL - PANEL_INSET)
+	var visible_panel: MeshInstance3D = architecture.add_box(parent, "lamp_panel",
+		Vector3(fixture_size.x, PANEL_THICKNESS, fixture_size.y),
+		local_position, "lamp", false, false)
+	visible_panel.set_meta("light_fixture_footprint_cells", safe_footprint)
+	visible_panel.set_meta("light_fixture_continuous", true)
 	var legacy := OmniLight3D.new()
 	legacy.name = "canonical_lamp_legacy"
 	legacy.position = local_position + Vector3(0.0, -SOURCE_DROP, 0.0)
 	configure_wide_lamp(legacy)
 	legacy.visible = false
 	legacy.set_meta("area_id", area_id)
+	legacy.set_meta("light_fixture_footprint_cells", safe_footprint)
 	parent.add_child(legacy)
 	lamps.append(legacy)
 
@@ -241,9 +258,7 @@ func add_level_e_area_ceiling_light(parent: Node3D,
 		panel.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
 		panel.light_color = LIGHT_COLOR
 		panel.shadow_enabled = AREA_LIGHT_SHADOWS
-		panel.set("area_size", Vector2(
-			Architecture.CELL - PANEL_INSET,
-			Architecture.CELL - PANEL_INSET))
+		panel.set("area_size", fixture_size)
 		panel.set("area_normalize_energy", true)
 		panel.set("area_range", AREA_LIGHT_RANGE_TEST_OFF)
 		panel.set("area_attenuation", LAMP_ATTEN)
@@ -251,6 +266,7 @@ func add_level_e_area_ceiling_light(parent: Node3D,
 		panel.set_meta("base_area_range", LAMP_RANGE * AREA_LIGHT_RANGE_MUL)
 		panel.set_meta("area_panel_range_test", true)
 		panel.set_meta("area_id", area_id)
+		panel.set_meta("light_fixture_footprint_cells", safe_footprint)
 		panel.set_meta("skip_level_d_source_drop", true)
 		parent.add_child(panel)
 		area_lamps.append(panel)
@@ -271,6 +287,7 @@ func add_level_e_area_ceiling_light(parent: Node3D,
 	bounce.light_cull_mask = AREA_LIGHT_WORLD_LAYER \
 		| AREA_LIGHT_CEILING_FILL_LAYER
 	bounce.set_meta("area_id", area_id)
+	bounce.set_meta("light_fixture_footprint_cells", safe_footprint)
 	bounce.set_meta("area_bounce", true)
 	bounce.set_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)
 	bounce.set_meta("far_bounce", false)
@@ -278,7 +295,12 @@ func add_level_e_area_ceiling_light(parent: Node3D,
 	bounce.set_meta("skip_level_d_source_drop", true)
 	parent.add_child(bounce)
 	area_bounce_lamps.append(bounce)
-	return {"legacy": legacy, "panel": panel, "bounce": bounce}
+	return {
+		"visible_panel": visible_panel,
+		"legacy": legacy,
+		"panel": panel,
+		"bounce": bounce,
+	}
 
 
 func add_area_bounce_spot_test(parent: Node3D, local_position: Vector3,

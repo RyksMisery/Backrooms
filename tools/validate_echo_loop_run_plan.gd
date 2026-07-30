@@ -1,6 +1,7 @@
 extends SceneTree
 
 const RunPlan := preload("res://modules/echo_loop_run_plan_module.gd")
+const AreaSpec := preload("res://modules/area_spec_module.gd")
 
 const SEED_COUNT := 1000
 
@@ -30,6 +31,14 @@ func _init() -> void:
 			width_values[int(widths[0])] = true
 			width_values[int(widths[1])] = true
 		for cycle in range(RunPlan.MAX_CYCLE + 1):
+			var area_spec := AreaSpec.normalize(
+				RunPlan.canonical_area_spec(plan, cycle))
+			var area_report := AreaSpec.analyze(area_spec)
+			if not (area_report.get("errors", []) as Array).is_empty():
+				failures.append("seed %d cycle %d AreaSpec: %s" % [
+					seed_detail, cycle,
+					"; ".join(area_report.get("errors", []))])
+				continue
 			var route: Array = report["routes"][cycle]
 			if route.is_empty():
 				failures.append(

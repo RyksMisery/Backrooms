@@ -150,6 +150,8 @@ func _observe_state(level: Node, player: CharacterBody3D,
 	var portal_result := _validate_portals(level, cycle)
 	var passage_result := _validate_corner_passages(level)
 	var light_result := _validate_echo_lights(level)
+	var light_layout_result: Dictionary = level.call(
+		"debug_light_layout_report")
 	player.global_position = Vector3(
 		13.5 * Architecture.CELL, 1.2, 30.5 * Architecture.CELL)
 	player.rotation.y = 0.0
@@ -165,7 +167,8 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		and bool(chair_result.get("valid", false)) \
 		and bool(portal_result.get("valid", false)) \
 		and bool(passage_result.get("valid", false)) \
-		and bool(light_result.get("valid", false))
+		and bool(light_result.get("valid", false)) \
+		and bool(light_layout_result.get("valid", false))
 	return {
 		"cycle": cycle,
 		"north_width_cells": north_width / Architecture.CELL,
@@ -176,6 +179,7 @@ func _observe_state(level: Node, player: CharacterBody3D,
 		"portals": portal_result,
 		"corner_passages": passage_result,
 		"lights": light_result,
+		"light_layout": light_layout_result,
 		"valid": valid,
 		"error": "" if valid \
 			else "physical width, chair, portal, or light geometry mismatch",
@@ -189,46 +193,68 @@ func _validate_echo_lights(level: Node) -> Dictionary:
 	var errors: Array[String] = []
 	var cells_by_region := {}
 	for lamp in lamps:
-		if not is_instance_valid(lamp) or not lamp.has_meta("echo_light_cell"):
+		if not is_instance_valid(lamp) or not lamp.has_meta("echo_light_cells"):
 			continue
-		var cell: Vector2i = lamp.get_meta("echo_light_cell")
+		var fixture_cells: Array = lamp.get_meta("echo_light_cells")
 		var region := String(lamp.get_meta("echo_light_region", ""))
 		if not cells_by_region.has(region):
 			cells_by_region[region] = []
-		cells_by_region[region].append(cell)
-		var expected_x := (float(cell.x) + 0.5) * Architecture.CELL
-		var expected_z := (float(cell.y) + 0.5) * Architecture.CELL
+		for cell: Vector2i in fixture_cells:
+			cells_by_region[region].append(cell)
+		var first_cell: Vector2i = fixture_cells[0]
+		var second_cell: Vector2i = fixture_cells[-1]
+		var expected_x := (
+			float(first_cell.x + second_cell.x) * 0.5 + 0.5) \
+			* Architecture.CELL
+		var expected_z := (
+			float(first_cell.y + second_cell.y) * 0.5 + 0.5) \
+			* Architecture.CELL
 		if absf(lamp.global_position.x - expected_x) > 0.001 \
 				or absf(lamp.global_position.z - expected_z) > 0.001:
-			errors.append("%s off-grid %s" % [region, cell])
-		for x in range(cell.x - 1, cell.x + 2):
-			for z in range(cell.y - 1, cell.y + 2):
-				var neighbor := Vector2i(x, z)
-				if String(grid.get(neighbor, "wall")) != "floor" \
-						or RunPlan.PIT_RECT.has_point(neighbor):
-					errors.append("%s blocked %s" % [region, cell])
+			errors.append("%s fixture center mismatch" % region)
+		var relaxed := bool(lamp.get_meta(
+			"echo_light_relaxed_clearance", false))
+		for cell: Vector2i in fixture_cells:
+			for x in range(
+					cell.x if relaxed else cell.x - 1,
+					cell.x + 1 if relaxed else cell.x + 2):
+				for z in range(
+						cell.y if relaxed else cell.y - 1,
+						cell.y + 1 if relaxed else cell.y + 2):
+					var neighbor := Vector2i(x, z)
+					if String(grid.get(neighbor, "wall")) != "floor" \
+							or RunPlan.PIT_RECT.has_point(neighbor):
+						errors.append("%s blocked %s" % [region, cell])
 	var widths: Vector2i = level.get("_runtime_widths")
 	var expected_counts := {
+		"landmark": 2,
 		"west": 8,
-		"east": 16,
-		"north": 4 if widths.x >= 3 else 0,
-		"south": 4 if widths.y >= 3 else 0,
+		"east": 12,
+		"north": _short_expected_cells(widths.x),
+		"south": _short_expected_cells(widths.y),
 	}
 	for region: String in expected_counts:
 		var cells: Array = cells_by_region.get(region, [])
 		if cells.size() != int(expected_counts[region]):
 			errors.append("%s count %d" % [region, cells.size()])
-		for cell: Vector2i in cells:
-			var has_partner := false
-			for other: Vector2i in cells:
-				if absi(cell.x - other.x) + absi(cell.y - other.y) == 1:
-					has_partner = true
-					break
-			if not has_partner:
-				errors.append("%s unpaired %s" % [region, cell])
-	var expected_family_count := 0
-	for count in expected_counts.values():
-		expected_family_count += int(count)
+	var plan: Dictionary = level.get("_plan")
+	var landmark_value: Array = plan.get("landmark_light_first_cell", [])
+	var landmark_axis_value: Array = plan.get("landmark_light_axis", [])
+	if landmark_value.size() != 2 or landmark_axis_value.size() != 2:
+		errors.append("landmark light plan missing")
+	else:
+		var landmark_first := Vector2i(
+			int(landmark_value[0]), int(landmark_value[1]))
+		var landmark_second := landmark_first + Vector2i(
+			int(landmark_axis_value[0]), int(landmark_axis_value[1]))
+		var landmark_cells: Array = cells_by_region.get("landmark", [])
+		if landmark_first not in landmark_cells \
+				or landmark_second not in landmark_cells:
+			errors.append("landmark light cells mismatch")
+	var expected_family_count := 11 \
+		+ _short_expected_fixtures(widths.x) \
+		+ _short_expected_fixtures(widths.y)
+	_validate_visible_double_panels(level, expected_family_count, errors)
 	var family_counts := {
 		"legacy": _validate_light_family(
 			lamps, "legacy", expected_family_count, errors),
@@ -252,13 +278,44 @@ func _validate_echo_lights(level: Node) -> Dictionary:
 		"valid": errors.is_empty(),
 		"errors": errors,
 		"families": family_counts,
-		"counts": {
-			"west": (cells_by_region.get("west", []) as Array).size(),
+			"counts": {
+				"landmark": (
+					cells_by_region.get("landmark", []) as Array).size(),
+				"west": (cells_by_region.get("west", []) as Array).size(),
 			"east": (cells_by_region.get("east", []) as Array).size(),
 			"north": (cells_by_region.get("north", []) as Array).size(),
 			"south": (cells_by_region.get("south", []) as Array).size(),
 		},
 	}
+
+
+func _validate_visible_double_panels(level: Node, expected_count: int,
+		errors: Array[String]) -> void:
+	var count := 0
+	for value in level.find_children("*", "MeshInstance3D", true, false):
+		var panel := value as MeshInstance3D
+		if panel == null or not panel.has_meta("echo_light_cells"):
+			continue
+		count += 1
+		var cells: Array = panel.get_meta("echo_light_cells")
+		if cells.size() not in [1, 2] or not bool(panel.get_meta(
+				"light_fixture_continuous", false)):
+			errors.append("fixture geometry metadata")
+			continue
+		var first: Vector2i = cells[0]
+		var second: Vector2i = cells[-1]
+		var expected_size := Vector2(
+			float(1 + absi(first.x - second.x)) * Architecture.CELL
+				- Lighting.PANEL_INSET,
+			float(1 + absi(first.y - second.y)) * Architecture.CELL
+				- Lighting.PANEL_INSET)
+		var box := panel.global_transform * panel.get_aabb()
+		if absf(box.size.x - expected_size.x) > 0.001 \
+				or absf(box.size.z - expected_size.y) > 0.001:
+			errors.append("fixture AABB mismatch")
+	if count != expected_count:
+		errors.append("visible fixture count %d/%d" % [
+			count, expected_count])
 
 
 func _count_area_members(members: Array, area_id: String) -> int:
@@ -276,9 +333,17 @@ func _validate_light_family(members: Array, kind: String,
 	var panel_y := Architecture.CEIL_H + Lighting.PANEL_Y_EPS
 	for member in members:
 		if not is_instance_valid(member) \
-				or not member.has_meta("echo_light_cell"):
+				or not member.has_meta("echo_light_cells"):
 			continue
 		count += 1
+		var cells: Array = member.get_meta("echo_light_cells")
+		var first: Vector2i = cells[0]
+		var second: Vector2i = cells[-1]
+		var expected_size := Vector2(
+			float(1 + absi(first.x - second.x)) * Architecture.CELL
+				- Lighting.PANEL_INSET,
+			float(1 + absi(first.y - second.y)) * Architecture.CELL
+				- Lighting.PANEL_INSET)
 		var expected_y := panel_y
 		if kind == "legacy":
 			expected_y -= Lighting.SOURCE_DROP
@@ -291,6 +356,9 @@ func _validate_light_family(members: Array, kind: String,
 			if absf(float(member.get("area_range"))
 					- Lighting.AREA_LIGHT_RANGE_TEST_OFF) > 0.001:
 				errors.append("area range mismatch")
+			var area_size: Vector2 = member.get("area_size")
+			if not area_size.is_equal_approx(expected_size):
+				errors.append("area fixture footprint mismatch")
 		elif kind == "bounce":
 			expected_y += Lighting.AREA_LIGHT_BOUNCE_Y_OFFSET
 			var primary := bool(member.get_meta(
@@ -309,6 +377,16 @@ func _validate_light_family(members: Array, kind: String,
 		errors.append("%s family count %d/%d" % [
 			kind, count, expected_count])
 	return count
+
+
+func _short_expected_cells(width: int) -> int:
+	if width >= 6:
+		return 8
+	return 6 if width >= 2 else 3
+
+
+func _short_expected_fixtures(width: int) -> int:
+	return 4 if width >= 6 else 3
 
 
 func _validate_portals(level: Node, cycle: int) -> Dictionary:
@@ -621,6 +699,9 @@ func _observe_chairs(level: Node, player: CharacterBody3D,
 	await process_frame
 	var visible_count := 0
 	var outside_wall := true
+	var near_outer_corner := true
+	var mirror := bool((level.get("_plan") as Dictionary).get(
+		"mirror", false))
 	var boxes: Array = []
 	for chair: Node3D in chairs:
 		var box := Props.world_aabb(chair)
@@ -630,6 +711,9 @@ func _observe_chairs(level: Node, player: CharacterBody3D,
 		})
 		outside_wall = outside_wall \
 			and box.position.z >= 3.0 * Architecture.CELL + 0.08
+		var center_x_cells := box.get_center().x / Architecture.CELL
+		near_outer_corner = near_outer_corner and (
+			center_x_cells <= 6.0 if mirror else center_x_cells >= 21.0)
 		if player.camera.is_position_in_frustum(box.get_center()) \
 				and _line_clear(player, box.get_center()):
 			visible_count += 1
@@ -639,9 +723,11 @@ func _observe_chairs(level: Node, player: CharacterBody3D,
 		"found_count": chairs.size(),
 		"visible_count": visible_count,
 		"outside_wall": outside_wall,
+		"near_outer_corner": near_outer_corner,
 		"aabbs": boxes,
 		"valid": chairs.size() == chair_count \
-			and visible_count == chair_count and outside_wall,
+			and visible_count == chair_count and outside_wall \
+			and near_outer_corner,
 	}
 
 

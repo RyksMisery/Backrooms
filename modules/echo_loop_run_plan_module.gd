@@ -19,7 +19,7 @@ static func build(seed_detail: int) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_detail
 	var mirror := rng.randi_range(0, 1) == 1
-	var chair_x := [7.2, 5.7] if mirror else [18.8, 20.3]
+	var chair_x := [4.0, 5.5] if mirror else [23.0, 21.5]
 	var previous_widths := Vector2i(
 		rng.randi_range(1, 6), rng.randi_range(1, 6))
 	if mini(previous_widths.x, previous_widths.y) > 3:
@@ -41,7 +41,9 @@ static func build(seed_detail: int) -> Dictionary:
 			[chair_x[0], 3.0],
 			[chair_x[1], 3.0],
 		],
-		"arrow_cell": [6.5 if mirror else 19.5, 3.02],
+		"arrow_cell": [4.75 if mirror else 22.25, 3.02],
+		"landmark_light_first_cell": [4 if mirror else 22, 5],
+		"landmark_light_axis": [0, -1],
 		"spawn_cell": [SPAWN_CELL.x, SPAWN_CELL.y],
 		"north_checkpoint": [NORTH_CHECKPOINT.x, NORTH_CHECKPOINT.y],
 		"pit_rect": [
@@ -99,6 +101,19 @@ static func validate(plan: Dictionary) -> Dictionary:
 	var arrow_cell: Array = plan.get("arrow_cell", [])
 	if arrow_cell.size() != 2:
 		errors.append("у группы стульев должна быть постоянная стрелка")
+	else:
+		var expected_arrow_x := 4.75 if bool(plan.get("mirror", false)) \
+			else 22.25
+		if not is_equal_approx(float(arrow_cell[0]), expected_arrow_x):
+			errors.append("стрелка должна находиться у внешнего угла")
+	var landmark_light: Array = plan.get("landmark_light_first_cell", [])
+	if landmark_light.size() != 2:
+		errors.append("у landmark должен быть постоянный светильник")
+	else:
+		var expected_light_x := 4 if bool(plan.get("mirror", false)) else 22
+		if int(landmark_light[0]) != expected_light_x \
+				or int(landmark_light[1]) != 5:
+			errors.append("светильник landmark должен находиться у внешнего угла")
 	for cycle in range(MAX_CYCLE + 1):
 		var grid := build_grid(plan, cycle)
 		var widths := widths_for_cycle(plan, cycle)
@@ -136,6 +151,113 @@ static func build_grid_for_widths(widths: Vector2i, cycle: int) -> Dictionary:
 			for z in range(PIT_RECT.position.y, PIT_RECT.end.y):
 				grid[Vector2i(x, z)] = "pit"
 	return grid
+
+
+static func canonical_area_spec(plan: Dictionary, cycle: int) -> Dictionary:
+	var widths := widths_for_cycle(plan, cycle)
+	return canonical_area_spec_for_widths(plan, widths, cycle)
+
+
+static func canonical_area_spec_for_widths(plan: Dictionary, widths: Vector2i,
+		cycle: int) -> Dictionary:
+	var grid := build_grid_for_widths(widths, cycle)
+	var rows: Array[String] = []
+	for z in range(GMIN.y, GMAX.y + 1):
+		var row := ""
+		for x in range(GMIN.x, GMAX.x + 1):
+			row += "." if String(grid.get(Vector2i(x, z), "wall")) \
+				in ["floor", "passage"] else "#"
+		rows.append(row)
+	return {
+		"schema_version": 1,
+		"id": "echo_loop_lab_v3",
+		"title": "Echo Loop v3",
+		"construction_profile": "canonical",
+		"space_type": "corridor",
+		"size_cells": [
+			GMAX.x - GMIN.x + 1,
+			GMAX.y - GMIN.y + 1,
+		],
+		"spawn_cells": [
+			float(SPAWN_CELL.x) + 0.5,
+			float(SPAWN_CELL.y) + 0.5,
+		],
+		"occupancy_plan": {
+			"origin_cells": [GMIN.x, GMIN.y],
+			"rows": rows,
+		},
+		"clear_routes": clear_routes_for_widths(widths, cycle),
+		"light_pattern_override": {
+			"id": "echo_loop_double_pairs",
+			"reason": "Узнаваемый ритм кольца и один bounce на пару 1x2",
+			"dynamic_occupancy_clearance": true,
+		},
+		"anomaly": {"enabled": false},
+	}
+
+
+static func clear_routes_for_widths(widths: Vector2i,
+		cycle: int = 0) -> Array[Dictionary]:
+	var routes: Array[Dictionary] = [
+		{
+			"id": "west_branch",
+			"axis": "z",
+			"center_cells": 6.0,
+			"width_cells": 6.0,
+			"from": 3.0,
+			"to": 36.0,
+		},
+		{
+			"id": "east_branch",
+			"axis": "z",
+			"center_cells": 21.0,
+			"width_cells": 6.0,
+			"from": 3.0,
+			"to": 36.0,
+		},
+		{
+			"id": "north_branch",
+			"axis": "x",
+			"center_cells": 3.0 + float(widths.x) * 0.5,
+			"width_cells": float(widths.x),
+			"from": 3.0,
+			"to": 24.0,
+		},
+		{
+			"id": "south_branch",
+			"axis": "x",
+			"center_cells": 36.0 - float(widths.y) * 0.5,
+			"width_cells": float(widths.y),
+			"from": 3.0,
+			"to": 24.0,
+		},
+	]
+	if cycle >= MAX_CYCLE:
+		routes[0] = {
+			"id": "west_branch_north_of_pit",
+			"axis": "z",
+			"center_cells": 6.0,
+			"width_cells": 6.0,
+			"from": 3.0,
+			"to": float(PIT_RECT.position.y),
+		}
+		routes.append({
+			"id": "west_branch_pit_bypass",
+			"axis": "z",
+			"center_cells": 8.0,
+			"width_cells": 2.0,
+			"from": float(PIT_RECT.position.y),
+			"to": float(PIT_RECT.end.y),
+		})
+		routes.append({
+			"id": "west_branch_south_of_pit",
+			"axis": "z",
+			"center_cells": 6.0,
+			"width_cells": 6.0,
+			"from": float(PIT_RECT.end.y),
+			"to": 36.0,
+		})
+	return routes
 
 
 static func build_static_grid() -> Dictionary:

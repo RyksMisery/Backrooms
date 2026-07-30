@@ -4,12 +4,9 @@ extends Node3D
 
 const Architecture := preload("res://modules/architecture_module.gd")
 const Lighting := preload("res://modules/lighting_module.gd")
-const Audio := preload("res://modules/audio_module.gd")
-const HUD := preload("res://modules/hud_module.gd")
-const Map := preload("res://modules/map_module.gd")
 const Props := preload("res://modules/props_module.gd")
 const RunPlan := preload("res://modules/echo_loop_run_plan_module.gd")
-const PLAYER_SCENE := preload("res://player.tscn")
+const AreaSpecArea := preload("res://modules/area_spec_area_module.gd")
 
 @export var seed_detail := 1
 
@@ -24,13 +21,19 @@ const MUTATION_RECT := Rect2i(3, 3, 21, 25)
 const VISIBILITY_MARGIN_M := 0.15
 const PORTAL_PARTITION_T_M := 0.25
 const PORTAL_HEAD_GAP_M := 0.5
+const DARK_PARTITION_LIGHT_CLEARANCE_CELLS := 3
+const AMBIENT_ENERGY_MULTIPLIER := 0.5
 
 var architecture
 var lighting
 var audio
 var hud
 var map
+var openings
 var player: CharacterBody3D
+var _canonical_runtime
+var _canonical_spec: Dictionary = {}
+var _canonical_analysis: Dictionary = {}
 var _main_geometry: Node3D
 var _main_lights: Node3D
 var _lower_room: Node3D
@@ -77,26 +80,17 @@ var _static_build_count := 0
 func _ready() -> void:
 	DisplayServer.window_set_title("Echo Loop v3 — CORE WIDTH 1..6")
 	_build_plan()
-	architecture = Architecture.new(self)
-	architecture.install_environment(false)
-	Architecture.apply_render_profile(get_viewport())
-	lighting = Lighting.new(self, architecture)
-	lighting.configure_lf3_runtime(
-		_lf3_cell_blocks_light, _active_camera, Architecture.CELL)
-	audio = Audio.new(self)
-	hud = HUD.new(self)
-	map = Map.new(self)
+	if not _setup_canonical_runtime():
+		return
 	_build_main_geometry()
 	_build_all_width_patches()
 	_build_main_lights()
 	_build_lower_room()
+	_refresh_lamp_audio()
 	_build_landmark()
 	_build_mutation_patch()
-	_spawn_player()
-	hud.setup()
-	hud.set_visible(false)
-	map.setup(_map_data, _get_player, Architecture.CELL, ["wall"])
-	audio.setup(player, lighting.lamps)
+	player.name = "EchoLoopPlayer"
+	player.set_meta("block_debug_t_action", true)
 	set_process(true)
 
 
@@ -108,6 +102,58 @@ func _build_plan() -> void:
 		push_error("Echo Loop plan invalid: %s" % [
 			"; ".join(_plan_report.get("errors", []))])
 	_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+
+
+func _setup_canonical_runtime() -> bool:
+	_canonical_spec = RunPlan.canonical_area_spec_for_widths(
+		_plan, _runtime_widths, _cycle)
+	_canonical_runtime = AreaSpecArea.new()
+	_canonical_runtime.name = "EchoLoopCanonicalRuntime"
+	add_child(_canonical_runtime)
+	var result: Dictionary = _canonical_runtime.setup(_canonical_spec, {
+		"external_dynamic_topology": true,
+		"player_parent": self,
+		"occupancy_blocker": _lf3_cell_blocks_light,
+		"map_data_provider": _map_data,
+		"hud_text_provider": _hud_text,
+		"hud_visible": false,
+	})
+	if not bool(result.get("ok", false)):
+		var errors: Array = result.get("errors", [])
+		_plan_report["valid"] = false
+		_plan_report["errors"] = (
+			_plan_report.get("errors", []) as Array) + errors
+		push_error("Echo Loop AreaSpec invalid: %s" % "; ".join(errors))
+		return false
+	_canonical_runtime.name = "EchoLoopCanonicalRuntime"
+	set_meta("construction_profile", "canonical")
+	_canonical_analysis = result.get("analysis", {})
+	architecture = result.get("architecture")
+	openings = result.get("openings")
+	lighting = result.get("lighting")
+	audio = result.get("audio")
+	hud = result.get("hud")
+	map = result.get("map")
+	player = result.get("player") as CharacterBody3D
+	if architecture != null and architecture.environment != null:
+		architecture.environment.ambient_light_energy = \
+			Architecture.AMBIENT_ENERGY * AMBIENT_ENERGY_MULTIPLIER
+	return player != null
+
+
+func _refresh_canonical_spec() -> bool:
+	if _canonical_runtime == null:
+		return false
+	_canonical_spec = RunPlan.canonical_area_spec_for_widths(
+		_plan, _runtime_widths, _cycle)
+	var result: Dictionary = _canonical_runtime.update_external_spec(
+		_canonical_spec)
+	if not bool(result.get("ok", false)):
+		push_error("Echo Loop runtime AreaSpec invalid: %s" % [
+			"; ".join(result.get("errors", []))])
+		return false
+	_canonical_analysis = result.get("analysis", {})
+	return true
 
 
 func _build_main_geometry() -> void:
@@ -131,14 +177,36 @@ func _build_main_lights() -> void:
 	_main_lights = Node3D.new()
 	_main_lights.name = "echo_loop_lights"
 	add_child(_main_lights)
+	var landmark_cell_value: Array = _plan.get(
+		"landmark_light_first_cell", [22, 5])
+	var landmark_axis_value: Array = _plan.get(
+		"landmark_light_axis", [0, -1])
+	var landmark_cell := Vector2i(
+		int(landmark_cell_value[0]), int(landmark_cell_value[1]))
+	var landmark_axis := Vector2i(
+		int(landmark_axis_value[0]), int(landmark_axis_value[1]))
+	if not _add_double_ceiling_light(
+			_main_lights, landmark_cell, landmark_axis, "landmark"):
+		push_error("Echo Loop landmark light has no legal canonical cells")
 	# Wide branches keep an area-specific pattern clear of both inner-wall
-	# continuations. The west pattern also reserves the future pit clearance.
+	# continuations. An extra grid row accounts for the real partition and panel
+	# AABB edges, keeping at least 3 CELL of physical gap. The west pattern also
+	# reserves the future pit clearance.
+	var north_pair_first_z := RunPlan.CORE_RECT.position.y \
+		+ DARK_PARTITION_LIGHT_CLEARANCE_CELLS + 1
+	var south_pair_first_z := RunPlan.CORE_RECT.end.y \
+		- DARK_PARTITION_LIGHT_CLEARANCE_CELLS - 3
 	for x: int in [4, 7]:
-		for z: int in [11, 26]:
+		var z_rows: Array = [
+			north_pair_first_z, south_pair_first_z] if x == 4 else [
+			north_pair_first_z + 1, south_pair_first_z - 1]
+		for z: int in z_rows:
 			_add_double_ceiling_light(
 				_main_lights, Vector2i(x, z), Vector2i.DOWN, "west")
 	for x: int in [19, 22]:
-		for z: int in [11, 16, 21, 26]:
+		var z_rows: Array = [13, 17, 21] if x == 19 \
+			else [15, 19, 23]
+		for z: int in z_rows:
 			_add_double_ceiling_light(
 				_main_lights, Vector2i(x, z), Vector2i.DOWN, "east")
 	_rebuild_short_light_patch("north")
@@ -146,30 +214,54 @@ func _build_main_lights() -> void:
 
 
 func _add_double_ceiling_light(parent: Node3D, first_cell: Vector2i,
-		route_axis: Vector2i, region: String) -> bool:
+		route_axis: Vector2i, region: String,
+		allow_wall_adjacent := false) -> bool:
 	var second_cell := first_cell + route_axis
-	if not _light_cell_clear(first_cell) \
-			or not _light_cell_clear(second_cell):
+	return _add_ceiling_fixture(parent,
+		[first_cell, second_cell], region, allow_wall_adjacent)
+
+
+func _add_single_ceiling_light(parent: Node3D, cell: Vector2i,
+		region: String, allow_wall_adjacent := false) -> bool:
+	return _add_ceiling_fixture(
+		parent, [cell], region, allow_wall_adjacent)
+
+
+func _add_ceiling_fixture(parent: Node3D, cells: Array[Vector2i],
+		region: String, allow_wall_adjacent: bool) -> bool:
+	if cells.is_empty():
 		return false
-	var pair_cells: Array[Vector2i] = [first_cell, second_cell]
-	for index in range(pair_cells.size()):
-		var cell := pair_cells[index]
-		var family: Dictionary = lighting.add_level_e_area_ceiling_light(
-			parent, Vector3(
-				(float(cell.x) + 0.5) * Architecture.CELL,
-				Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-				(float(cell.y) + 0.5) * Architecture.CELL), "echo_loop")
-		for member in family.values():
-			if member is Light3D:
-				(member as Light3D).set_meta("echo_light_cell", cell)
-				(member as Light3D).set_meta("echo_light_region", region)
-				(member as Light3D).set_meta("echo_light_double", true)
-				(member as Light3D).set_meta(
-					"echo_pair_bounce_primary", index == 0)
-		var bounce := family.get("bounce") as OmniLight3D
-		if bounce != null and index != 0:
-			bounce.visible = false
-			bounce.set_meta("pool_want", false)
+	for cell: Vector2i in cells:
+		if not _light_cell_available(cell, allow_wall_adjacent):
+			return false
+	var min_cell := cells[0]
+	var max_cell := cells[0]
+	for cell: Vector2i in cells:
+		min_cell.x = mini(min_cell.x, cell.x)
+		min_cell.y = mini(min_cell.y, cell.y)
+		max_cell.x = maxi(max_cell.x, cell.x)
+		max_cell.y = maxi(max_cell.y, cell.y)
+	var center_cell := (
+		Vector2(min_cell) + Vector2(max_cell) + Vector2.ONE) * 0.5
+	var footprint := Vector2i(
+		max_cell.x - min_cell.x + 1,
+		max_cell.y - min_cell.y + 1)
+	var family: Dictionary = lighting.add_level_e_area_ceiling_fixture(
+		parent, Vector3(
+			center_cell.x * Architecture.CELL,
+			Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
+			center_cell.y * Architecture.CELL),
+		footprint, "echo_loop")
+	for member in family.values():
+		if member is Node:
+			(member as Node).set_meta(
+				"echo_light_cells", cells.duplicate())
+			(member as Node).set_meta("echo_light_region", region)
+			(member as Node).set_meta(
+				"echo_light_double", cells.size() == 2)
+			(member as Node).set_meta(
+				"echo_light_relaxed_clearance", allow_wall_adjacent)
+			(member as Node).set_meta("echo_pair_bounce_primary", true)
 	return true
 
 
@@ -185,6 +277,14 @@ func _light_cell_clear(cell: Vector2i) -> bool:
 	return true
 
 
+func _light_cell_available(cell: Vector2i,
+		allow_wall_adjacent: bool) -> bool:
+	if not allow_wall_adjacent:
+		return _light_cell_clear(cell)
+	return String(_grid.get(cell, "wall")) == "floor" \
+		and not RunPlan.PIT_RECT.has_point(cell)
+
+
 func _rebuild_short_light_patch(side: String) -> void:
 	var existing = _short_light_patch_roots.get(side)
 	if existing is Node and is_instance_valid(existing):
@@ -195,34 +295,34 @@ func _rebuild_short_light_patch(side: String) -> void:
 	_short_light_patch_roots[side] = root_node
 	var width := _runtime_widths.x if side == "north" \
 		else _runtime_widths.y
-	if width < 3:
-		_refresh_lamp_audio()
-		return
 	var start_z := RunPlan.INTERIOR_MIN.y if side == "north" \
 		else RunPlan.INTERIOR_MAX.y - width
-	var target_z := float(start_z) + float(width) * 0.5
-	var candidates: Array[int] = []
-	for z in range(start_z, start_z + width):
-		candidates.append(z)
-	candidates.sort_custom(func(a: int, b: int) -> bool:
-		var distance_a := absf(float(a) + 0.5 - target_z)
-		var distance_b := absf(float(b) + 0.5 - target_z)
-		return a < b if is_equal_approx(distance_a, distance_b) \
-			else distance_a < distance_b)
-	for z: int in candidates:
-		var left := Vector2i(10, z)
-		var right := Vector2i(14, z)
-		if _light_cell_clear(left) \
-				and _light_cell_clear(left + Vector2i.RIGHT) \
-				and _light_cell_clear(right) \
-				and _light_cell_clear(right + Vector2i.RIGHT):
+	if width >= 6:
+		var row_a := start_z + 1
+		var row_b := start_z + 4
+		for first_cell: Vector2i in [
+			Vector2i(9, row_a),
+			Vector2i(16, row_a),
+			Vector2i(11, row_b),
+			Vector2i(15, row_b),
+		]:
 			_add_double_ceiling_light(
-				root_node, left, Vector2i.RIGHT, side)
+				root_node, first_cell, Vector2i.RIGHT, side)
+		root_node.set_meta("light_layout", "two_longitudinal_rows")
+	elif width >= 2:
+		var pair_z := start_z + floori(float(width - 2) * 0.5)
+		for x: int in [9, 13, 17]:
 			_add_double_ceiling_light(
-				root_node, right, Vector2i.RIGHT, side)
-			root_node.set_meta("light_row", z)
-			_refresh_lamp_audio()
-			return
+				root_node, Vector2i(x, pair_z),
+				Vector2i.DOWN, side, width <= 3)
+		root_node.set_meta("light_layout", "transverse_edge_center")
+	else:
+		for x: int in [9, 13, 17]:
+			_add_single_ceiling_light(
+				root_node, Vector2i(x, start_z), side, true)
+		root_node.set_meta("light_layout", "single_edge_center")
+	root_node.set_meta("edge_lights", true)
+	_refresh_lamp_audio()
 
 
 func _refresh_lamp_audio() -> void:
@@ -361,28 +461,15 @@ func _rebuild_width_patch(side: String) -> void:
 		_add_core_expansion(root_node, rect, 0)
 
 
-func _spawn_player() -> void:
-	player = PLAYER_SCENE.instantiate() as CharacterBody3D
-	player.name = "EchoLoopPlayer"
-	player.position = _cell_center(RunPlan.SPAWN_CELL)
-	player.rotation.y = 0.0
-	player.set_meta("block_debug_t_action", true)
-	add_child(player)
-
-
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
 	if player == null:
 		return
-	lighting.update_level_e_area_lighting(player)
-	audio.update(delta)
-	map.update()
 	if not _completed:
 		_update_loop_progress()
 		_update_micro_sector()
 		_update_micro_pending()
 		_update_pending_mutation()
 		_update_fall()
-	hud.update(_hud_text())
 
 
 func _update_loop_progress() -> void:
@@ -471,6 +558,13 @@ func _apply_micro_mutation(kind: String, target: String) -> void:
 		else:
 			_runtime_widths.y = next
 		_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+		if not _refresh_canonical_spec():
+			if target == "north":
+				_runtime_widths.x = previous
+			else:
+				_runtime_widths.y = previous
+			_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+			return
 		lighting.invalidate_lf3_guardian_cache()
 		_rebuild_width_patch(target)
 		_rebuild_short_light_patch(target)
@@ -514,6 +608,8 @@ func _apply_pending_mutation() -> void:
 	_pending_cycle = -1
 	_mutation_count += 1
 	_grid = RunPlan.build_grid_for_widths(_runtime_widths, _cycle)
+	if not _refresh_canonical_spec():
+		return
 	lighting.invalidate_lf3_guardian_cache()
 	_mutation_wait_samples_ms.append(float(
 		Time.get_ticks_msec() - _pending_started_ms))
@@ -615,7 +711,8 @@ func _build_corner_variant(corner_id: String, variant: int) -> void:
 		wall_z)
 	match variant:
 		1:
-			_build_passable_corner_column(root_node, center, span)
+			_build_passable_corner_column(
+				root_node, corner_id, center, span)
 		2:
 			_build_attached_corner_partition(
 				root_node, corner_id, wall_z)
@@ -678,12 +775,17 @@ func _inner_wall_continuation_z(corner_id: String) -> float:
 			else RunPlan.CORE_RECT.end.y) * Architecture.CELL
 
 
-func _build_passable_corner_column(parent: Node3D, center: Vector3,
-		span: Vector2) -> void:
-	var column_size := Architecture.CELL * 0.7
-	var bypass := (span.y - span.x - column_size) * 0.5
+func _build_passable_corner_column(parent: Node3D, corner_id: String,
+		center: Vector3, span: Vector2) -> void:
+	var west := corner_id.ends_with("west")
+	var column_size := Architecture.CELL
+	var attachment_x := span.y if west else span.x
+	center.x = attachment_x + (-column_size * 0.5 if west \
+		else column_size * 0.5)
+	var bypass := span.y - span.x - column_size
 	parent.set_meta("accent_min_passage_m", bypass)
 	parent.set_meta("accent_transverse", true)
+	parent.set_meta("accent_attached_to_inner_wall", true)
 	if bypass < Architecture.CELL:
 		parent.set_meta("accent_skipped_for_passage", true)
 		return
@@ -847,8 +949,6 @@ func _input(event: InputEvent) -> void:
 	if key.keycode == KEY_H:
 		_hud_visible = not _hud_visible
 		hud.set_visible(_hud_visible)
-	elif key.keycode == KEY_M:
-		map.toggle()
 	elif key.keycode == KEY_R:
 		_reset_with_seed(seed_detail + 1)
 
@@ -886,11 +986,14 @@ func _reset_with_seed(next_seed: int) -> void:
 	_pending_started_ms = 0
 	_visible_mutation_count = 0
 	_build_plan()
+	if not _refresh_canonical_spec():
+		return
 	lighting.invalidate_lf3_guardian_cache()
 	_build_main_geometry()
 	_build_all_width_patches()
 	_rebuild_short_light_patch("north")
 	_rebuild_short_light_patch("south")
+	_refresh_lamp_audio()
 	_build_landmark()
 	_build_mutation_patch()
 	player.global_position = _cell_center(RunPlan.SPAWN_CELL)
@@ -924,16 +1027,6 @@ func _map_data() -> Dictionary:
 	}
 
 
-func _get_player() -> Node3D:
-	return player
-
-
-func _active_camera() -> Camera3D:
-	if player != null and player.camera != null:
-		return player.camera
-	return get_viewport().get_camera_3d()
-
-
 func _lf3_cell_blocks_light(cell: Vector2i) -> bool:
 	var lower_origin := Vector2i(
 		floori(LOWER_ROOM_ORIGIN.x), floori(LOWER_ROOM_ORIGIN.z))
@@ -960,11 +1053,105 @@ func _cell_center(cell: Vector2i) -> Vector3:
 		(float(cell.y) + 0.5) * Architecture.CELL)
 
 
+func debug_light_layout_report() -> Dictionary:
+	var errors: Array[String] = []
+	var fixtures: Array[Dictionary] = []
+	var minimum_fixture_distance := 999
+	for value in find_children("*", "MeshInstance3D", true, false):
+		var panel := value as MeshInstance3D
+		if panel == null or not panel.has_meta("echo_light_cells"):
+			continue
+		fixtures.append({
+			"panel": panel,
+			"cells": (panel.get_meta("echo_light_cells") as Array).duplicate(),
+		})
+	for fixture_index in range(fixtures.size()):
+		var fixture_a: Dictionary = fixtures[fixture_index]
+		for other_index in range(fixture_index + 1, fixtures.size()):
+			var fixture_b: Dictionary = fixtures[other_index]
+			var too_close := false
+			for cell_a: Vector2i in fixture_a["cells"]:
+				for cell_b: Vector2i in fixture_b["cells"]:
+					var distance := maxi(absi(cell_a.x - cell_b.x),
+						absi(cell_a.y - cell_b.y))
+					minimum_fixture_distance = mini(
+						minimum_fixture_distance, distance)
+					if distance <= 2:
+						too_close = true
+			if too_close:
+				errors.append("separate fixtures lack two empty cells: %s / %s" % [
+					fixture_a["cells"], fixture_b["cells"]])
+
+	var minimum_partition_gap := INF
+	for corner_id_value in _corner_roots:
+		var corner_id := String(corner_id_value)
+		var corner_root = _corner_roots[corner_id]
+		if not (corner_root is Node3D) or not is_instance_valid(corner_root):
+			continue
+		if int((corner_root as Node).get_meta("corner_variant", 0)) < 2:
+			continue
+		var has_partition := false
+		var partition_box := AABB()
+		for child in (corner_root as Node3D).find_children(
+				"*", "MeshInstance3D", true, false):
+			var mesh := child as MeshInstance3D
+			if mesh == null or mesh.mesh == null or String(mesh.name) not in [
+				"corner_partition",
+				"portal_partition_side_a",
+				"portal_partition_side_b",
+				"portal_partition_lintel",
+			]:
+				continue
+			var box := mesh.global_transform * mesh.get_aabb()
+			partition_box = partition_box.merge(box) if has_partition else box
+			has_partition = true
+		if not has_partition:
+			continue
+		var span := _wide_branch_span(corner_id)
+		for fixture: Dictionary in fixtures:
+			var panel := fixture["panel"] as MeshInstance3D
+			var panel_box := panel.global_transform * panel.get_aabb()
+			var panel_x := panel_box.get_center().x
+			if panel_x < span.x or panel_x > span.y:
+				continue
+			var gap := 0.0
+			if panel_box.end.z <= partition_box.position.z:
+				gap = partition_box.position.z - panel_box.end.z
+			elif panel_box.position.z >= partition_box.end.z:
+				gap = panel_box.position.z - partition_box.end.z
+			minimum_partition_gap = minf(minimum_partition_gap, gap)
+			if gap + 0.001 < float(
+					DARK_PARTITION_LIGHT_CLEARANCE_CELLS) * Architecture.CELL:
+				errors.append(
+					"%s partition gap %.3f CELL for fixture %s" % [
+						corner_id, gap / Architecture.CELL, fixture["cells"]])
+	return {
+		"valid": errors.is_empty(),
+		"errors": errors,
+		"minimum_partition_gap_cells": (
+			-1.0 if is_inf(minimum_partition_gap)
+			else minimum_partition_gap / Architecture.CELL),
+		"minimum_empty_cells_between_fixtures": (
+			-1 if minimum_fixture_distance == 999
+			else minimum_fixture_distance - 1),
+	}
+
+
 func debug_snapshot() -> Dictionary:
 	return {
 		"seed_detail": seed_detail,
 		"plan_valid": bool(_plan_report.get("valid", false)),
 		"plan_hash": int(_plan.get("plan_hash", 0)),
+		"construction_profile": String(
+			get_meta("construction_profile", "")),
+		"ambient_energy": (
+			architecture.environment.ambient_light_energy
+			if architecture != null and architecture.environment != null
+			else -1.0),
+		"canonical_spec_valid": (
+			_canonical_analysis.get("errors", []) as Array).is_empty(),
+		"clear_route_count": (
+			_canonical_spec.get("clear_routes", []) as Array).size(),
 		"cycle": _cycle,
 		"north_width_cells": _runtime_widths.x,
 		"south_width_cells": _runtime_widths.y,

@@ -481,6 +481,26 @@ fallback. Замена этой семьи одиночным wide-Omni не с�
 - Some area types may use double panels: 2 joined light panels in one local
   light placement cell.
 
+### Видимая геометрия многопанельного светильника
+
+Канонический двойной светильник `1×2` занимает две логические клетки, но
+визуально является одним непрерывным эмиссивным прямоугольником. Между его
+половинами нет полосы потолка, перемычки, рамки или двух независимых inset-
+зазоров. Геометрический эталон — двойная панель `branch` в `level_e`: один
+видимый footprint размером
+`(CELL - PANEL_INSET) × (2 * CELL - PANEL_INSET)` с поворотом по оси рисунка.
+
+Запрещено создавать канонический `1×2` двумя вызовами конструктора видимой
+одиночной панели `1×1`. Логические клетки, occupancy и runtime-источники могут
+учитываться раздельно, но видимый меш обязан совпадать с эталонной непрерывной
+геометрией. Если общий световой constructor не поддерживает такой footprint,
+сначала расширяется `lighting_module.gd`; локальная сборка из двух одиночных
+мешей не является допустимым обходом.
+
+Допуск двойного светильника проверяет ориентацию, итоговый AABB, размер
+footprint и отсутствие внутреннего зазора. Проверка только соседства клеток,
+метки `double` или количества источников недостаточна.
+
 ## Grid Alignment (mandatory, no implicit exceptions)
 
 Every ceiling fixture MUST sit on the canonical panel/occupancy grid of its
@@ -547,6 +567,13 @@ shadow-профиль или семейство источника. При
 `construction_profile=custom`. Отсутствие профиля всегда означает
 `canonical`, а не исторический локальный default.
 
+В режиме `external_dynamic_topology` общий AreaSpec-потребитель сохраняет
+владение `lighting_module.gd`, `level_e_area`, `LF3-11F` и очисткой runtime,
+но не создаёт статическую раскладку автоматически. Владелец изменяемой
+topology передаёт occupancy-callback и строит только объявленный в AreaSpec
+динамический рисунок. Параметры источников и shadow-профиль при этом остаются
+недоступны локальному override.
+
 Базовые рисунки новых канонических пространств:
 
 - `hall`: одиночные панели регулярной сеткой; препятствия и симметричное
@@ -581,6 +608,10 @@ single-panel fixtures: keep at least 2 empty grid cells around each panel
 5x5-cell neighborhood. This spacing rule does not apply to explicitly
 designed multi-panel fixtures, such as the 1x2 double panels in `branch`, or
 to a hand-authored local exception documented by that template.
+
+Исключение расстояния относится только к одному многопанельному светильнику с
+канонической общей геометрией. Две соседние видимые панели `1×1` не становятся
+двойным светильником только из-за общей metadata или объявления пары.
 
 ## Area-Specific Light Rules
 

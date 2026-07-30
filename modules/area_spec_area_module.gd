@@ -26,6 +26,9 @@ var spec: Dictionary = {}
 var analysis: Dictionary = {}
 var hud_title := "AREASPEC PREVIEW"
 var hud_controls := "M — карта"
+var _occupancy_blocker := Callable()
+var _map_data_provider := Callable()
+var _hud_text_provider := Callable()
 
 
 func setup(area_spec: Dictionary, options: Dictionary = {}) -> Dictionary:
@@ -48,43 +51,55 @@ func setup(area_spec: Dictionary, options: Dictionary = {}) -> Dictionary:
 	hud = HUD.new(self)
 	map = Map.new(self)
 	builder = AreaBuilder.new(architecture, openings)
+	var external_dynamic_topology := bool(
+		options.get("external_dynamic_topology", false))
+	set_meta("external_dynamic_topology", external_dynamic_topology)
+	_occupancy_blocker = options.get("occupancy_blocker", Callable())
+	_map_data_provider = options.get("map_data_provider", Callable())
+	_hud_text_provider = options.get("hud_text_provider", Callable())
 	area_root = Node3D.new()
 	area_root.name = "area_spec_geometry"
 	add_child(area_root)
-	var occupancy_plan: Dictionary = spec.get("occupancy_plan", {})
-	if occupancy_plan.is_empty():
-		architecture.build_standard_hall(area_root,
-			AreaSpec.architecture_openings(spec), AreaSpec.architecture_options(spec))
-		builder.build(area_root, spec)
-	else:
-		architecture.build_occupancy_plan(area_root, analysis["grid"],
-			analysis["gmin"], analysis["gmax"])
+	if not external_dynamic_topology:
+		var occupancy_plan: Dictionary = spec.get("occupancy_plan", {})
+		if occupancy_plan.is_empty():
+			architecture.build_standard_hall(area_root,
+				AreaSpec.architecture_openings(spec), AreaSpec.architecture_options(spec))
+			builder.build(area_root, spec)
+		else:
+			architecture.build_occupancy_plan(area_root, analysis["grid"],
+				analysis["gmin"], analysis["gmax"])
 	var light_profile := String((spec.get("light_overrides", {}) as Dictionary).get(
 		"profile", "tight"))
 	var source_family := String((spec.get("light_overrides", {}) as Dictionary).get(
 		"source_family", "omni"))
-	for cell: Vector2i in analysis["light_cells"]:
-		var light_position := Vector3(
-			(float(cell.x) + 0.5) * Architecture.CELL,
-			Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
-			(float(cell.y) + 0.5) * Architecture.CELL)
-		if source_family == "level_e_area":
-			lighting.add_level_e_area_ceiling_light(
-				area_root, light_position, "preview")
-		elif light_profile == "wide":
-			lighting.add_wide_ceiling_light(area_root, light_position)
-		else:
-			lighting.add_ceiling_light(area_root, light_position, true)
+	if not external_dynamic_topology:
+		for cell: Vector2i in analysis["light_cells"]:
+			var light_position := Vector3(
+				(float(cell.x) + 0.5) * Architecture.CELL,
+				Architecture.CEIL_H + Lighting.PANEL_Y_EPS,
+				(float(cell.y) + 0.5) * Architecture.CELL)
+			if source_family == "level_e_area":
+				lighting.add_level_e_area_ceiling_light(
+					area_root, light_position, "preview")
+			elif light_profile == "wide":
+				lighting.add_wide_ceiling_light(area_root, light_position)
+			else:
+				lighting.add_ceiling_light(area_root, light_position, true)
 	player = options.get("player") as CharacterBody3D
 	if player == null:
 		player = PLAYER_SCENE.instantiate() as CharacterBody3D
 		var spawn: Array = spec.get("spawn_cells", [7.5, 7.5])
 		player.position = Vector3(float(spawn[0]) * Architecture.CELL, 1.2,
 			float(spawn[1]) * Architecture.CELL)
-		add_child(player)
+		var player_parent := options.get("player_parent") as Node
+		if player_parent == null:
+			player_parent = self
+		player_parent.add_child(player)
 	hud_title = String(spec.get("title", spec.get("id", hud_title)))
 	hud_controls = String(options.get("hud_controls", hud_controls))
 	hud.setup()
+	hud.set_visible(bool(options.get("hud_visible", true)))
 	map.setup(_map_data, _get_player, Architecture.CELL,
 		["wall", "partition", "column"])
 	audio.setup(player, lighting.lamps)
@@ -93,6 +108,20 @@ func setup(area_spec: Dictionary, options: Dictionary = {}) -> Dictionary:
 		"architecture": architecture, "openings": openings,
 		"lighting": lighting, "audio": audio, "hud": hud, "map": map,
 		"area_root": area_root, "player": player}
+
+
+func update_external_spec(area_spec: Dictionary) -> Dictionary:
+	var next_spec := AreaSpec.normalize(area_spec)
+	var next_analysis := AreaSpec.analyze(next_spec)
+	if not next_analysis["errors"].is_empty():
+		return {"ok": false, "errors": next_analysis["errors"]}
+	spec = next_spec
+	analysis = next_analysis
+	set_meta("construction_profile",
+		String(spec.get("construction_profile", "canonical")))
+	if lighting != null:
+		lighting.invalidate_lf3_guardian_cache()
+	return {"ok": true, "spec": spec, "analysis": analysis}
 
 
 func _process(delta: float) -> void:
@@ -105,8 +134,11 @@ func _process(delta: float) -> void:
 	else:
 		lighting.update(player)
 	audio.update(delta)
-	hud.update("%s\n%d fps\n%s" % [
-		hud_title, Engine.get_frames_per_second(), hud_controls])
+	if _hud_text_provider.is_valid():
+		hud.update(String(_hud_text_provider.call()))
+	else:
+		hud.update("%s\n%d fps\n%s" % [
+			hud_title, Engine.get_frames_per_second(), hud_controls])
 	map.update()
 
 
@@ -122,6 +154,8 @@ func _exit_tree() -> void:
 
 
 func _map_data() -> Dictionary:
+	if _map_data_provider.is_valid():
+		return _map_data_provider.call()
 	var local_player := to_local(player.global_position) if player != null \
 		else Vector3.ZERO
 	return {"grid": analysis.get("grid", {}),
@@ -140,5 +174,7 @@ func _get_active_camera() -> Camera3D:
 
 
 func _lf3_cell_blocks_light(cell: Vector2i) -> bool:
+	if _occupancy_blocker.is_valid():
+		return bool(_occupancy_blocker.call(cell))
 	return AreaSpec.BLOCKING_KINDS.has(String(
 		analysis.get("grid", {}).get(cell, "wall")))

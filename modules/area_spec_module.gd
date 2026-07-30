@@ -147,9 +147,8 @@ static func validate(spec: Dictionary) -> Dictionary:
 		errors.append("Неизвестный space_type: %s" % space_type)
 	_validate_anomaly(spec.get("anomaly", {}), errors)
 	var size = spec.get("size_cells", [])
-	if not _pair_is_numeric(size) or int(size[0]) != Architecture.ROOM_CELLS \
-			or int(size[1]) != Architecture.ROOM_CELLS:
-		errors.append("Первая версия поддерживает только область 15×15")
+	if not _pair_is_numeric(size) or int(size[0]) < 1 or int(size[1]) < 1:
+		errors.append("size_cells должен быть положительной парой чисел")
 	var occupancy_value = spec.get("occupancy_plan", {})
 	if not (occupancy_value is Dictionary):
 		errors.append("occupancy_plan должен быть JSON-объектом")
@@ -175,6 +174,11 @@ static func validate(spec: Dictionary) -> Dictionary:
 					if character not in ["#", "."]:
 						errors.append("occupancy_plan допускает только # и .")
 						break
+			if row_width > 0 and _pair_is_numeric(size) \
+					and (row_width != int(size[0])
+					or rows_value.size() != int(size[1])):
+				errors.append(
+					"size_cells должен совпадать с размером occupancy_plan")
 	for region_value in spec.get("light_regions", []):
 		if not (region_value is Dictionary):
 			errors.append("Каждый light_region должен быть JSON-объектом")
@@ -260,8 +264,8 @@ static func validate(spec: Dictionary) -> Dictionary:
 			and (spec.get("clear_routes", []) as Array).is_empty():
 		errors.append("Канонический corridor требует хотя бы один clear_route")
 	var spawn = spec.get("spawn_cells", [])
-	if not _pair_is_numeric(spawn) or not _point_in_room(spawn):
-		errors.append("spawn_cells должен находиться внутри 15×15")
+	if not _pair_is_numeric(spawn) or not _point_in_spec(spawn, spec):
+		errors.append("spawn_cells должен находиться внутри size_cells")
 	var light_overrides: Dictionary = spec.get("light_overrides", {})
 	var light_profile := String(light_overrides.get("profile", "tight"))
 	if light_profile not in ["tight", "wide"]:
@@ -391,6 +395,8 @@ static func _anomaly_targets(spec: Dictionary, rule_id: String, target_id: Strin
 
 
 static func _validate_clear_routes(spec: Dictionary, errors: Array[String]) -> void:
+	var size: Array = spec.get("size_cells",
+		[Architecture.ROOM_CELLS, Architecture.ROOM_CELLS])
 	for value in spec.get("clear_routes", []):
 		if not (value is Dictionary):
 			errors.append("Каждый clear_route должен быть JSON-объектом")
@@ -409,10 +415,12 @@ static func _validate_clear_routes(spec: Dictionary, errors: Array[String]) -> v
 		var to_l := float(route.get("to", -1.0))
 		if width < 1.0:
 			errors.append("clear_route %s: width_cells должен быть >= 1" % route_id)
-		if from_l < 0.0 or to_l > Architecture.ROOM_CELLS or to_l <= from_l:
+		var along_limit := float(size[0] if axis == "x" else size[1])
+		var cross_limit := float(size[1] if axis == "x" else size[0])
+		if from_l < 0.0 or to_l > along_limit or to_l <= from_l:
 			errors.append("clear_route %s: неверный диапазон from/to" % route_id)
 		if center - width * 0.5 < 0.0 \
-				or center + width * 0.5 > Architecture.ROOM_CELLS:
+				or center + width * 0.5 > cross_limit:
 			errors.append("clear_route %s: чистая ширина выходит за интерьер" % route_id)
 
 
@@ -422,7 +430,7 @@ static func _validate_clear_route_occupancy(spec: Dictionary, grid: Dictionary,
 		var route_id := String(route.get("id", "clear_route"))
 		for cell: Vector2i in _clear_route_cells(route):
 			var kind := String(grid.get(cell, "wall"))
-			if kind in ["partition", "column"]:
+			if kind in BLOCKING_KINDS:
 				errors.append("clear_route %s пересекает %s в клетке %s" \
 					% [route_id, kind, cell])
 
@@ -857,6 +865,14 @@ static func _point_in_room(value: Array) -> bool:
 	return float(value[0]) >= 0.0 and float(value[1]) >= 0.0 \
 		and float(value[0]) <= Architecture.ROOM_CELLS \
 		and float(value[1]) <= Architecture.ROOM_CELLS
+
+
+static func _point_in_spec(value: Array, spec: Dictionary) -> bool:
+	var size: Array = spec.get("size_cells",
+		[Architecture.ROOM_CELLS, Architecture.ROOM_CELLS])
+	return float(value[0]) >= 0.0 and float(value[1]) >= 0.0 \
+		and float(value[0]) <= float(size[0]) \
+		and float(value[1]) <= float(size[1])
 
 
 static func _pair_to_cell(value: Array) -> Vector2i:
