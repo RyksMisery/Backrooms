@@ -10,9 +10,16 @@ extends RefCounted
 
 const MARKER_PATH := "res://.run_infinite_pit_bot"
 
-const SETTLE_FRAMES := 12
-const STEP_METERS := 3.0
-const WALK_STEPS := 26
+const SETTLE_FRAMES := 8
+const STEP_METERS := 4.0
+const WALK_STEPS := 14
+# Кадр окна бывает 3564x2147 — сохранение такого PNG роняет прогон до 1-2 fps.
+# Для диагностики этого не нужно: уменьшаем перед записью.
+const CAPTURE_WIDTH := 1280
+# В Godot нулевой поворот смотрит на -Z. Провал выходит на восток (+X),
+# поэтому взгляд на дверь — это -PI/2, а вглубь кольца — +PI/2.
+const YAW_EAST := -PI * 0.5
+const YAW_WEST := PI * 0.5
 
 var _tree: SceneTree
 var _level: Node3D
@@ -49,12 +56,12 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 	# Подход к двери, лицом на восток.
 	for index in range(6):
 		var t := float(index) / 5.0
-		_place(door + Vector3(-12.0 + 10.0 * t, 0.0, 0.0), 0.0)
+		_place(door + Vector3(-12.0 + 10.0 * t, 0.0, 0.0), YAW_EAST)
 		await _settle()
 		await _capture("approach_%d" % index, "подход к двери")
 
 	# Этап 1 — игрок у двери и смотрит на неё.
-	_place(door + Vector3(-2.0, 0.0, 0.0), 0.0)
+	_place(door + Vector3(-2.0, 0.0, 0.0), YAW_EAST)
 	await _settle()
 	await _capture("before_stage1", "перед первым переключением")
 	level.call("_reveal_infinite_pit_back")
@@ -65,7 +72,7 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 		await _capture("stage1_settle_%d" % index, "первый этап, кадр %d" % index)
 
 	# Разворот на запад и этап 2.
-	_place(door + Vector3(-2.0, 0.0, 0.0), PI)
+	_place(door + Vector3(-2.0, 0.0, 0.0), YAW_WEST)
 	await _settle()
 	await _capture("before_stage2", "развернулся, до второго переключения")
 	level.call("_reveal_infinite_pit_front")
@@ -73,7 +80,7 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 	await _capture("after_stage2", "сразу после второго переключения")
 
 	# Взгляд назад — туда, где была дверь.
-	_place(door + Vector3(-2.0, 0.0, 0.0), 0.0)
+	_place(door + Vector3(-2.0, 0.0, 0.0), YAW_EAST)
 	await _settle()
 	await _capture("look_back_east", "взгляд назад, на место двери")
 
@@ -81,12 +88,12 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 	var position := door + Vector3(-2.0, 0.0, 0.0)
 	for index in range(WALK_STEPS):
 		position.x -= STEP_METERS
-		_place(position, PI)
+		_place(position, YAW_WEST)
 		await _settle()
 		await _capture("walk_west_%02d" % index, "запад, шаг %d" % index)
 	for index in range(WALK_STEPS):
 		position.x += STEP_METERS
-		_place(position, 0.0)
+		_place(position, YAW_EAST)
 		await _settle()
 		await _capture("walk_east_%02d" % index, "восток, шаг %d" % index)
 
@@ -116,8 +123,13 @@ func _capture(slug: String, note: String) -> void:
 	var image := viewport.get_texture().get_image()
 	var brightness := -1.0
 	if image != null and not image.is_empty():
-		image.save_png(_dir.path_join("%s.png" % slug))
 		brightness = _mean_luma(image)
+		var shot := image.duplicate() as Image
+		if shot.get_width() > CAPTURE_WIDTH:
+			var height := int(round(float(shot.get_height())
+				* float(CAPTURE_WIDTH) / float(shot.get_width())))
+			shot.resize(CAPTURE_WIDTH, height, Image.INTERPOLATE_BILINEAR)
+		shot.save_png(_dir.path_join("%s.png" % slug))
 	var stray: Array = _stray_lit_lamps()
 	var lamps: Array = _lit_lamp_positions()
 	_steps.append({
