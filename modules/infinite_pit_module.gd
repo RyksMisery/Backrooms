@@ -339,7 +339,11 @@ func _build_tile_lights(tile: Node3D) -> void:
 				"flick_stutter_t": 0.0,
 				"flick_stutter_v": 1.0,
 				"flick_level": 1.0,
+				"base_material": null,
+				"flick_material": null,
 			}
+			if visible_panel != null:
+				entry["base_material"] = visible_panel.material_override
 			_light_entries.append(entry)
 			tile_entries.append(entry)
 	tile.set_meta("light_entries", tile_entries)
@@ -352,6 +356,11 @@ func _apply_tile_outage(tile: Node3D) -> void:
 	var entries: Array = tile.get_meta("light_entries")
 	var section := _tile_section_index(tile)
 	var lit: Array = _section_lit_slots(section)
+	# Якорная секция до первого рециклинга светится ЛАМПАМИ УРОВНЯ: свои
+	# светильники она держит выключенными, иначе у двери складываются два
+	# набора ламп и панель напротив получает двойную мощность.
+	if tile == _anchor_tile and not _anchor_released:
+		lit = []
 	for entry_value in entries:
 		var entry: Dictionary = entry_value
 		var slot := int(entry["slot"])
@@ -368,6 +377,7 @@ func _apply_tile_outage(tile: Node3D) -> void:
 		var visible_panel = entry.get("visible_panel")
 		if visible_panel != null and is_instance_valid(visible_panel):
 			(visible_panel as Node3D).visible = not is_out
+		_sync_flicker_material(entry)
 
 
 static func _hash01(a: int, b: int) -> float:
@@ -567,6 +577,7 @@ func _update_ring_flicker(delta: float, player: Node3D) -> void:
 			continue
 		var previous := float(entry["flick_level"])
 		_advance_flicker(entry, delta)
+		_apply_flicker_material(entry)
 		var reference = entry.get("panel")
 		if reference == null or not is_instance_valid(reference):
 			reference = entry.get("legacy")
@@ -580,6 +591,50 @@ func _update_ring_flicker(delta: float, player: Node3D) -> void:
 			# Звук берёт ближайшую мигающую панель: модуль звука ведёт одну
 			# позицию мерцания, и она же даёт затухание по расстоянию.
 			_flick_triggered = float(entry["flick_level"]) < previous - 0.001
+
+
+# Мерцать должна и САМА ПАНЕЛЬ, а не только её лампы: в каноническом рисунке
+# уровня (`_level_e_base_update_pit_flicker`) вместе с энергией меняются
+# albedo и эмиссия материала. Материал панели общий на всё кольцо, поэтому
+# мигающей панели выдаётся личная копия, а когда она перестаёт мигать —
+# возвращается общий материал.
+func _sync_flicker_material(entry: Dictionary) -> void:
+	var panel_value = entry.get("visible_panel")
+	if panel_value == null or not is_instance_valid(panel_value):
+		return
+	var panel := panel_value as GeometryInstance3D
+	if bool(entry["flicker"]):
+		if entry.get("flick_material") == null:
+			var base := entry.get("base_material") as BaseMaterial3D
+			if base == null:
+				return
+			var copy := base.duplicate() as BaseMaterial3D
+			entry["flick_material"] = copy
+			entry["flick_albedo"] = copy.albedo_color
+			entry["flick_emission"] = copy.emission_energy_multiplier
+		panel.material_override = entry["flick_material"]
+	elif entry.get("flick_material") != null:
+		panel.material_override = entry.get("base_material")
+		entry["flick_material"] = null
+
+
+# Уровень свечения панели ограничен снизу теми же каноническими порогами, что
+# и у панели перед провалом: панель не гаснет в ноль, а лишь заметно тускнеет.
+func _apply_flicker_material(entry: Dictionary) -> void:
+	var material = entry.get("flick_material")
+	if material == null:
+		return
+	var level := float(entry["flick_level"])
+	var panel_level := maxf(level, Lighting.FLICK_PANEL_MIN_LEVEL)
+	var emission_level := maxf(level, Lighting.FLICK_PANEL_EMISSION_MIN_LEVEL)
+	var base_albedo: Color = entry["flick_albedo"]
+	(material as BaseMaterial3D).albedo_color = Color(
+		base_albedo.r * panel_level,
+		base_albedo.g * panel_level,
+		base_albedo.b * panel_level,
+		base_albedo.a)
+	(material as BaseMaterial3D).emission_energy_multiplier = \
+		float(entry["flick_emission"]) * emission_level
 
 
 func _advance_flicker(entry: Dictionary, delta: float) -> void:

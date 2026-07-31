@@ -2119,6 +2119,10 @@ func _place_pit_exit_texture_sign(cell: Vector2i, dir: Vector2i, lane: Vector2i)
 	refl.omni_attenuation = SIGN_REFLEX_ATTEN
 	refl.shadow_enabled = false
 	refl.position = pos
+	# Имя обязательно: рефлекс висит в 0.5 м под потолком и даёт круглое
+	# световое пятно. Безымянный узел не попадал ни в одну чистку по именам и
+	# оставался светить после того, как знак и дверь сняты.
+	refl.name = "pit_exit_sign_reflex"
 	refl.set_meta("skip_level_d_source_drop", true)
 	refl.set_meta("keep_in_area_light_mode", true)
 	_apply_runtime_light_rules(refl)
@@ -6492,6 +6496,7 @@ func _free_pit_door_nodes() -> void:
 			continue
 		if node.name.begins_with(_pit_door_node_prefix) \
 				or node.name.begins_with("pit_exit_sign"):
+			# `pit_exit_sign_reflex` попадает под тот же префикс.
 			node.queue_free()
 
 

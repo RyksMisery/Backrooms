@@ -105,8 +105,13 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 
 # ── шаги ───────────────────────────────────────────────────────────────────
 
+# Дверь известна на уровне пола, поэтому глаз поднимаем сами: иначе камера
+# оказывается у самого пола и кадр не отражает то, что видит игрок.
+const EYE_HEIGHT := 1.2
+
+
 func _place(position: Vector3, yaw: float) -> void:
-	_player.global_position = position
+	_player.global_position = Vector3(position.x, EYE_HEIGHT, position.z)
 	_player.rotation.y = yaw
 	if _player.camera != null:
 		_player.camera.rotation.x = 0.0
@@ -142,6 +147,8 @@ func _capture(slug: String, note: String) -> void:
 		"lit_lamps_near_25m": _count_near(lamps, 25.0),
 		"stray_lit_count": stray.size(),
 		"stray_lit": stray.slice(0, 6),
+		"foreign_lights": _foreign_lights(30.0),
+		"flicker": _flicker_state(),
 	})
 
 
@@ -171,6 +178,68 @@ func _stray_lit_lamps() -> Array:
 				"lamp_energy": energy,
 			})
 	return result
+
+
+# Все источники сцены, НЕ принадлежащие кольцу: любой из них рядом с игроком
+# после переключения — это остаток снесённой области. Возвращает имя, класс,
+# позицию и энергию, чтобы виновника можно было назвать точно.
+func _foreign_lights(radius: float) -> Array:
+	var result: Array = []
+	var eye: Vector3 = _player.global_position
+	for light_value in _tree.root.find_children("*", "Light3D", true, false):
+		var light := light_value as Light3D
+		if light == null or not is_instance_valid(light):
+			continue
+		if not light.is_visible_in_tree() or light.light_energy <= 0.001:
+			continue
+		var node: Node = light
+		var inside_ring := false
+		while node != null:
+			if node.name.begins_with("infinite_pit_ring"):
+				inside_ring = true
+				break
+			node = node.get_parent()
+		if inside_ring:
+			continue
+		var distance: float = light.global_position.distance_to(eye)
+		if distance > radius:
+			continue
+		result.append({
+			"name": String(light.name),
+			"class": light.get_class(),
+			"parent": String(light.get_parent().name) if light.get_parent() != null else "",
+			"pos": _v(light.global_position),
+			"distance": distance,
+			"energy": light.light_energy,
+		})
+	result.sort_custom(func(a, b): return float(a["distance"]) < float(b["distance"]))
+	return result.slice(0, 8)
+
+
+# Мигающая панель должна менять и собственное свечение, а не только энергию
+# ламп. Проверяем, что у неё своя копия материала и что уровень действительно
+# гуляет.
+func _flicker_state() -> Dictionary:
+	var total := 0
+	var with_material := 0
+	var min_level := 2.0
+	var max_level := -1.0
+	for entry_value in _ring.get("_light_entries"):
+		var entry: Dictionary = entry_value
+		if not bool(entry.get("flicker", false)):
+			continue
+		total += 1
+		if entry.get("flick_material") != null:
+			with_material += 1
+		var level := float(entry.get("flick_level", 1.0))
+		min_level = minf(min_level, level)
+		max_level = maxf(max_level, level)
+	return {
+		"panels": total,
+		"with_own_material": with_material,
+		"level_min": min_level if total > 0 else -1.0,
+		"level_max": max_level if total > 0 else -1.0,
+	}
 
 
 func _entry_energy(entry: Dictionary) -> float:
