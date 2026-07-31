@@ -459,22 +459,26 @@ func _build_open_side_wall(parent: Node3D, side: String) -> void:
 	var inner_z := 0.0 if side == "north" else ROOM_SIZE
 	var outer_z := -WALL_DEPTH if side == "north" else ROOM_SIZE + WALL_DEPTH
 	var inward := Vector3.BACK if side == "north" else Vector3.FORWARD
-	# Канонический вылет рамы считается от ЦЕНТРА перегородки в полклетки.
-	# Стена кольца толщиной 3 клетки, поэтому передавать грань нельзя: рама
-	# уезжала бы на этот вылет внутрь помещения и не примыкала к стене.
-	# Сдвигаем точку так, чтобы лицевая грань рамы легла ровно на грань стены.
-	var outset := Architecture.PARTITION_T_CELLS * Architecture.CELL * 0.5 \
-		+ Openings.OFFICE_FRAME_OUTSET
+	# Канонический вылет рамы считается от ЦЕНТРА перегородки в полклетки, а
+	# стена кольца толщиной 3 клетки. Сдвигаем точку ровно на полтолщины
+	# перегородки: тогда у рамы остаётся штатный вылет `OFFICE_FRAME_OUTSET`,
+	# равный вылету плинтуса (`BASEBOARD_PAD / 2`), — не заподлицо и не внутрь.
+	var outset := Architecture.PARTITION_T_CELLS * Architecture.CELL * 0.5
 	openings.spawn_office_frame(parent,
 		Vector3(center, 0.0, inner_z - inward.z * outset),
 		inward, "infinite_pit_exit_%s_inner" % side)
 	openings.spawn_office_frame(parent,
 		Vector3(center, 0.0, outer_z + inward.z * outset),
 		-inward, "infinite_pit_exit_%s_outer" % side)
-	Openings.spawn_exit_sign(parent,
-		Vector3(center, (height + Architecture.CEIL_H) * 0.5,
-			inner_z + inward.z * Architecture.CELL * 0.3),
-		inward, "infinite_pit_exit_sign_%s" % side)
+	# Знак прижат к грани стены тем же каноническим смещением, что и в провале,
+	# и получает такой же зеленоватый рефлекс.
+	var sign_position := Vector3(center,
+		(height + Architecture.CEIL_H) * 0.5,
+		inner_z + inward.z * Openings.EXIT_SIGN_FACE_OFFSET)
+	Openings.spawn_exit_sign(parent, sign_position, inward,
+		"infinite_pit_exit_sign_%s" % side)
+	Openings.spawn_exit_sign_reflex(parent, sign_position,
+		"infinite_pit_exit_sign_reflex_%s" % side)
 	# Куда ведёт этот проём — пока не решено: «просто проход в никуда»
 	# (слово автора). Триггера и назначения намеренно нет; здесь же потом
 	# появится вход в ряд ложных комнат.

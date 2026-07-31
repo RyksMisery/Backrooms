@@ -106,6 +106,32 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 		await _settle()
 		await _capture("ceiling_%02d" % index, "потолок, шаг %d" % index)
 
+	# Боковой проём появляется только через три цикла, обычным проходом бот до
+	# него не доходит. Вызываем принудительно и снимаем раму и знак вблизи.
+	_place(door + Vector3(-4.0 * STEP_METERS, 0.0, 0.0), YAW_WEST)
+	await _settle()
+	_ring.call("_spawn_exit_door", _player)
+	await _settle()
+	var door_x := float(_ring.get("_door_world_x"))
+	var side := String(_ring.get("_door_side"))
+	var origin: Vector3 = _level.get("_pit_interior_origin")
+	var room := 15.0 * 1.25
+	var wall_z: float = origin.z if side == "north" else origin.z + room
+	var inward := 1.0 if side == "north" else -1.0
+	_report["exit_door"] = {"side": side, "world_x": door_x, "wall_z": wall_z}
+	for index in range(3):
+		var back := 2.0 + 2.0 * float(index)
+		_place(Vector3(door_x, 0.0, wall_z + inward * back),
+			(0.0 if side == "north" else PI))
+		await _settle()
+		await _capture("exit_door_%d" % index, "боковой проём с %.0f м" % back)
+	# Взгляд на знак над проёмом.
+	# Положительный наклон камеры смотрит ВВЕРХ (player.gd: rotate_x(-relative.y)).
+	_place(Vector3(door_x, 0.0, wall_z + inward * 3.0),
+		(0.0 if side == "north" else PI), PI * 0.16)
+	await _settle()
+	await _capture("exit_door_sign", "знак над боковым проёмом")
+
 	_report["steps"] = _steps
 	_report["verdict"] = _verdict()
 	_write_report()
@@ -160,6 +186,7 @@ func _capture(slug: String, note: String) -> void:
 		"stray_lit": stray.slice(0, 6),
 		"foreign_lights": _foreign_lights(30.0),
 		"flicker": _flicker_state(),
+		"active_areas": _active_area_count(),
 	})
 
 
@@ -251,6 +278,27 @@ func _flicker_state() -> Dictionary:
 		"level_min": min_level if total > 0 else -1.0,
 		"level_max": max_level if total > 0 else -1.0,
 	}
+
+
+# Сколько триггеров основной карты ещё включено. После переключения их не
+# должно оставаться: игрок ходит по координатам чужих областей, и чужой
+# ноклип срабатывал бы сам по себе.
+func _active_area_count() -> int:
+	var count := 0
+	for area_value in _level.find_children("*", "Area3D", true, false):
+		var area := area_value as Area3D
+		if area == null or not is_instance_valid(area) or not area.monitoring:
+			continue
+		var node: Node = area
+		var inside_ring := false
+		while node != null:
+			if node.name.begins_with("infinite_pit_ring"):
+				inside_ring = true
+				break
+			node = node.get_parent()
+		if not inside_ring:
+			count += 1
+	return count
 
 
 func _entry_energy(entry: Dictionary) -> float:

@@ -95,10 +95,10 @@ const SIGN_TEX_ALPHA := OPENINGS.EXIT_SIGN_ALPHA
 const SIGN_GLOW_COLOR := OPENINGS.EXIT_SIGN_GLOW_COLOR
 const SIGN_GLOW_ENERGY := OPENINGS.EXIT_SIGN_GLOW_ENERGY
 const SIGN_BODY_ALBEDO := OPENINGS.EXIT_SIGN_BODY_COLOR
-const SIGN_REFLEX_COLOR := Color(0.72, 1.0, 0.78)  # рефлекс на стену вокруг знака
-const SIGN_REFLEX_ENERGY := 0.15
-const SIGN_REFLEX_RANGE := 1.8
-const SIGN_REFLEX_ATTEN := 1.2
+const SIGN_REFLEX_COLOR := OPENINGS.EXIT_SIGN_REFLEX_COLOR
+const SIGN_REFLEX_ENERGY := OPENINGS.EXIT_SIGN_REFLEX_ENERGY
+const SIGN_REFLEX_RANGE := OPENINGS.EXIT_SIGN_REFLEX_RANGE
+const SIGN_REFLEX_ATTEN := OPENINGS.EXIT_SIGN_REFLEX_ATTEN
 # Направленный свет от мерцающей лампы на табличку «скользко» (мигает с лампой).
 const WETSIGN_SPOT_ENERGY := 1.3
 const WETSIGN_SPOT_ANGLE := 32.0
@@ -756,7 +756,10 @@ var _pit_reached_door := false
 var _pit_door_world_pos := Vector3.ZERO   # проём дальней (закрытой) двери провала
 var _pit_door_node_prefix := ""           # рамы/створка — снимаются при reveal
 var _pit_interior_origin := Vector3.ZERO  # min-угол интерьера области-провала
-var _pit_ring_freed_max_x := -2147483648  # граница блоков, отданных кольцу
+# Блок, который остаётся жить на время аномалии: в нём восточная стена
+# провала с нишей, перегородкой, дверью и знаком. Всё остальное снимается.
+var _pit_keep_block := Vector2i(-2147483648, -2147483648)
+var _pit_disabled_areas: Array[Area3D] = []
 var _pit_door_keep_panels: Array[MeshInstance3D] = []  # панели оставленных ламп
 var _pit_wind_player: AudioStreamPlayer
 var _pit_wind_level := 0.0
@@ -6273,8 +6276,10 @@ func _reveal_infinite_pit_back() -> void:
 	# Стриминг уровня встаёт на паузу: перекрытые кольцом блоки не должны
 	# достраиваться обратно.
 	_suspend_streaming_for_infinite()
-	_free_blocks_covered_by_ring(FIRST_RING_CELL.x)
+	_free_blocks_covered_by_ring(_block_of(_pit_door_world_pos))
 	_strip_pre_infinite_pit_dressing()
+	_sweep_ring_area_leftovers(true)
+	_disable_main_map_triggers()
 	# Запечённые панели ушли с блоком — подставляем их копии оставленным лампам.
 	_set_pit_door_keep_panels(true)
 	_pit_ring.reveal_back(_player_ref)
@@ -6486,17 +6491,23 @@ func _inside_pit_anchor(position: Vector3) -> bool:
 		and position.z <= _pit_interior_origin.z + size
 
 
+# На время аномалии основная карта считается ПОЛНОСТЬЮ отданной кольцу, кроме
+# одного блока с дверью. Раньше проверялись только два ряда блоков вдоль
+# провала, поэтому триггеры, лампы и оформление остальных областей продолжали
+# жить и вмешивались: срабатывал чужой ноклип, светили чужие источники.
+# Полная изоляция нужна и на будущее — к кольцу будут пристыковываться
+# боковые области, и пересечения с основной картой недопустимы.
 func _block_covered_by_ring(block: Vector2i) -> bool:
-	if block.y != FIRST_RING_CELL.y and block.y != FIRST_RING_CELL.y + 1:
+	if not _pit_ring_active:
 		return false
-	return block.x <= _pit_ring_freed_max_x
+	return block != _pit_keep_block
 
 
 # Дверь, рамы и знак EXIT снимаются вместе с торцевой стеной: развернувшись
 # обратно, игрок видит бесконечный провал и в эту сторону тоже.
 func _reveal_infinite_pit_front() -> void:
 	_free_pit_door_nodes()
-	_free_blocks_covered_by_ring(2147483647)
+	_free_blocks_covered_by_ring(Vector2i(-2147483648, -2147483648))
 	# Восточные области отдаются кольцу только сейчас, поэтому их резидентные
 	# лампы снимаются вторым проходом — вместе с теми, что были оставлены
 	# гореть у двери на первом этапе.
@@ -6535,12 +6546,34 @@ func _free_pit_door_nodes() -> void:
 # южная стена области принадлежит СЛЕДУЮЩЕМУ ряду блоков и оказалась бы в тех
 # же координатах, что южная стена секции кольца, — две копланарные стены дают
 # мерцание. Северная стена лежит в самом ряду провала и снимается вместе с ним.
-func _free_blocks_covered_by_ring(max_block_x: int) -> void:
-	_pit_ring_freed_max_x = max_block_x
+func _free_blocks_covered_by_ring(keep_block: Vector2i) -> void:
+	_pit_keep_block = keep_block
 	for block: Vector2i in _block_holder.keys().duplicate():
 		if not _block_covered_by_ring(block):
 			continue
 		_free_block(block)
+
+
+# Триггеры основной карты (ноклип-возвраты, вход в аномальный коридор и
+# прочие Area3D) на время бесконечного провала выключаются: игрок ходит по
+# координатам чужих областей, и они срабатывали бы сами по себе.
+func _disable_main_map_triggers() -> void:
+	for area_value in find_children("*", "Area3D", true, false):
+		var area := area_value as Area3D
+		if area == null or not is_instance_valid(area):
+			continue
+		var node: Node = area
+		var inside_ring := false
+		while node != null:
+			if node.name.begins_with("infinite_pit_ring"):
+				inside_ring = true
+				break
+			node = node.get_parent()
+		if inside_ring or not area.monitoring:
+			continue
+		area.monitoring = false
+		area.monitorable = false
+		_pit_disabled_areas.append(area)
 
 
 func _suspend_streaming_for_infinite() -> void:

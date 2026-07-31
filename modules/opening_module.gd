@@ -29,6 +29,16 @@ const EXIT_SIGN_ALPHA := 0.85
 const EXIT_SIGN_GLOW_COLOR := Color(0.90, 0.87, 0.76)
 const EXIT_SIGN_GLOW_ENERGY := 0.8
 const EXIT_SIGN_BODY_COLOR := Color(0.92, 0.90, 0.82)
+# Зеленоватый рефлекс на стену вокруг знака — часть канонического оформления
+# выхода, а не украшение одного места. Раньше числа жили в level_e, из-за чего
+# знак кольца оставался без подсветки.
+const EXIT_SIGN_REFLEX_COLOR := Color(0.72, 1.0, 0.78)
+const EXIT_SIGN_REFLEX_ENERGY := 0.15
+const EXIT_SIGN_REFLEX_RANGE := 1.8
+const EXIT_SIGN_REFLEX_ATTEN := 1.2
+# Знак стоит почти вплотную к грани: смещение от ЛИНИИ перегородки `0.3 CELL`
+# минус её половина. Для стены любой толщины отсчёт ведётся от её грани.
+const EXIT_SIGN_FACE_OFFSET := (0.3 - PARTITION_T_CELLS * 0.5) * Architecture.CELL
 
 const OFFICE_FRAME_SCENE := preload("res://3d/white_door_comparison_clean.glb")
 const OFFICE_LEAF_SCENE := preload("res://3d/office_door_v2_leaf.tscn")
@@ -142,6 +152,23 @@ static func spawn_exit_sign(parent: Node3D, local_position: Vector3,
 	face.position.z = EXIT_SIGN_DEPTH * 0.5 + EXIT_SIGN_FACE_EPS
 	root.add_child(face)
 	return root
+
+
+# Рефлекс знака: тот же источник, что и у знака в провале.
+static func spawn_exit_sign_reflex(parent: Node3D, local_position: Vector3,
+		node_name := "exit_sign_reflex") -> OmniLight3D:
+	var light := OmniLight3D.new()
+	light.name = node_name
+	light.position = local_position
+	light.light_color = EXIT_SIGN_REFLEX_COLOR
+	light.light_energy = EXIT_SIGN_REFLEX_ENERGY
+	light.omni_range = EXIT_SIGN_REFLEX_RANGE
+	light.omni_attenuation = EXIT_SIGN_REFLEX_ATTEN
+	light.shadow_enabled = false
+	light.set_meta("skip_level_d_source_drop", true)
+	light.set_meta("keep_in_area_light_mode", true)
+	parent.add_child(light)
+	return light
 
 
 static func _exit_sign_mesh(width: float, height: float, depth: float,
