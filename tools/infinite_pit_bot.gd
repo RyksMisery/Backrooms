@@ -106,31 +106,26 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 		await _settle()
 		await _capture("ceiling_%02d" % index, "потолок, шаг %d" % index)
 
-	# Боковой проём появляется только через три цикла, обычным проходом бот до
-	# него не доходит. Вызываем принудительно и снимаем раму и знак вблизи.
-	_place(door + Vector3(-4.0 * STEP_METERS, 0.0, 0.0), YAW_WEST)
-	await _settle()
-	_ring.call("_spawn_exit_door", _player)
-	await _settle()
-	var door_x := float(_ring.get("_door_world_x"))
-	var side := String(_ring.get("_door_side"))
-	var origin: Vector3 = _level.get("_pit_interior_origin")
-	var room := 15.0 * 1.25
-	var wall_z: float = origin.z if side == "north" else origin.z + room
-	var inward := 1.0 if side == "north" else -1.0
-	_report["exit_door"] = {"side": side, "world_x": door_x, "wall_z": wall_z}
-	for index in range(3):
-		var back := 2.0 + 2.0 * float(index)
-		_place(Vector3(door_x, 0.0, wall_z + inward * back),
-			(0.0 if side == "north" else PI))
+	# Проход ДО ПОЯВЛЕНИЯ боковой двери и обратно: дверь возникает через три
+	# цикла в 56 м впереди, и если её свет не подчиняется затуханию, это
+	# читается как резкое включение света в дальней области.
+	position = door + Vector3(-2.0, 0.0, 0.0)
+	var door_seen := -1
+	for index in range(40):
+		position.x -= STEP_METERS
+		_place(position, YAW_WEST)
 		await _settle()
-		await _capture("exit_door_%d" % index, "боковой проём с %.0f м" % back)
-	# Взгляд на знак над проёмом.
-	# Положительный наклон камеры смотрит ВВЕРХ (player.gd: rotate_x(-relative.y)).
-	_place(Vector3(door_x, 0.0, wall_z + inward * 3.0),
-		(0.0 if side == "north" else PI), PI * 0.16)
-	await _settle()
-	await _capture("exit_door_sign", "знак над боковым проёмом")
+		await _capture("hunt_west_%02d" % index, "поиск двери, шаг %d" % index)
+		if door_seen < 0 and _ring.get("_door_node") != null:
+			door_seen = index
+			_report["door_appeared_at_step"] = index
+		if door_seen >= 0 and index >= door_seen + 3:
+			break
+	for index in range(24):
+		position.x += STEP_METERS
+		_place(position, YAW_EAST)
+		await _settle()
+		await _capture("hunt_east_%02d" % index, "назад, шаг %d" % index)
 
 	_report["steps"] = _steps
 	_report["verdict"] = _verdict()
@@ -187,6 +182,7 @@ func _capture(slug: String, note: String) -> void:
 		"foreign_lights": _foreign_lights(30.0),
 		"flicker": _flicker_state(),
 		"active_areas": _active_area_count(),
+		"door": _door_state(),
 	})
 
 
@@ -299,6 +295,31 @@ func _active_area_count() -> int:
 		if not inside_ring:
 			count += 1
 	return count
+
+
+# Состояние боковой двери и её источников: они не входят в _light_entries,
+# поэтому затухание по расстоянию их не касается — проверяем отдельно.
+func _door_state() -> Dictionary:
+	var node = _ring.get("_door_node")
+	if node == null or not is_instance_valid(node):
+		return {"present": false}
+	var eye: Vector3 = _player.global_position
+	var lights: Array = []
+	for light_value in (node as Node3D).find_children("*", "Light3D", true, false):
+		var light := light_value as Light3D
+		if light == null or not light.is_visible_in_tree():
+			continue
+		lights.append({
+			"name": String(light.name),
+			"energy": light.light_energy,
+			"distance": light.global_position.distance_to(eye),
+		})
+	return {
+		"present": true,
+		"world_x": float(_ring.get("_door_world_x")),
+		"distance": absf(float(_ring.get("_door_world_x")) - eye.x),
+		"lights": lights,
+	}
 
 
 func _entry_energy(entry: Dictionary) -> float:

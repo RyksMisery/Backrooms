@@ -475,10 +475,23 @@ func _build_open_side_wall(parent: Node3D, side: String) -> void:
 	var sign_position := Vector3(center,
 		(height + Architecture.CEIL_H) * 0.5,
 		inner_z + inward.z * Openings.EXIT_SIGN_FACE_OFFSET)
-	Openings.spawn_exit_sign(parent, sign_position, inward,
+	var sign_root := Openings.spawn_exit_sign(parent, sign_position, inward,
 		"infinite_pit_exit_sign_%s" % side)
-	Openings.spawn_exit_sign_reflex(parent, sign_position,
+	var reflex := Openings.spawn_exit_sign_reflex(parent, sign_position,
 		"infinite_pit_exit_sign_reflex_%s" % side)
+	# Дверь появляется в 56 м впереди. Её свет обязан жить по тем же кривым,
+	# что и лампы секций, иначе включение читается как вспышка света в дальней
+	# области: замер бота показывал постоянные E=0.15 на дистанциях 67..147 м.
+	parent.set_meta("door_reflex", reflex)
+	parent.set_meta("door_reflex_energy", reflex.light_energy)
+	if sign_root != null:
+		for mesh_value in sign_root.find_children("*", "GeometryInstance3D",
+				true, false):
+			var mesh := mesh_value as GeometryInstance3D
+			mesh.visibility_range_end = FADE_DARK_DISTANCE
+			mesh.visibility_range_end_margin = PANEL_FADE_MARGIN
+			mesh.visibility_range_fade_mode = \
+				GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 	# Куда ведёт этот проём — пока не решено: «просто проход в никуда»
 	# (слово автора). Триггера и назначения намеренно нет; здесь же потом
 	# появится вход в ряд ложных комнат.
@@ -508,6 +521,7 @@ func update(player: Node3D, _delta: float) -> void:
 	_update_caps(player)
 	_update_ring_flicker(_delta, player)
 	_update_light_fade(player)
+	_update_door_light_fade(player)
 	# До второго этапа игрок ещё стоит у двери: кольцо не крутится, циклы не
 	# считаются и боковой проём не появляется.
 	if not _front_revealed:
@@ -691,6 +705,25 @@ func consume_flick_trigger() -> bool:
 	return triggered
 
 
+# Затухание света боковой двери. Считается от той же точки и по той же
+# кривой, что и панели: у появившейся вдали двери свет должен быть выключен.
+func _update_door_light_fade(player: Node3D) -> void:
+	if _door_node == null or not is_instance_valid(_door_node):
+		return
+	var reflex_value = _door_node.get_meta("door_reflex", null)
+	if reflex_value == null or not is_instance_valid(reflex_value):
+		return
+	var light := reflex_value as Light3D
+	var span := maxf(0.001, FADE_DARK_DISTANCE - FADE_FULL_DISTANCE)
+	var distance := light.global_position.distance_to(player.global_position)
+	var level := clampf(
+		(FADE_DARK_DISTANCE - LIGHT_LEAD_DISTANCE - distance) / span, 0.0, 1.0)
+	level = smoothstep(0.0, 1.0, level)
+	light.light_energy = float(_door_node.get_meta("door_reflex_energy",
+		light.light_energy)) * level
+	light.visible = level > 0.001
+
+
 func _fade_family_light(light_value, base_energy: float, level: float,
 		lit: bool) -> void:
 	if light_value == null or not is_instance_valid(light_value):
@@ -739,8 +772,11 @@ func _update_exit_door(player: Node3D) -> void:
 		return
 	# Дверь не останавливает рециклинг: если игрок прошёл мимо и ушёл дальше,
 	# дверь снимается вне ближайшей зоны, а отсчёт начинается заново.
-	var passed := (player.global_position.x - _door_world_x) * _door_direction
-	if passed > DOOR_PASSED_MARGIN:
+	var offset := player.global_position.x - _door_world_x
+	# Снимаем и когда игрок прошёл дверь, и когда ушёл обратно достаточно
+	# далеко: иначе дверь висит позади десятками метров (замер: до 147 м).
+	if offset * _door_direction > DOOR_PASSED_MARGIN \
+			or absf(offset) > DOOR_SPAWN_DISTANCE + TILE_LENGTH:
 		_clear_exit_door()
 
 
