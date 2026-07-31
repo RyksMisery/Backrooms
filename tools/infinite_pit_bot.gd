@@ -97,6 +97,15 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 		await _settle()
 		await _capture("walk_east_%02d" % index, "восток, шаг %d" % index)
 
+	# Отдельный проход ВЗГЛЯДОМ В ПОТОЛОК по самому проходу: посторонний
+	# светильник виден только оттуда, в горизонтальном кадре он за краем.
+	position = door + Vector3(-2.0, 0.0, 0.0)
+	for index in range(WALK_STEPS):
+		position.x -= STEP_METERS
+		_place(position, YAW_WEST, CEILING_PITCH)
+		await _settle()
+		await _capture("ceiling_%02d" % index, "потолок, шаг %d" % index)
+
 	_report["steps"] = _steps
 	_report["verdict"] = _verdict()
 	_write_report()
@@ -108,13 +117,15 @@ func run(tree: SceneTree, level: Node3D) -> Dictionary:
 # Дверь известна на уровне пола, поэтому глаз поднимаем сами: иначе камера
 # оказывается у самого пола и кадр не отражает то, что видит игрок.
 const EYE_HEIGHT := 1.2
+# Взгляд вверх для прохода по потолку.
+const CEILING_PITCH := PI * 0.42
 
 
-func _place(position: Vector3, yaw: float) -> void:
+func _place(position: Vector3, yaw: float, pitch := 0.0) -> void:
 	_player.global_position = Vector3(position.x, EYE_HEIGHT, position.z)
 	_player.rotation.y = yaw
 	if _player.camera != null:
-		_player.camera.rotation.x = 0.0
+		_player.camera.rotation.x = pitch
 
 
 func _settle() -> void:

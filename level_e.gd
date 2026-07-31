@@ -4557,6 +4557,10 @@ func _add_round_ceiling_lamp(pos: Vector3) -> void:
 	cm.material = _round_lamp_material()
 	mi.mesh = cm
 	mi.position = Vector3(pos.x, CEIL_H + ROUND_LAMP_THICK * 0.5 - ROUND_LAMP_FACE_EPS, pos.z)
+	# Имя обязательно: диск и его направленный свет — прямые дети уровня, вне
+	# блоков. Без имени они переживали и освобождение блоков, и чистки, и
+	# висели на потолке посреди бесконечного провала.
+	mi.name = "round_ceiling_lamp"
 	add_child(mi)
 
 
@@ -4570,6 +4574,7 @@ func _add_center_down_light(pos: Vector3) -> void:
 	spot.spot_angle = 26.0
 	spot.spot_attenuation = 1.2
 	spot.shadow_enabled = false
+	spot.name = "round_ceiling_down_light"
 	_apply_runtime_light_rules(spot)
 	add_child(spot)
 
@@ -6326,6 +6331,25 @@ func _drop_flicker_entries_covered_by_ring() -> void:
 # keep_anchor — свет исходной области-провала остаётся нетронутым, пока
 # якорная секция кольца не уедет за кап. Иначе раскладка ближайших ламп
 # меняется прямо в момент подмены и смена света видна даже без разворота.
+# Прямые дети уровня, не попавшие ни в один пул света. Круглый светильник
+# зала (`round_ceiling_lamp`) и его направленный свет создаются вне блоков и
+# ни в один массив не заносятся, поэтому переживали и освобождение блоков, и
+# чистку по именам. Здесь снимается всё такое, попавшее в полосу кольца.
+func _sweep_ring_area_leftovers(keep_anchor: bool) -> void:
+	for child in get_children():
+		var node := child as Node3D
+		if node == null or node.name.begins_with("infinite_pit_ring"):
+			continue
+		if node.name.begins_with("pit_door_keep_panel"):
+			continue
+		if not (node is Light3D or node.name.begins_with("round_ceiling_")):
+			continue
+		if keep_anchor and _inside_pit_anchor(node.global_position):
+			continue
+		if _block_covered_by_ring(_block_of(node.global_position)):
+			node.queue_free()
+
+
 func _free_resident_lamps_covered_by_ring(keep_anchor: bool) -> void:
 	# `_model_fill_lights` — подсветка импортных моделей (в т.ч. табличек
 	# «скользко»); без неё остался бы висеть источник у исчезнувшей модели.
@@ -6413,6 +6437,7 @@ func _update_infinite_pit_wind(delta: float) -> void:
 func _release_pit_anchor_lights() -> void:
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring(false)
+	_sweep_ring_area_leftovers(false)
 	for panel: MeshInstance3D in _pit_door_keep_panels:
 		if panel != null and is_instance_valid(panel):
 			panel.queue_free()
@@ -6479,6 +6504,7 @@ func _reveal_infinite_pit_front() -> void:
 	# уедет за кап (_release_pit_anchor_lights).
 	_drop_flicker_entries_covered_by_ring()
 	_free_resident_lamps_covered_by_ring(true)
+	_sweep_ring_area_leftovers(true)
 	# Свечение потолочных панелей слито в один меш на весь уровень, выборочно
 	# снять его нельзя. Гасится только сейчас: на первом этапе это погасило бы
 	# и лампу над закрытой дверью, что сразу выдало бы смену пространства.

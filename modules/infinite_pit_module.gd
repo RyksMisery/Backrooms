@@ -459,9 +459,17 @@ func _build_open_side_wall(parent: Node3D, side: String) -> void:
 	var inner_z := 0.0 if side == "north" else ROOM_SIZE
 	var outer_z := -WALL_DEPTH if side == "north" else ROOM_SIZE + WALL_DEPTH
 	var inward := Vector3.BACK if side == "north" else Vector3.FORWARD
-	openings.spawn_office_frame(parent, Vector3(center, 0.0, inner_z),
+	# Канонический вылет рамы считается от ЦЕНТРА перегородки в полклетки.
+	# Стена кольца толщиной 3 клетки, поэтому передавать грань нельзя: рама
+	# уезжала бы на этот вылет внутрь помещения и не примыкала к стене.
+	# Сдвигаем точку так, чтобы лицевая грань рамы легла ровно на грань стены.
+	var outset := Architecture.PARTITION_T_CELLS * Architecture.CELL * 0.5 \
+		+ Openings.OFFICE_FRAME_OUTSET
+	openings.spawn_office_frame(parent,
+		Vector3(center, 0.0, inner_z - inward.z * outset),
 		inward, "infinite_pit_exit_%s_inner" % side)
-	openings.spawn_office_frame(parent, Vector3(center, 0.0, outer_z),
+	openings.spawn_office_frame(parent,
+		Vector3(center, 0.0, outer_z + inward.z * outset),
 		-inward, "infinite_pit_exit_%s_outer" % side)
 	Openings.spawn_exit_sign(parent,
 		Vector3(center, (height + Architecture.CEIL_H) * 0.5,
