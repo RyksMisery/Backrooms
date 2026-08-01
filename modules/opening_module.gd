@@ -38,6 +38,25 @@ const EXIT_SIGN_REFLEX_RANGE := 1.8
 const EXIT_SIGN_REFLEX_ATTEN := 1.2
 const EXIT_SIGN_LINE_OFFSET_CELLS := 0.3
 
+
+# Typed accessors avoid relying on cross-script constant folding in consumers.
+# Godot may parse a consumer before refreshing this script and then treats a
+# newly added member constant as Variant/null, cascading into false type errors.
+static func exit_sign_reflex_color() -> Color:
+	return EXIT_SIGN_REFLEX_COLOR
+
+
+static func exit_sign_reflex_energy() -> float:
+	return EXIT_SIGN_REFLEX_ENERGY
+
+
+static func exit_sign_reflex_range() -> float:
+	return EXIT_SIGN_REFLEX_RANGE
+
+
+static func exit_sign_reflex_attenuation() -> float:
+	return EXIT_SIGN_REFLEX_ATTEN
+
 const OFFICE_FRAME_SCENE := preload("res://3d/white_door_comparison_clean.glb")
 const OFFICE_LEAF_SCENE := preload("res://3d/office_door_v2_leaf.tscn")
 const OFFICE_CASING_SCENE := preload("res://3d/original_door_casing_preview.tscn")

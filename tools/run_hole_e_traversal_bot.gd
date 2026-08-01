@@ -256,13 +256,37 @@ func _room_right_edge() -> float:
 func _strip_joins_are_canonical(level: Node) -> bool:
 	var expected_half_width := Architecture.PIT_GAP_CELLS \
 		* Architecture.CELL * 0.5
+	var layout := Architecture.pit_join_layout_cells("z")
+	var base := Architecture.pit_layout_cells()
+	var half_join := Architecture.PIT_GAP_CELLS * 0.5
+	for index in range(base["holes"].size()):
+		var expected: Rect2 = base["holes"][index]
+		var actual: Rect2 = layout["holes"][index]
+		if is_equal_approx(expected.position.y, Architecture.PIT_BORDER_CELLS):
+			expected.position.y = half_join
+			expected.size.y -= Architecture.PIT_JOIN_TRIM_CELLS
+		elif is_equal_approx(expected.end.y,
+				float(Architecture.ROOM_CELLS) - Architecture.PIT_BORDER_CELLS):
+			expected.size.y -= Architecture.PIT_JOIN_TRIM_CELLS
+		if actual.position.distance_to(expected.position) > CAP_EPSILON \
+				or actual.size.distance_to(expected.size) > CAP_EPSILON:
+			return false
+	for walk: Rect2 in layout["walks"]:
+		for hole: Rect2 in layout["holes"]:
+			if walk.intersection(hole).get_area() > CAP_EPSILON:
+				return false
 	for chunk_value in level.get("_chunks"):
 		var chunk := chunk_value as Node3D
-		for node_name: String in ["pit_walk_00", "pit_walk_01"]:
+		for index in range(2):
+			var node_name := "pit_walk_%02d" % index
 			var walk := chunk.get_node_or_null(node_name) as MeshInstance3D
 			if walk == null \
 					or absf(walk.get_aabb().size.z - expected_half_width) \
 						> CAP_EPSILON:
+				return false
+			var expected_z := 0.0 if index == 0 \
+				else TILE_LENGTH - expected_half_width
+			if absf(walk.get_aabb().position.z - expected_z) > CAP_EPSILON:
 				return false
 	return true
 

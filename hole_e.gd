@@ -574,7 +574,7 @@ func _build_map_data() -> void:
 	_pit_rects.clear()
 	var min_z := 2147483647
 	var max_z := -2147483648
-	var layout := Architecture.pit_layout_cells()
+	var layout := Architecture.pit_join_layout_cells("z")
 	for chunk in _chunks:
 		var tile_z := roundi(chunk.position.z / Architecture.CELL)
 		min_z = mini(min_z, tile_z)

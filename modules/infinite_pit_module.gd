@@ -37,6 +37,9 @@ const WALL_DEPTH := float(Architecture.WALL_CELLS) * Architecture.CELL
 const FADE_FULL_DISTANCE := TILE_LENGTH * 0.75
 const FADE_DARK_DISTANCE := TILE_LENGTH * 2.25
 const PANEL_FADE_MARGIN := FADE_DARK_DISTANCE - FADE_FULL_DISTANCE
+# Короткие плавные края spatial-fade; середина почти линейна, поэтому шесть
+# ламп секции не проходят пик крутизны обычного smoothstep одновременно.
+const FADE_EDGE_FRACTION := 0.08
 # Лампа гаснет чуть РАНЬШЕ, чем исчезает её панель.
 #
 # Панель снимается `visibility_range`, то есть по 3D-дистанции до меша, а свет
@@ -87,6 +90,8 @@ var _door_host: Node3D
 var _door_side := ""
 var _door_world_x := 0.0
 var _door_direction := -1.0
+var _door_opposite_panel_slot := -1
+var _door_opposite_panel_forced := false
 var _last_move_sign := -1.0
 var _max_door_reveal_ms := 0.0
 var _rng := RandomNumberGenerator.new()
@@ -202,7 +207,7 @@ func _build_tiles() -> void:
 		tile.position = _origin + Vector3(
 			float(logical_index) * TILE_LENGTH, 0.0, 0.0)
 		root.add_child(tile)
-		# Продольный стык — по X: две половины по 0.3 CELL дают мосток 0.6.
+		# Продольный стык — по X: две половины по 0.3 CELL дают мостик 0.6.
 		architecture.build_pit_tile(
 			tile, true, Architecture.PIT_GAP_CELLS, "x")
 		for side: String in ["north", "south"]:
@@ -571,7 +576,7 @@ func _update_light_fade(player: Node3D) -> void:
 		var level := clampf(
 			(FADE_DARK_DISTANCE - LIGHT_LEAD_DISTANCE - distance) / span,
 			0.0, 1.0)
-		level = smoothstep(0.0, 1.0, level)
+		level = _bounded_slope_fade(level)
 		if bool(entry["out"]):
 			level = 0.0
 		elif bool(entry["flicker"]):
@@ -585,6 +590,21 @@ func _update_light_fade(player: Node3D) -> void:
 		if bool(entry["legacy_active"]):
 			_fade_family_light(entry.get("legacy"),
 				float(entry["legacy_energy"]), level, lit)
+
+
+# Нормализованная spatial-кривая с теми же концами 0/1, нулевым наклоном на
+# самих границах и ограниченным наклоном в середине. При edge=0.08 максимум
+# равен 1/(1-edge)=1.087 вместо 1.5 у smoothstep. Временного состояния нет.
+func _bounded_slope_fade(value: float) -> float:
+	var t := clampf(value, 0.0, 1.0)
+	var edge := clampf(FADE_EDGE_FRACTION, 0.001, 0.499)
+	var slope := 1.0 / (1.0 - edge)
+	if t < edge:
+		return 0.5 * slope * t * t / edge
+	if t > 1.0 - edge:
+		var remaining := 1.0 - t
+		return 1.0 - 0.5 * slope * remaining * remaining / edge
+	return 0.5 * slope * edge + slope * (t - edge)
 
 
 # Мерцание — тот же принцип, что у панели перед провалом: канонический рисунок
@@ -805,6 +825,8 @@ func _spawn_exit_door(player: Node3D) -> void:
 	_door_host = host
 	_door_world_x = host.position.x \
 		+ Architecture.opening_anchor(DOOR_CENTER_X) * Architecture.CELL
+	_ensure_door_opposite_panel(host, _door_side)
+	_update_light_fade(player)
 	_max_door_reveal_ms = maxf(_max_door_reveal_ms,
 		float(Time.get_ticks_usec() - reveal_started_usec) / 1000.0)
 
@@ -821,6 +843,32 @@ func _pick_door_host(target_x: float) -> Node3D:
 			best_distance = distance
 			best = tile
 	return best
+
+
+# Все девять допустимых панелей предсобраны. Для двери лишь включаем готовую
+# семью в клетке через одну пустую клетку от стены; второй меш не создаётся.
+func _ensure_door_opposite_panel(host: Node3D, side: String) -> void:
+	_door_opposite_panel_slot = 3 if side == "north" else 5
+	_door_opposite_panel_forced = false
+	if host == null or not host.has_meta("light_entries"):
+		return
+	for entry_value in host.get_meta("light_entries"):
+		var entry: Dictionary = entry_value
+		if int(entry["slot"]) != _door_opposite_panel_slot:
+			continue
+		# Уже включённая панель остаётся частью исходного рисунка, включая её
+		# каноническое мерцание. Меняем только действительно пустую клетку.
+		if not bool(entry["out"]):
+			return
+		entry["out"] = false
+		entry["flicker"] = false
+		entry["flick_level"] = 1.0
+		var visible_panel = entry.get("visible_panel")
+		if visible_panel != null and is_instance_valid(visible_panel):
+			(visible_panel as Node3D).visible = true
+		_sync_flicker_material(entry)
+		_door_opposite_panel_forced = true
+		return
 
 
 # Якорная секция уехала за кап — с этого момента она обычный участник кольца
@@ -851,9 +899,13 @@ func _clear_exit_door() -> void:
 		var solid: Node3D = _door_host.get_meta("wall_%s" % _door_side)
 		if solid != null and is_instance_valid(solid):
 			_set_tree_active(solid, true)
+		if _door_opposite_panel_forced:
+			_apply_tile_outage(_door_host)
 	_door_node = null
 	_door_host = null
 	_door_side = ""
+	_door_opposite_panel_slot = -1
+	_door_opposite_panel_forced = false
 	_next_door_cycle = _cycle_count + DOOR_PERIOD_CYCLES
 
 
@@ -861,7 +913,7 @@ func _clear_exit_door() -> void:
 
 # Ближайший центр мостка кольца — точка возврата после падения в шахту.
 func nearest_walk_center(world_position: Vector3) -> Vector3:
-	var layout := Architecture.pit_layout_cells()
+	var layout := Architecture.pit_join_layout_cells("x")
 	var best := world_position
 	var best_distance := INF
 	for tile: Node3D in _tiles:
@@ -905,5 +957,7 @@ func debug_snapshot() -> Dictionary:
 		"door_present": _door_node != null,
 		"door_side": _door_side,
 		"door_world_x": _door_world_x,
+		"door_opposite_panel_slot": _door_opposite_panel_slot,
+		"door_opposite_panel_forced": _door_opposite_panel_forced,
 		"max_door_reveal_ms": _max_door_reveal_ms,
 	}

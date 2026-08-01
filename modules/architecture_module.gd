@@ -16,6 +16,7 @@ const PIT_DEPTH := 12.0
 const PIT_COUNT := 4
 const PIT_BORDER_CELLS := 0.05
 const PIT_GAP_CELLS := 0.6
+const PIT_JOIN_TRIM_CELLS := PIT_GAP_CELLS * 0.5 - PIT_BORDER_CELLS
 
 const WALL_TEXTURE := preload("res://textures/wall1.png")
 const FLOOR_TEXTURE := preload("res://textures/floor1.png")
@@ -429,6 +430,44 @@ static func pit_layout_cells() -> Dictionary:
 	return {"walks": walks, "holes": holes, "hole_size": hole}
 
 
+# Стыковочный вариант сохраняет шаг 15 CELL и всю внутреннюю решётку. Только
+# крайние устья шахт уступают место половинам общего мостика 0.6 CELL.
+static func pit_join_layout_cells(join_axis := "z") -> Dictionary:
+	var layout := pit_layout_cells()
+	var half_join := PIT_GAP_CELLS * 0.5
+	if join_axis == "x":
+		for index in range(layout["holes"].size()):
+			var hole: Rect2 = layout["holes"][index]
+			if is_equal_approx(hole.position.x, PIT_BORDER_CELLS):
+				hole.position.x = half_join
+				hole.size.x -= PIT_JOIN_TRIM_CELLS
+			elif is_equal_approx(hole.end.x,
+					float(ROOM_CELLS) - PIT_BORDER_CELLS):
+				hole.size.x -= PIT_JOIN_TRIM_CELLS
+			layout["holes"][index] = hole
+		layout["walks"][2] = Rect2(
+			0.0, 0.0, half_join, float(ROOM_CELLS))
+		layout["walks"][3] = Rect2(
+			float(ROOM_CELLS) - half_join, 0.0,
+			half_join, float(ROOM_CELLS))
+	else:
+		for index in range(layout["holes"].size()):
+			var hole: Rect2 = layout["holes"][index]
+			if is_equal_approx(hole.position.y, PIT_BORDER_CELLS):
+				hole.position.y = half_join
+				hole.size.y -= PIT_JOIN_TRIM_CELLS
+			elif is_equal_approx(hole.end.y,
+					float(ROOM_CELLS) - PIT_BORDER_CELLS):
+				hole.size.y -= PIT_JOIN_TRIM_CELLS
+			layout["holes"][index] = hole
+		layout["walks"][0] = Rect2(
+			0.0, 0.0, float(ROOM_CELLS), half_join)
+		layout["walks"][1] = Rect2(
+			0.0, float(ROOM_CELLS) - half_join,
+			float(ROOM_CELLS), half_join)
+	return layout
+
+
 # Ближайшие канонические потолочные клетки над 3×3 пересечениями внутренних
 # мостков стандартной решётки провала.
 static func pit_intersection_light_cells() -> Array[Vector2]:
@@ -448,32 +487,15 @@ static func pit_intersection_light_cells() -> Array[Vector2]:
 	return result
 
 
-# Геометрия одной 15×15 секции провала без внешних стен и торцевых капов.
-# В продольной ленте соседние секции отдают стыку по половине общего мостка.
+# Геометрия секции провала без внешних стен и торцевых капов. Обычный вызов
+# строит исходные 15x15; в ленте крайние устья уступают половинам мостика.
 func build_pit_tile(parent: Node3D, include_ceiling := true,
 		longitudinal_join_walk_cells := 0.0, join_axis := "z") -> Dictionary:
 	var layout := pit_layout_cells()
 	if longitudinal_join_walk_cells > 0.0:
-		var half_join := clampf(
-			longitudinal_join_walk_cells * 0.5,
-			PIT_BORDER_CELLS,
-			float(ROOM_CELLS) * 0.5)
-		# Стык двух половин по `0.3 CELL` образует такой же мосток `0.6 CELL`
-		# (docs/hole_e.md). Кайма расширяется на той оси, вдоль которой
-		# секции стыкуются: "z" — кольцо идёт по Z (лаборатория hole_e),
-		# "x" — кольцо идёт по X (провал level_e выходит на восток).
-		if join_axis == "x":
-			layout["walks"][2] = Rect2(
-				0.0, 0.0, half_join, float(ROOM_CELLS))
-			layout["walks"][3] = Rect2(
-				float(ROOM_CELLS) - half_join, 0.0,
-				half_join, float(ROOM_CELLS))
-		else:
-			layout["walks"][0] = Rect2(
-				0.0, 0.0, float(ROOM_CELLS), half_join)
-			layout["walks"][1] = Rect2(
-				0.0, float(ROOM_CELLS) - half_join,
-				float(ROOM_CELLS), half_join)
+		assert(is_equal_approx(
+			longitudinal_join_walk_cells, PIT_GAP_CELLS))
+		layout = pit_join_layout_cells(join_axis)
 	for index in range(layout["walks"].size()):
 		var rect: Rect2 = layout["walks"][index]
 		add_box(parent, "pit_walk_%02d" % index,
@@ -487,11 +509,11 @@ func build_pit_tile(parent: Node3D, include_ceiling := true,
 		add_pit_shaft_rect(parent, layout["holes"][index], PIT_DEPTH,
 			"pit_shaft_%02d" % index)
 	if include_ceiling:
-		var room_size := float(ROOM_CELLS) * CELL
+		var size_cells := Vector2(float(ROOM_CELLS), float(ROOM_CELLS))
 		add_box(parent, "pit_ceiling",
-			Vector3(room_size, SLAB_T, room_size),
-			Vector3(room_size * 0.5, CEIL_H + SLAB_T * 0.5,
-				room_size * 0.5),
+			Vector3(size_cells.x * CELL, SLAB_T, size_cells.y * CELL),
+			Vector3(size_cells.x * CELL * 0.5,
+				CEIL_H + SLAB_T * 0.5, size_cells.y * CELL * 0.5),
 			"ceiling", false)
 	return layout
 

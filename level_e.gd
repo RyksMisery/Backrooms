@@ -95,10 +95,6 @@ const SIGN_TEX_ALPHA := OPENINGS.EXIT_SIGN_ALPHA
 const SIGN_GLOW_COLOR := OPENINGS.EXIT_SIGN_GLOW_COLOR
 const SIGN_GLOW_ENERGY := OPENINGS.EXIT_SIGN_GLOW_ENERGY
 const SIGN_BODY_ALBEDO := OPENINGS.EXIT_SIGN_BODY_COLOR
-const SIGN_REFLEX_COLOR := OPENINGS.EXIT_SIGN_REFLEX_COLOR
-const SIGN_REFLEX_ENERGY := OPENINGS.EXIT_SIGN_REFLEX_ENERGY
-const SIGN_REFLEX_RANGE := OPENINGS.EXIT_SIGN_REFLEX_RANGE
-const SIGN_REFLEX_ATTEN := OPENINGS.EXIT_SIGN_REFLEX_ATTEN
 # Направленный свет от мерцающей лампы на табличку «скользко» (мигает с лампой).
 const WETSIGN_SPOT_ENERGY := 1.3
 const WETSIGN_SPOT_ANGLE := 32.0
@@ -2083,7 +2079,10 @@ func _make_exit_plate(pos: Vector3, tex_path: String, faint: bool, content_h := 
 	face.rotation.y = yaw
 	add_child(face)
 	if AREA_LIGHT_SIGN_PLATES:
-		var plate_light := _spawn_area_plate_light(pos, Vector2(bw, bh), yaw, SIGN_GLOW_COLOR, SIGN_GLOW_ENERGY, SIGN_REFLEX_RANGE, SIGN_REFLEX_ATTEN, true)
+		var plate_light := _spawn_area_plate_light(
+			pos, Vector2(bw, bh), yaw, SIGN_GLOW_COLOR, SIGN_GLOW_ENERGY,
+			OPENINGS.exit_sign_reflex_range(),
+			OPENINGS.exit_sign_reflex_attenuation(), true)
 		if plate_light != null:
 			_area_aux_lights.append(plate_light)
 			_apply_area_light_mode()
@@ -2115,21 +2114,12 @@ func _place_pit_exit_texture_sign(cell: Vector2i, dir: Vector2i, lane: Vector2i)
 	OPENINGS.spawn_exit_sign(self, pos,
 		Vector3(normal.x, 0.0, normal.y), "pit_exit_sign")
 	# Очень лёгкий рефлекс на стену вокруг знака.
-	var refl := OmniLight3D.new()
-	refl.omni_range = SIGN_REFLEX_RANGE
-	refl.light_energy = SIGN_REFLEX_ENERGY
-	refl.light_color = SIGN_REFLEX_COLOR
-	refl.omni_attenuation = SIGN_REFLEX_ATTEN
-	refl.shadow_enabled = false
-	refl.position = pos
+	var refl: OmniLight3D = OPENINGS.spawn_exit_sign_reflex(
+		self, pos, "pit_exit_sign_reflex")
 	# Имя обязательно: рефлекс висит в 0.5 м под потолком и даёт круглое
 	# световое пятно. Безымянный узел не попадал ни в одну чистку по именам и
 	# оставался светить после того, как знак и дверь сняты.
-	refl.name = "pit_exit_sign_reflex"
-	refl.set_meta("skip_level_d_source_drop", true)
-	refl.set_meta("keep_in_area_light_mode", true)
 	_apply_runtime_light_rules(refl)
-	add_child(refl)
 	_legacy_aux_lights.append(refl)
 	_apply_area_light_mode()
 
