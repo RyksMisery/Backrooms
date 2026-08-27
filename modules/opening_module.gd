@@ -12,10 +12,15 @@ const OFFICE_DOOR_SCALE := 1.5
 const OFFICE_DOOR_DEPTH := 0.1808
 const OFFICE_REVEAL_TRIM_T := 0.08
 const OFFICE_FRAME_OUTSET := 0.025
+const OFFICE_INNER_LIP := OFFICE_FRAME_OUTSET
 const OFFICE_DOOR_V2_INNER_HALF_W_RAW := 0.384
 const OFFICE_DOOR_V2_INNER_TOP_RAW := 1.9722
+const OFFICE_DOOR_V2_CASING_INNER_HALF_W_RAW := 0.372
+const OFFICE_DOOR_V2_CASING_INNER_TOP_RAW := 1.9719
 const OFFICE_DOOR_V2_FRAME_W_RAW := 0.9090005457
 const OFFICE_DOOR_V2_FRAME_H_RAW := 2.0547001362
+const OFFICE_DOOR_V2_LEAF_WIDTH_RAW := 0.762
+const OFFICE_DOOR_V2_LEAF_HEIGHT_RAW := 1.9812001
 const OFFICE_DOOR_V2_CASING_DEPTH_RAW := 0.0075596943
 const OFFICE_DOOR_V2_LEAF_INSET := 0.10
 const OFFICE_DOOR_V2_SIDE_HYSTERESIS := 0.02
@@ -74,6 +79,9 @@ var owner: Node3D
 var architecture
 var _leaf_material: BaseMaterial3D
 var _handle_material: BaseMaterial3D
+var _profile_frame_meshes: Dictionary = {}
+var _profile_casing_meshes: Dictionary = {}
+var _profile_leaf_meshes: Dictionary = {}
 
 
 func _init(level_owner: Node3D, architecture_module) -> void:
@@ -95,29 +103,32 @@ static func opening_height_m() -> float:
 
 func spawn_office_opening(parent: Node3D, local_center: Vector3,
 		local_normal: Vector3, opening_id: String, with_door := false,
-		collide_door := true) -> Dictionary:
+		collide_door := true, inner_lip_m := OFFICE_INNER_LIP) -> Dictionary:
 	var center := parent.to_global(local_center)
 	var normal := (parent.global_basis * local_normal).normalized()
 	var frames: Array[Node3D] = []
 	for side: float in [-1.0, 1.0]:
 		var frame := _spawn_frame(center, normal * side,
-			"%s_frame_%s" % [opening_id, "neg" if side < 0.0 else "pos"])
+			"%s_frame_%s" % [opening_id, "neg" if side < 0.0 else "pos"],
+			inner_lip_m)
 		if frame != null:
 			frame.reparent(parent, true)
 			frames.append(frame)
 	var leaf: Node3D
 	if with_door:
-		leaf = _spawn_leaf(center, normal, "%s_leaf" % opening_id, collide_door)
+		leaf = _spawn_leaf(center, normal, "%s_leaf" % opening_id, collide_door,
+			inner_lip_m)
 		if leaf != null:
 			leaf.reparent(parent, true)
 	return {"frames": frames, "leaf": leaf}
 
 
 func spawn_office_frame(parent: Node3D, local_center: Vector3,
-		local_outward: Vector3, opening_id: String) -> Node3D:
+		local_outward: Vector3, opening_id: String,
+		inner_lip_m := OFFICE_INNER_LIP) -> Node3D:
 	var center := parent.to_global(local_center)
 	var outward := (parent.global_basis * local_outward).normalized()
-	var frame := _spawn_frame(center, outward, opening_id)
+	var frame := _spawn_frame(center, outward, opening_id, inner_lip_m)
 	if frame != null:
 		frame.reparent(parent, true)
 	return frame
@@ -125,10 +136,10 @@ func spawn_office_frame(parent: Node3D, local_center: Vector3,
 
 func spawn_office_door_leaf(parent: Node3D, local_center: Vector3,
 		local_normal: Vector3, opening_id: String,
-		collide := true) -> Node3D:
+		collide := true, inner_lip_m := OFFICE_INNER_LIP) -> Node3D:
 	var center := parent.to_global(local_center)
 	var normal := (parent.global_basis * local_normal).normalized()
-	var leaf := _spawn_leaf(center, normal, opening_id, collide)
+	var leaf := _spawn_leaf(center, normal, opening_id, collide, inner_lip_m)
 	if leaf != null:
 		leaf.reparent(parent, true)
 	return leaf
@@ -265,8 +276,147 @@ static func _append_quad(surface: SurfaceTool, a: Vector3, b: Vector3,
 		surface.add_vertex(vertex)
 
 
+static func _profile_key(inner_lip_m: float) -> int:
+	return roundi(inner_lip_m * 100000.0)
+
+
+static func _profile_inner_half_raw(inner_lip_m: float) -> float:
+	return OFFICE_DOOR_V2_FRAME_W_RAW * 0.5 \
+		- inner_lip_m / office_new_scale()
+
+
+static func _profile_inner_top_raw(inner_lip_m: float) -> float:
+	return OFFICE_DOOR_V2_FRAME_H_RAW \
+		- inner_lip_m / office_new_scale()
+
+
+static func office_profile_leaf_size_m(inner_lip_m: float) -> Vector2:
+	var scale_factor := office_new_scale()
+	var raw_width := _profile_inner_half_raw(inner_lip_m) * 2.0 \
+		- (OFFICE_DOOR_V2_INNER_HALF_W_RAW * 2.0 \
+		- OFFICE_DOOR_V2_LEAF_WIDTH_RAW)
+	var raw_height := _profile_inner_top_raw(inner_lip_m) \
+		+ (OFFICE_DOOR_V2_LEAF_HEIGHT_RAW - OFFICE_DOOR_V2_INNER_TOP_RAW)
+	return Vector2(raw_width, raw_height) * scale_factor
+
+
+static func canonical_liner_inner_half_m(opening_width: float) -> float:
+	return maxf(0.0, opening_width * 0.5 - OFFICE_INNER_LIP)
+
+
+static func canonical_liner_inner_top_m(opening_height: float) -> float:
+	return maxf(0.0, opening_height - OFFICE_INNER_LIP)
+
+
+static func canonical_frame_mesh(source: Mesh,
+		decorative_casing := false) -> ArrayMesh:
+	return _remap_u_profile_mesh(source, OFFICE_INNER_LIP,
+		OFFICE_DOOR_V2_CASING_INNER_HALF_W_RAW
+			if decorative_casing else OFFICE_DOOR_V2_INNER_HALF_W_RAW,
+		OFFICE_DOOR_V2_CASING_INNER_TOP_RAW
+			if decorative_casing else OFFICE_DOOR_V2_INNER_TOP_RAW)
+
+
+static func canonical_leaf_mesh(source: Mesh) -> ArrayMesh:
+	return _resize_leaf_mesh(source,
+		office_profile_leaf_size_m(OFFICE_INNER_LIP))
+
+
+static func canonical_leaf_latch_shift_raw(source: Mesh) -> float:
+	if source == null:
+		return 0.0
+	var target_width_raw := office_profile_leaf_size_m(OFFICE_INNER_LIP).x \
+		/ office_new_scale()
+	return (target_width_raw - source.get_aabb().size.z) * 0.5
+
+
+# Внутренняя кромка переносится к 25-мм выступу, но исходная ширина деревянной
+# полосы сохраняется: наружный контур разрастается по стене. Глубина, лицевая
+# плоскость и UV остаются прежними.
+static func _remap_u_profile_mesh(source: Mesh, inner_lip_m: float,
+		source_inner_half_raw: float, source_inner_top_raw: float) -> ArrayMesh:
+	if source == null:
+		return null
+	var result := ArrayMesh.new()
+	result.resource_name = "%s_lip_%dmm" % [source.resource_name,
+		roundi(inner_lip_m * 1000.0)]
+	var outer_half_w := OFFICE_DOOR_V2_FRAME_W_RAW * 0.5
+	var target_inner_half := clampf(_profile_inner_half_raw(inner_lip_m),
+		source_inner_half_raw, outer_half_w)
+	var target_outer_half := target_inner_half \
+		+ (outer_half_w - source_inner_half_raw)
+	var target_inner_top := clampf(_profile_inner_top_raw(inner_lip_m),
+		source_inner_top_raw, OFFICE_DOOR_V2_FRAME_H_RAW)
+	var target_outer_top := target_inner_top \
+		+ (OFFICE_DOOR_V2_FRAME_H_RAW - source_inner_top_raw)
+	for surface_index in range(source.get_surface_count()):
+		var arrays := source.surface_get_arrays(surface_index)
+		if arrays.is_empty() or arrays[Mesh.ARRAY_VERTEX] == null:
+			continue
+		var vertices := arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array
+		for vertex_index in range(vertices.size()):
+			var vertex := vertices[vertex_index]
+			var abs_z := absf(vertex.z)
+			if abs_z >= source_inner_half_raw - 0.0001 \
+					and abs_z <= outer_half_w + 0.0001:
+				var width_phase := inverse_lerp(
+					source_inner_half_raw, outer_half_w, abs_z)
+				vertex.z = signf(vertex.z) * lerpf(
+					target_inner_half, target_outer_half, width_phase)
+			if vertex.y >= source_inner_top_raw - 0.0001 \
+					and vertex.y <= OFFICE_DOOR_V2_FRAME_H_RAW + 0.0001:
+				var height_phase := inverse_lerp(source_inner_top_raw,
+					OFFICE_DOOR_V2_FRAME_H_RAW, vertex.y)
+				vertex.y = lerpf(target_inner_top,
+					target_outer_top, height_phase)
+			vertices[vertex_index] = vertex
+		arrays[Mesh.ARRAY_VERTEX] = vertices
+		result.add_surface_from_arrays(
+			source.surface_get_primitive_type(surface_index), arrays)
+		var result_surface := result.get_surface_count() - 1
+		result.surface_set_material(result_surface,
+			source.surface_get_material(surface_index))
+		result.surface_set_name(result_surface,
+			source.surface_get_name(surface_index))
+	return result
+
+
+static func _resize_leaf_mesh(source: Mesh, target_size_m: Vector2) -> ArrayMesh:
+	if source == null:
+		return null
+	var scale_factor := office_new_scale()
+	var target_width_raw := target_size_m.x / scale_factor
+	var target_height_raw := target_size_m.y / scale_factor
+	var source_box := source.get_aabb()
+	var source_center_z := source_box.get_center().z
+	var result := ArrayMesh.new()
+	result.resource_name = "%s_%dx%dmm" % [source.resource_name,
+		roundi(target_size_m.x * 1000.0), roundi(target_size_m.y * 1000.0)]
+	for surface_index in range(source.get_surface_count()):
+		var arrays := source.surface_get_arrays(surface_index)
+		if arrays.is_empty() or arrays[Mesh.ARRAY_VERTEX] == null:
+			continue
+		var vertices := arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array
+		for vertex_index in range(vertices.size()):
+			var vertex := vertices[vertex_index]
+			vertex.z = source_center_z + (vertex.z - source_center_z) \
+				* target_width_raw / source_box.size.z
+			vertex.y = source_box.position.y + (vertex.y - source_box.position.y) \
+				* target_height_raw / source_box.size.y
+			vertices[vertex_index] = vertex
+		arrays[Mesh.ARRAY_VERTEX] = vertices
+		result.add_surface_from_arrays(
+			source.surface_get_primitive_type(surface_index), arrays)
+		var result_surface := result.get_surface_count() - 1
+		result.surface_set_material(result_surface,
+			source.surface_get_material(surface_index))
+		result.surface_set_name(result_surface,
+			source.surface_get_name(surface_index))
+	return result
+
+
 func _spawn_frame(opening_center: Vector3, outward: Vector3,
-		node_name: String) -> Node3D:
+		node_name: String, inner_lip_m: float) -> Node3D:
 	var instance := OFFICE_FRAME_SCENE.instantiate() as Node3D
 	if instance == null:
 		return null
@@ -279,6 +429,13 @@ func _spawn_frame(opening_center: Vector3, outward: Vector3,
 	if frame == null:
 		instance.queue_free()
 		return null
+	if inner_lip_m >= 0.0:
+		var profile_key := _profile_key(inner_lip_m)
+		if not _profile_frame_meshes.has(profile_key):
+			_profile_frame_meshes[profile_key] = _remap_u_profile_mesh(frame.mesh,
+				inner_lip_m, OFFICE_DOOR_V2_INNER_HALF_W_RAW,
+				OFFICE_DOOR_V2_INNER_TOP_RAW)
+		frame.mesh = _profile_frame_meshes[profile_key] as Mesh
 	frame.material_override = architecture.materials["baseboard"]
 	var scale_factor := office_new_scale()
 	instance.scale = Vector3.ONE * scale_factor
@@ -288,14 +445,17 @@ func _spawn_frame(opening_center: Vector3, outward: Vector3,
 		PARTITION_T_CELLS * Architecture.CELL * 0.5 + OFFICE_FRAME_OUTSET)).dot(outward)
 	var box := frame.global_transform * frame.get_aabb()
 	instance.global_position += outward * (contact_scalar - _aabb_max(box, outward))
-	_spawn_casing(instance, opening_center, outward, scale_factor, contact_scalar)
+	_spawn_casing(instance, opening_center, outward, scale_factor, contact_scalar,
+		inner_lip_m)
 	instance.set_meta("opening_style", "office_new")
+	instance.set_meta("inner_lip_m", inner_lip_m)
 	instance.set_meta("opening_id", node_name)
 	return instance
 
 
 func _spawn_casing(frame_root: Node3D, opening_center: Vector3,
-		outward: Vector3, scale_factor: float, contact_scalar: float) -> void:
+		outward: Vector3, scale_factor: float, contact_scalar: float,
+		inner_lip_m: float) -> void:
 	var casing := OFFICE_CASING_SCENE.instantiate() as Node3D
 	if casing == null:
 		return
@@ -307,6 +467,13 @@ func _spawn_casing(frame_root: Node3D, opening_center: Vector3,
 	if mesh == null:
 		casing.queue_free()
 		return
+	if inner_lip_m >= 0.0:
+		var profile_key := _profile_key(inner_lip_m)
+		if not _profile_casing_meshes.has(profile_key):
+			_profile_casing_meshes[profile_key] = _remap_u_profile_mesh(mesh.mesh,
+				inner_lip_m, OFFICE_DOOR_V2_CASING_INNER_HALF_W_RAW,
+				OFFICE_DOOR_V2_CASING_INNER_TOP_RAW)
+		mesh.mesh = _profile_casing_meshes[profile_key] as Mesh
 	mesh.material_override = architecture.materials["baseboard"]
 	_align_center_floor(casing, mesh, opening_center)
 	var box := mesh.global_transform * mesh.get_aabb()
@@ -315,7 +482,7 @@ func _spawn_casing(frame_root: Node3D, opening_center: Vector3,
 
 
 func _spawn_leaf(opening_center: Vector3, normal: Vector3, node_name: String,
-		collide: bool) -> Node3D:
+		collide: bool, inner_lip_m: float) -> Node3D:
 	var instance := OFFICE_LEAF_SCENE.instantiate() as Node3D
 	if instance == null:
 		return null
@@ -324,6 +491,21 @@ func _spawn_leaf(opening_center: Vector3, normal: Vector3, node_name: String,
 	if leaf == null:
 		instance.free()
 		return null
+	var profile_leaf_size := Vector2.ZERO
+	if inner_lip_m >= 0.0:
+		profile_leaf_size = office_profile_leaf_size_m(inner_lip_m)
+		var profile_key := _profile_key(inner_lip_m)
+		var source_width_raw := leaf.mesh.get_aabb().size.z
+		if not _profile_leaf_meshes.has(profile_key):
+			_profile_leaf_meshes[profile_key] = _resize_leaf_mesh(leaf.mesh,
+				profile_leaf_size)
+		leaf.mesh = _profile_leaf_meshes[profile_key] as Mesh
+		var target_width_raw := profile_leaf_size.x / office_new_scale()
+		var latch_shift := (target_width_raw - source_width_raw) * 0.5
+		for handle_name: String in ["Handle", "Handle2"]:
+			var handle := leaf.get_node_or_null(handle_name) as Node3D
+			if handle != null:
+				handle.position.z += latch_shift
 	_tune_leaf_materials(instance)
 	owner.add_child(instance)
 	instance.scale = Vector3.ONE * office_new_scale()
@@ -336,13 +518,23 @@ func _spawn_leaf(opening_center: Vector3, normal: Vector3, node_name: String,
 	instance.global_position += normal * (
 		visible_face - OFFICE_DOOR_V2_LEAF_INSET - _aabb_max(box, normal))
 	instance.set_meta("opening_style", "office_new")
+	instance.set_meta("inner_lip_m", inner_lip_m)
+	if inner_lip_m >= 0.0:
+		instance.set_meta("leaf_profile_size_m", profile_leaf_size)
 	if collide:
 		var body := StaticBody3D.new()
 		var collision := CollisionShape3D.new()
 		var shape := BoxShape3D.new()
-		shape.size = Vector3(DOOR_WIDTH, DOOR_HEIGHT, OFFICE_DOOR_DEPTH)
+		if inner_lip_m >= 0.0:
+			shape.size = Vector3(OFFICE_DOOR_DEPTH,
+				profile_leaf_size.y / office_new_scale(),
+				profile_leaf_size.x / office_new_scale())
+		else:
+			shape.size = Vector3(DOOR_WIDTH, DOOR_HEIGHT, OFFICE_DOOR_DEPTH)
 		collision.shape = shape
-		collision.position = Vector3(0.0, DOOR_HEIGHT * 0.5, 0.0)
+		collision.position = Vector3(0.0,
+			shape.size.y * 0.5 if inner_lip_m >= 0.0 else DOOR_HEIGHT * 0.5,
+			0.0)
 		body.add_child(collision)
 		instance.add_child(body)
 	return instance

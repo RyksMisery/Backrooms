@@ -1,5 +1,34 @@
 # Areas
 
+## Runtime-состояния области
+
+Топология мира и построенное 3D разделены. Область может существовать как
+замороженная спецификация без SceneTree-узлов. Для продуктовой раскладки
+используются состояния:
+
+- `core` — постоянное настоящее 3D текущего узла мира;
+- `attached` — настоящая посещаемая область, временно пристыкованная к core;
+- `phantom` — визуальное render-only представление в апертуре без физики,
+  gameplay, аудио и коллизий целевой области; изолированные mesh и световые
+  копии допустимы только как часть render-proxy;
+- `dormant` — сохранённая спецификация, которая вообще не строится.
+
+`visible=false` не считается выгрузкой. `dormant` вообще не создаёт SceneTree-
+узлы. `phantom` создаёт только изолированное render-представление и не создаёт
+посещаемые коллизии, gameplay, аудио, двери и обработчики целевой области.
+Состояние gameplay хранится в данных области и не зависит от существования её
+3D-представления.
+
+Для постоянно видимой апертуры render-world фантома и необходимый канонический
+световой пул остаются активными независимо от расстояния, пока портал виден.
+Дистанционное плавное гашение фантома запрещено; полный контракт находится в
+`docs/portal_graph_alternative.md`, световая часть — в `docs/lights.md`.
+
+Постоянный узел `level_e` — слитый главный зал вместе с восемью длинными
+проходами. Зал-провал временно имеет политику `attached_fixed`. Остальная
+историческая раскладка сохраняется как каталог dormant-спецификаций и не входит
+в runtime-сборку до отдельного возвращения.
+
 > Область описывает occupancy/topology и локальные исключения. Стандартную
 > геометрию она не строит сама: сетку и shell создаёт
 > `modules/architecture_module.gd`, проёмы — `modules/opening_module.gd`, свет —
@@ -13,10 +42,12 @@
 
 ## Status
 
-> This document describes the active shared-world `15x15` occupancy approach.
-> The optional graph-of-local-spaces architecture, where arbitrary-size modules
-> are joined by paired occluded gateway rooms, is recorded separately in
-> `docs/portal_graph_alternative.md`. It is not active unless explicitly adopted.
+Граф локальных пространств принят как глобальная архитектура мира. Общая
+`15×15` occupancy-сетка сохраняется как канон построения стандартной области и
+не требует размещать все области одновременно в одном непрерывном `World3D`.
+Подробный контракт графа, шлюзов и локальных координат находится в
+`docs/portal_graph_alternative.md`; несмотря на историческое имя файла, это
+теперь действующее направление, а не запасной вариант.
 
 The scheme can be used as the current working source of truth for area
 planning, with one condition: it is still editable and may be corrected as
@@ -24,7 +55,8 @@ generation rules evolve.
 
 It matches the prototype direction already tested in `level_blueprint.gd`:
 
-- area modules are based on a 15x15 panel grid;
+- existing standard modules default to a 15x15 panel template;
+- new spaces may use any integer cell bounds or composed cell footprint;
 - walls, columns, partitions, passages, and ceiling lights are placed on the
   same panel grid;
 - neighboring areas should be connected through shared/merged wall geometry,
@@ -35,7 +67,8 @@ It matches the prototype direction already tested in `level_blueprint.gd`:
 ## Units
 
 - 1 panel = 1.25 m.
-- One area = a 15x15 panel module.
+- One area = an arbitrary finite footprint on its local panel grid.
+- 15x15 is the standard template default, not a global size constraint.
 - Area ceiling height follows the project standard: 4 m.
 - Outer wall thickness for the current base area family: 3 panels.
 - Test passage width between areas: 3 panels.
@@ -43,8 +76,9 @@ It matches the prototype direction already tested in `level_blueprint.gd`:
 
 ## Canonical Grid Phase
 
-- Cell boundaries are `WORLD_GRID_ORIGIN + n * CELL`; cell centers are
-  `WORLD_GRID_ORIGIN + (n + 0.5) * CELL` on both horizontal axes.
+- Cell boundaries and centers derive from the owning space's stable
+  `GridFrame`; `WORLD_GRID_ORIGIN` is only the current shared-world instance
+  of that rule in `level_e`.
 - The interior bounds of every standard area start and end on cell boundaries.
   Floor, ceiling, occupancy, openings, fixtures, and the ceiling-texture phase
   must derive from that same origin.
@@ -59,8 +93,9 @@ It matches the prototype direction already tested in `level_blueprint.gd`:
 
 An area is not a whole level and not a prefab room in the old sense.
 
-An area is a 15x15 module inside which different architectural solutions can
-be formed:
+An area is an arbitrary finite cell footprint inside which different
+architectural solutions can be formed. `15x15` remains the default catalog
+template:
 
 - empty room;
 - column hall;
@@ -71,7 +106,9 @@ be formed:
 - branch/junction module;
 - other future variants.
 
-Areas may be rotated when placed.
+Areas may be rotated or mirrored when placed. Their complete GridFrame moves
+with them; meshes, fixtures, occupancy and UV phase are never adjusted
+independently.
 
 ## Canonical And Custom Construction Profiles
 

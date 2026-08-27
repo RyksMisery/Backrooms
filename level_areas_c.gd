@@ -8,6 +8,8 @@ extends Node3D
 const ARCHITECTURE := preload("res://modules/architecture_module.gd")
 const OPENINGS := preload("res://modules/opening_module.gd")
 const LIGHTING := preload("res://modules/lighting_module.gd")
+const PORTAL_LIGHT_BRIDGE_MODULE := preload(
+	"res://modules/portal_light_bridge_module.gd")
 const AUDIO := preload("res://modules/audio_module.gd")
 const HUD := preload("res://modules/hud_module.gd")
 const MAP := preload("res://modules/map_module.gd")
@@ -283,6 +285,7 @@ const R2_LIGHTS := [
 # (для рисования/отбора комнат). Пусто = обычный стартовый хаб.
 @export var preview_template: String = ""
 @export var preview_rot: int = 0
+@export var embedded_area_mode: bool = false
 
 # ── Тестовая область: лабиринт по алгоритму Уилсона на подсетке (см.
 # обсуждение "одна область, стыкуется с общим лабиринтом"). Подсетка 5×5,
@@ -361,6 +364,7 @@ var _body: StaticBody3D
 var _mesh_cache: Dictionary = {}
 var _shape_cache: Dictionary = {}
 var _st: Dictionary = {}
+var _portal_light_cap_rects: Array[Rect2] = []
 
 # Единый источник правды.
 var _grid: Dictionary = {}            # Vector2i -> тип клетки
@@ -403,6 +407,8 @@ var _minimap: Control
 var _hud_module
 var _map_module
 var _template_lighting
+var _embedded_shadow_observer: Node3D
+var _embedded_shadow_camera: Camera3D
 var _env: Environment                   # для переключения ambient в рантайме
 var _ambient_energy := AMBIENT_ENERGY   # рантайм-регулятор амбиента (клавиши -/+)
 var _light_new := true                  # режим света: ON=новый, OFF=старый (G)
@@ -463,7 +469,8 @@ var _flash_t := 0.0
 func _ready() -> void:
 	_initialize_level_runtime()
 	_build_level_content()
-	_initialize_level_presentation()
+	if not embedded_area_mode:
+		_initialize_level_presentation()
 
 
 # Общий lifecycle нужен не только живой раскладке, но и лабораториям level_e.
@@ -484,9 +491,12 @@ func _initialize_level_runtime() -> void:
 		_area_panel_range_mode = AREA_LIGHT_PANEL_RANGE_ON_ANDROID
 	if OS.has_feature("android"):
 		_post_on = false
+	if preview_template != "" and not embedded_area_mode:
+		ARCHITECTURE.apply_render_profile(get_viewport())
 	_render_diag = _make_render_diagnostic()
 	_make_materials()
-	_setup_environment()
+	if not embedded_area_mode:
+		_setup_environment()
 	_body = StaticBody3D.new()
 	add_child(_body)
 	_begin()
@@ -518,7 +528,75 @@ func _build_level_content() -> void:
 	_place_pit_warning_sign()       # табличка «скользко» в проходе перед провалом
 	_add_pit_flicker_light()        # одиночный мерцающий светильник по центру провала
 	_add_correct_path_flicker()     # мерцающая панель-подсказка у верного прохода
-	_spawn_player()
+	if not embedded_area_mode:
+		_spawn_player()
+
+
+func bind_embedded_player(player: CharacterBody3D) -> void:
+	_player_ref = player
+	_update_light_pool()
+
+
+func set_embedded_shadow_observer(observer: Node3D,
+		camera: Camera3D) -> void:
+	_embedded_shadow_observer = observer
+	_embedded_shadow_camera = camera
+
+
+func clear_embedded_shadow_observer() -> void:
+	_embedded_shadow_observer = null
+	_embedded_shadow_camera = null
+
+
+func embedded_shadow_debug_state() -> Dictionary:
+	var active: Array[String] = []
+	var pool_on := 0
+	var eligible := 0
+	var min_distance := INF
+	for lamp: OmniLight3D in _area_bounce_lamps:
+		if bool(lamp.get_meta("pool_want", lamp.visible)):
+			pool_on += 1
+		if bool(lamp.get_meta("bounce_shadow_allowed", true)):
+			eligible += 1
+		if _embedded_shadow_observer != null:
+			min_distance = minf(min_distance, lamp.global_position.distance_to(
+				_embedded_shadow_observer.global_position))
+		if lamp.shadow_enabled and lamp.shadow_opacity > 0.001:
+			active.append(String(lamp.name))
+	active.sort()
+	return {
+		"using_virtual_observer": _embedded_shadow_observer != null \
+			and is_instance_valid(_embedded_shadow_observer),
+		"active": active,
+		"active_count": active.size(),
+		"pool_on": pool_on,
+		"eligible": eligible,
+		"min_distance": min_distance,
+	}
+
+
+func add_freestanding_frame(local_floor_center: Vector3,
+		normal: Vector3, opening_id: String) -> void:
+	var frame_scene := load(OFFICE_DOOR_PANEL) as PackedScene
+	if frame_scene == null:
+		return
+	var outward := normal.normalized()
+	for side: float in [-1.0, 1.0]:
+		_spawn_office_new_frame(frame_scene, local_floor_center, outward * side,
+			"%s_%s" % [opening_id, "neg" if side < 0.0 else "pos"],
+			opening_id, side)
+
+
+func office_corridor_end_portal_floor() -> Vector3:
+	for area: Dictionary in _areas:
+		if String(area.get("type", "")) != "office_corridor":
+			continue
+		var face := _oc_transform_point(area, Vector2(12.5, 16.0))
+		var normal := _oc_transform_normal(area, Vector2(0.0, -1.0))
+		var center := _office_opening_center_from_face(face, normal)
+		var cell: Vector2i = area["cell"]
+		return _local_world(cell.x, cell.y, center.x, center.y, 0.0)
+	return Vector3.ZERO
 
 
 func _initialize_level_presentation() -> void:
@@ -527,6 +605,8 @@ func _initialize_level_presentation() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if embedded_area_mode:
+		return
 	if not (event is InputEventKey):
 		return
 	var ke := event as InputEventKey
@@ -589,8 +669,10 @@ func _set_ambient(v: float) -> void:
 
 func _process(delta: float) -> void:
 	_update_office_door_v2_view_side()
-	_update_shadow_pool()
 	_update_light_pool()
+	# LF3 читает pool_want текущего кадра. Обратный порядок оставлял теневой
+	# пул на один кадр позади portal-observer и мог полностью погасить его.
+	_update_shadow_pool()
 	_update_light_fades(delta)
 	_check_pit_fall(delta)
 	_update_flash(delta)
@@ -606,7 +688,7 @@ func _process(delta: float) -> void:
 
 
 func _uses_canonical_template_lighting() -> bool:
-	return preview_template == "hall_2x2"
+	return preview_template in ["hall_2x2", "office_corridor"]
 
 
 func _configure_canonical_template_lighting() -> void:
@@ -625,6 +707,9 @@ func _configure_canonical_template_lighting() -> void:
 
 
 func _template_active_camera() -> Camera3D:
+	if embedded_area_mode and _embedded_shadow_camera != null \
+			and is_instance_valid(_embedded_shadow_camera):
+		return _embedded_shadow_camera
 	return get_viewport().get_camera_3d()
 
 
@@ -1103,11 +1188,20 @@ func _build_column_hall(area: Dictionary) -> void:
 # поперечина Т/угол Г в первой клетке у стены, вылет уходит в стену на 1 клетку.
 const HALL2_LINES := [3.5, 11.5, 19.5, 27.5, 35.5]   # основная сетка 5×5
 const HALL2_MIDS := [7.5, 15.5, 23.5, 31.5]          # центры ячеек 4×4 (шахматка)
+const HALL2_DIAGONAL_LIGHTS := [9.5, 13.5, 17.5, 21.5, 25.5, 29.5]
+const HALL2_PRIMARY_BOUNCE_RANGE := 6.0
+const HALL2_PRIMARY_BOUNCE_ENERGY := 0.36
+const HALL2_PRIMARY_BOUNCE_ATTEN := 0.70
+const HALL2_FILL_BOUNCE_RANGE := 6.0
+const HALL2_FILL_BOUNCE_ENERGY := 0.20
+const HALL2_FILL_BOUNCE_ATTEN := 0.35
 const HALL2_ARM := 3.0          # длина бруса, клеток
 const HALL2_THICK := 1.0        # толщина бруса, клеток
 
 func _build_hall_2x2(_area: Dictionary) -> void:
 	for p: Vector2 in _hall2_points():
+		if embedded_area_mode and p.is_equal_approx(Vector2(19.5, 19.5)):
+			continue
 		_place_cross(p.x, p.y)
 
 
@@ -1210,8 +1304,8 @@ func _build_office_corridor(area: Dictionary) -> void:
 	var end_wp := _oc_transform_point(area, Vector2(end_center_x, 16.0))
 	var end_nrm := _oc_transform_normal(area, Vector2(0.0, -1.0))
 	var end_center := _office_opening_center_from_face(end_wp, end_nrm)
-	_add_office_opening_liner(area, end_center, end_nrm)
-	_register_office_wall_opening(area, end_center, end_nrm, "oc:end_opening", false)
+	_register_office_wall_opening(area, end_center, end_nrm,
+		"oc:end_opening", false, true, [1.0])
 	# Карман за проёмом: по размеру того же калиброванного офисного проёма.
 	var open_w := _opening_width()
 	var open_left := end_center_x - open_w * 0.5
@@ -1228,6 +1322,22 @@ func _build_office_corridor(area: Dictionary) -> void:
 		_oc_add_wall_box(area, Vector2(open_right + w_right * 0.5, 16.5), Vector2(w_right, 1.0), 0.0, CEIL_H, true)
 	var lintel := DOOR_HEIGHT + DOOR_TOP_CLEARANCE
 	_oc_add_wall_box(area, Vector2(end_center_x, 16.5), Vector2(open_w, 1.0), lintel, CEIL_H - lintel)
+	# The last outer-wall cell stays a visible and collidable dead-end cap. It
+	# is emitted on its own shadow-caster layer so portal light may cross only
+	# this hidden cap while every other office wall remains an occluder.
+	var cap_points := [
+		_oc_local_world(area, open_left, ROOM_CELLS + 2.0, 0.0),
+		_oc_local_world(area, open_right, ROOM_CELLS + 2.0, 0.0),
+		_oc_local_world(area, open_right, ROOM_CELLS + 3.0, 0.0),
+		_oc_local_world(area, open_left, ROOM_CELLS + 3.0, 0.0),
+	]
+	var cap_min := Vector2(INF, INF)
+	var cap_max := Vector2(-INF, -INF)
+	for point: Vector3 in cap_points:
+		var xz := Vector2(point.x, point.z)
+		cap_min = cap_min.min(xz)
+		cap_max = cap_max.max(xz)
+	_portal_light_cap_rects.append(Rect2(cap_min, cap_max - cap_min))
 
 
 func _oc_local_world(area: Dictionary, lx: float, lz: float, y: float) -> Vector3:
@@ -1491,7 +1601,19 @@ func _place_office_opening_models() -> void:
 		var center: Vector2 = d["center"]
 		var nrm: Vector2 = d["nrm"]
 		var opening_id := "%s:%d" % [String(d.get("opening_id", "office_wall")), wi]
-		_spawn_office_opening_frames(scene, a, center, nrm, "office_wall_opening_%d" % wi, opening_id)
+		var frame_sides: Array = d.get("frame_sides", [])
+		if frame_sides.is_empty():
+			_spawn_office_opening_frames(scene, a, center, nrm,
+				"office_wall_opening_%d" % wi, opening_id)
+		else:
+			var opening_center := _office_opening_center_world_pos(a, center)
+			var normal3 := Vector3(nrm.x, 0.0, nrm.y).normalized()
+			for side_value in frame_sides:
+				var side := float(side_value)
+				_spawn_office_new_frame(scene, opening_center, normal3 * side,
+					"office_wall_opening_%d_%s" % [wi,
+						"neg" if side < 0.0 else "pos"],
+					opening_id, side)
 		if bool(d.get("door_panel", false)):
 			_spawn_office_door_panel(scene, a, center, nrm, "office_wall_door_panel_%d" % wi, opening_id, bool(d.get("collide", true)))
 		wi += 1
@@ -3044,15 +3166,20 @@ func _add_office_wall_opening(area: Dictionary, wp: Vector2, nrm: Vector2, openi
 	_register_office_wall_opening(area, center, nrm, opening_id, door_panel, collide)
 
 
-func _register_office_wall_opening(area: Dictionary, center: Vector2, nrm: Vector2, opening_id: String, door_panel := false, collide := true) -> void:
-	_office_wall_openings.append({
+func _register_office_wall_opening(area: Dictionary, center: Vector2,
+		nrm: Vector2, opening_id: String, door_panel := false,
+		collide := true, frame_sides: Array = []) -> void:
+	var record := {
 		"area": area,
 		"center": center,
 		"nrm": nrm,
 		"opening_id": opening_id,
 		"door_panel": door_panel,
 		"collide": collide,
-	})
+	}
+	if not frame_sides.is_empty():
+		record["frame_sides"] = frame_sides.duplicate()
+	_office_wall_openings.append(record)
 
 
 # Перемычки над офисными проёмами (заполняют стену выше двери до потолка).
@@ -3869,6 +3996,9 @@ func _carve_hall_2x2_seams(o: Vector2i) -> void:
 # кресты на бывшем шве тоже попали в occupancy, а не остались проходом).
 func _mark_hall_2x2_occupancy() -> void:
 	for p: Vector2 in _hall2_points():
+		if embedded_area_mode and p.is_equal_approx(Vector2(19.5, 19.5)):
+			_light_block[Vector2i(19, 19)] = true
+			continue
 		_mark_cross_cells(p.x, p.y)
 
 
@@ -3899,7 +4029,8 @@ func _carve_passage(area: Dictionary, dir: Vector2i, along0: int, along1: int) -
 func _current_area_name() -> String:
 	if _player_ref == null:
 		return ""
-	var p := _player_ref.position
+	var p := to_local(_player_ref.global_position) if embedded_area_mode \
+		else _player_ref.position
 	var cell := Vector2i(int(floor(p.x / CELL)), int(floor(p.z / CELL)))
 	if _area_id.has(cell):
 		var id: String = _area_id[cell]
@@ -4014,13 +4145,47 @@ func _derive_geometry() -> void:
 	# Стены — greedy-слияние клеток K_WALL в прямоугольники. Плинтус — простым
 	# полным боксом на каждую стену (старый подход; вырезы под двери — позже).
 	for r: Rect2i in _merge_cells(K_WALL):
-		var size := Vector3(float(r.size.x) * CELL, CEIL_H, float(r.size.y) * CELL)
-		var pos := Vector3(
-			(float(r.position.x) + float(r.size.x) * 0.5) * CELL,
-			CEIL_H * 0.5,
-			(float(r.position.y) + float(r.size.y) * 0.5) * CELL
-		)
-		_put("wall", size, pos)
+		_emit_wall_rect_with_portal_caps(Rect2(
+			Vector2(r.position) * CELL, Vector2(r.size) * CELL))
+
+
+func _emit_wall_rect_with_portal_caps(wall_rect: Rect2) -> void:
+	var fragments: Array[Rect2] = [wall_rect]
+	for cap_rect: Rect2 in _portal_light_cap_rects:
+		var next_fragments: Array[Rect2] = []
+		for fragment: Rect2 in fragments:
+			var clipped := fragment.intersection(cap_rect)
+			if clipped.size.x <= 0.0001 or clipped.size.y <= 0.0001:
+				next_fragments.append(fragment)
+				continue
+			_emit_wall_rect(clipped, "portal_cap_wall")
+			_append_rect_difference(next_fragments, fragment, clipped)
+		fragments = next_fragments
+	for fragment: Rect2 in fragments:
+		_emit_wall_rect(fragment, "wall")
+
+
+func _append_rect_difference(output: Array[Rect2], whole: Rect2,
+		cut: Rect2) -> void:
+	if cut.position.y > whole.position.y + 0.0001:
+		output.append(Rect2(whole.position,
+			Vector2(whole.size.x, cut.position.y - whole.position.y)))
+	if cut.end.y < whole.end.y - 0.0001:
+		output.append(Rect2(Vector2(whole.position.x, cut.end.y),
+			Vector2(whole.size.x, whole.end.y - cut.end.y)))
+	if cut.position.x > whole.position.x + 0.0001:
+		output.append(Rect2(Vector2(whole.position.x, cut.position.y),
+			Vector2(cut.position.x - whole.position.x, cut.size.y)))
+	if cut.end.x < whole.end.x - 0.0001:
+		output.append(Rect2(Vector2(cut.end.x, cut.position.y),
+			Vector2(whole.end.x - cut.end.x, cut.size.y)))
+
+
+func _emit_wall_rect(rect: Rect2, surface_name: String) -> void:
+	if rect.size.x <= 0.0001 or rect.size.y <= 0.0001:
+		return
+	_put(surface_name, Vector3(rect.size.x, CEIL_H, rect.size.y),
+		Vector3(rect.get_center().x, CEIL_H * 0.5, rect.get_center().y))
 
 
 # Падение в провал: в горизонтальных границах дыры и ниже пола → секунда полёта
@@ -4028,7 +4193,8 @@ func _derive_geometry() -> void:
 func _check_pit_fall(delta: float) -> void:
 	if _player_ref == null or _pit_fall_rects.is_empty():
 		return
-	var p := _player_ref.position
+	var p := to_local(_player_ref.global_position) if embedded_area_mode \
+		else _player_ref.position
 	if p.y >= 0.3:
 		_pit_fall_t = -1.0
 		return
@@ -4469,24 +4635,61 @@ func _spawn_seam_lamp(gx: float, gz: float) -> void:
 	_set_last_lamp_bounce_shadow_allowed(false)
 
 
-# Зал 2×2 — исходная шахматная раскладка из 24 светильников.
+# Зал 2×2 — исходные 24 светильника и 36 панелей между ними по диагонали.
 func _add_hall_2x2_lights(_area: Dictionary) -> void:
 	# Исходные 24 узла шахматки «линия × середина», без пристеночного ряда.
 	# Все источники получают wide + LF3 из lighting_module и area_id preview.
 	var inner: Array = HALL2_LINES.slice(1, HALL2_LINES.size() - 1)   # [11.5, 19.5, 27.5]
 	for hx: float in inner:
 		for hz: float in HALL2_MIDS:
-			_emit_hall_light(hx, hz)
+			_emit_hall_light(hx, hz, false)
 	for hx: float in HALL2_MIDS:
 		for hz: float in inner:
-			_emit_hall_light(hx, hz)
+			_emit_hall_light(hx, hz, false)
+	# Центр каждого диагонального промежутка исходной шахматки. Шаг в две
+	# клетки до старого источника оставляет между центрами одну пустую клетку.
+	for hx: float in HALL2_DIAGONAL_LIGHTS:
+		for hz: float in HALL2_DIAGONAL_LIGHTS:
+			_emit_hall_light(hx, hz, true)
+	# Условный центр существует только в продуктовом embedded-варианте, где
+	# gateway заменяет центральную X-колонну. Обычный template_preview сохраняет
+	# колонну и не получает панель в занятой ею клетке.
+	if embedded_area_mode:
+		_emit_hall_light(19.5, 19.5, true)
 
 
-func _emit_hall_light(hx: float, hz: float) -> void:
+func _emit_hall_light(hx: float, hz: float, primary: bool) -> void:
 	var pos := Vector3(hx * CELL, CEIL_H + 0.02, hz * CELL)   # hx/hz — центры клеток (x.5)
 	_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
 	_spawn_lamp_source(pos, false)         # профиль wide окончательно задаёт lighting_module
 	_set_last_lamp_area_id("preview")      # весь зал — одна area-группа
+	_set_last_hall2_light_role(primary)
+
+
+func _set_last_hall2_light_role(primary: bool) -> void:
+	if _lamps.is_empty() or _area_bounce_lamps.is_empty():
+		return
+	var index := _lamps.size() - 1
+	var role := &"diagonal_primary" if primary else &"original_fill"
+	var bounce := _area_bounce_lamps[index]
+	var range_v := HALL2_PRIMARY_BOUNCE_RANGE if primary \
+		else HALL2_FILL_BOUNCE_RANGE
+	var energy_v := HALL2_PRIMARY_BOUNCE_ENERGY if primary \
+		else HALL2_FILL_BOUNCE_ENERGY
+	var attenuation_v := HALL2_PRIMARY_BOUNCE_ATTEN if primary \
+		else HALL2_FILL_BOUNCE_ATTEN
+	_lamps[index].set_meta("hall2_light_role", role)
+	_lamps[index].set_meta("bounce_shadow_allowed", primary)
+	if index < _area_lamps.size():
+		_area_lamps[index].set_meta("hall2_light_role", role)
+	bounce.set_meta("hall2_light_role", role)
+	bounce.set_meta("bounce_shadow_allowed", primary)
+	bounce.set_meta("base_bounce_range", range_v)
+	bounce.set_meta("base_bounce_energy", energy_v)
+	bounce.set_meta("base_bounce_attenuation", attenuation_v)
+	bounce.omni_range = range_v
+	bounce.light_energy = energy_v
+	bounce.omni_attenuation = attenuation_v
 
 
 # Большой зал: сплошная сетка ламп, но ТУГОЙ свет (узкий радиус, крутое
@@ -4728,6 +4931,8 @@ func _spawn_area_bounce_light(pos: Vector3, area_id: String) -> OmniLight3D:
 	l.set_meta("area_id", area_id)
 	l.set_meta("area_bounce", true)
 	l.set_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)
+	l.set_meta("base_bounce_energy", AREA_LIGHT_BOUNCE_ENERGY)
+	l.set_meta("base_bounce_attenuation", AREA_LIGHT_BOUNCE_ATTEN)
 	l.set_meta("far_bounce", false)
 	l.set_meta("skip_level_d_source_drop", true)
 	_apply_runtime_light_rules(l)
@@ -4821,7 +5026,10 @@ func _apply_area_bounce_runtime(l: Light3D) -> void:
 	var range_mul := AREA_LIGHT_FAR_BOUNCE_RANGE_MUL if far else 1.0
 	var energy_mul := AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL if far else 1.0
 	omni.omni_range = float(omni.get_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)) * range_mul if _area_bounce_mode else 0.0
-	omni.light_energy = AREA_LIGHT_BOUNCE_ENERGY * energy_mul
+	omni.light_energy = float(omni.get_meta("base_bounce_energy",
+		AREA_LIGHT_BOUNCE_ENERGY)) * energy_mul
+	omni.omni_attenuation = float(omni.get_meta("base_bounce_attenuation",
+		AREA_LIGHT_BOUNCE_ATTEN))
 	if not _area_bounce_mode:
 		omni.shadow_enabled = false
 		omni.set(&"shadow_opacity", 0.0)
@@ -5073,10 +5281,13 @@ func _light_blocked(cell: Vector2i) -> bool:
 
 
 func _update_shadow_pool() -> void:
-	if _template_lighting != null and _player_ref != null:
+	var shadow_observer := _embedded_shadow_observer \
+		if embedded_area_mode and _embedded_shadow_observer != null \
+			and is_instance_valid(_embedded_shadow_observer) else _player_ref
+	if _template_lighting != null and shadow_observer != null:
 		if not _area_lights_active():
 			_template_lighting.lamps = _lamps
-			_template_lighting.update(_player_ref)
+		_template_lighting.update(shadow_observer)
 		return
 	# Гистерезис: лампа-кастер остаётся включённой, пока другая не станет
 	# заметно ближе (margin). Убирает поппинг при ходьбе.
@@ -5186,7 +5397,11 @@ func _update_light_pool() -> void:
 	if _player_ref == null or (_lamps.is_empty() and _area_lamps.is_empty() and _area_bounce_lamps.is_empty()):
 		return
 	var area_on := _area_lights_active()
-	var p := _player_ref.position
+	var pool_observer := _embedded_shadow_observer \
+		if embedded_area_mode and _embedded_shadow_observer != null \
+		and is_instance_valid(_embedded_shadow_observer) else _player_ref
+	var p := to_local(pool_observer.global_position) if embedded_area_mode \
+		else pool_observer.position
 	var player_cell := Vector2i(int(floor(p.x / CELL)), int(floor(p.z / CELL)))
 	var player_ids := _player_area_ids(player_cell)
 	var max_hops := 1
@@ -5440,8 +5655,10 @@ func _setup_environment() -> void:
 
 func _begin() -> void:
 	_office_door_v2_instances.clear()
+	_portal_light_cap_rects.clear()
 	_st.clear()
-	for n in ["wall", "floor", "ceil", "lamp", "lamp_glow", "base", "pit"]:
+	for n in ["wall", "floor", "ceil", "lamp", "lamp_glow", "base", "pit",
+			"portal_cap_wall", "portal_cap_base"]:
 		var st := SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		_st[n] = st
@@ -5456,6 +5673,8 @@ func _commit() -> void:
 		"lamp_glow": _mat_lamp_glow,
 		"base": _mat_base,
 		"pit": _mat_pit,
+		"portal_cap_wall": _mat_wall,
+		"portal_cap_base": _mat_base,
 	}
 	for n: String in mats:
 		var mesh: ArrayMesh = _st[n].commit()
@@ -5467,6 +5686,8 @@ func _commit() -> void:
 		mi.gi_mode = GeometryInstance3D.GI_MODE_STATIC
 		if n == "ceil":
 			mi.layers = mi.layers | AREA_LIGHT_CEILING_FILL_LAYER
+		elif n.begins_with("portal_cap_"):
+			mi.layers = PORTAL_LIGHT_BRIDGE_MODULE.PORTAL_CAP_CASTER_LAYER
 		if n == "lamp_glow":
 			_lamp_glow_mi = mi
 			mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
@@ -5485,9 +5706,14 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 		cs.shape = _shape_cache[size]
 		cs.position = pos
 		_body.add_child(cs)
-	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05 and (force_base or _wall_base_allowed(size)):
+	if add_base and st_name in ["wall", "portal_cap_wall"] \
+			and pos.y - size.y * 0.5 < 0.05 \
+			and (force_base or _wall_base_allowed(size)):
 		var bs := Vector3(size.x + BASEBOARD_PAD, BASEBOARD_H, size.z + BASEBOARD_PAD)
-		_st["base"].append_from(_get_box(bs), 0, Transform3D(Basis(), Vector3(pos.x, BASEBOARD_H * 0.5, pos.z)))
+		var base_surface := "portal_cap_base" \
+			if st_name == "portal_cap_wall" else "base"
+		_st[base_surface].append_from(_get_box(bs), 0,
+			Transform3D(Basis(), Vector3(pos.x, BASEBOARD_H * 0.5, pos.z)))
 
 
 func _wall_base_allowed(size: Vector3) -> bool:

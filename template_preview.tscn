@@ -1,8 +1,7 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://cfmogh4wnn055"]
 
-[ext_resource type="Script" path="res://level_areas_c.gd" id="1_prev"]
+[ext_resource type="Script" uid="uid://b1cohall1ak2x" path="res://level_areas_c.gd" id="1_prev"]
 
-[node name="TemplatePreview" type="Node3D"]
+[node name="TemplatePreview" type="Node3D" unique_id=699505430]
 script = ExtResource("1_prev")
 preview_template = "hall_2x2"
-preview_rot = 0

@@ -63,6 +63,12 @@ const AREA_LIGHT_BOUNCE_RANGE := 8.0
 const AREA_LIGHT_BOUNCE_ENERGY := 0.36
 const AREA_LIGHT_BOUNCE_ATTEN := 1.0
 const AREA_LIGHT_BOUNCE_Y_OFFSET := -0.75
+# Перенос канонического PBR/LF3-света в аналитический unshaded proxy.
+# Это не новые источники, а response-калибровка по парному рендер-боту.
+const PHANTOM_ANALYTIC_WALL_RESPONSE := 0.32
+const PHANTOM_ANALYTIC_FLOOR_RESPONSE := 0.74
+const PHANTOM_ANALYTIC_CEILING_RESPONSE := 0.12
+const PHANTOM_ANALYTIC_PANEL_RESPONSE := 0.079
 const AREA_LIGHT_FAR_BOUNCE_ENABLED := true
 const AREA_LIGHT_FAR_BOUNCE_HOPS := 2
 const AREA_LIGHT_FAR_BOUNCE_RANGE_MUL := 0.65
@@ -87,6 +93,9 @@ const AREA_LIGHT_SPOT_FALLBACK_ENERGY_MUL := 8.0
 const AREA_LIGHT_HYBRID_OMNI_MODULUS := 3
 const AREA_LIGHT_WORLD_LAYER := 1 << 0
 const AREA_LIGHT_CEILING_FILL_LAYER := Architecture.CEILING_FILL_LAYER
+# Геометрия непосредственно у визуального портала может получать физический
+# свет от light-only дублей скрытой области, не засвечивая принимающий мир.
+const PORTAL_LIGHT_RECEIVER_LAYER := 1 << 18
 const AREA_LIGHT_CEILING_GLOW_ENABLED := false
 const AREA_LIGHT_CEILING_GLOW_RADIUS_PAD := 1.35
 const AREA_LIGHT_CEILING_GLOW_Y := Architecture.CEIL_H - 0.015

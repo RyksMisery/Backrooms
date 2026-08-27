@@ -281,6 +281,9 @@ const R2_LIGHTS := [
 # (для рисования/отбора комнат). Пусто = обычный стартовый хаб.
 @export var preview_template: String = ""
 @export var preview_rot: int = 0
+# Ручной диагностический режим входа в тёмный куб. Продуктовый default —
+# исходная точка центрального хаба.
+@export var void_room_test_spawn := false
 
 # ── Тестовая область: лабиринт по алгоритму Уилсона на подсетке (см.
 # обсуждение "одна область, стыкуется с общим лабиринтом"). Подсетка 5×5,
@@ -401,6 +404,20 @@ var _minimap: Control
 var _hud_module
 var _map_module
 var _template_lighting
+var _phantom_views
+var _portal_light_bridge
+var _directed_gateway_hall: Node3D
+var _directed_gateway_office: Node3D
+var _directed_gateway_shadow_observer: Node3D
+var _directed_gateway_shadow_camera: Camera3D
+var _directed_gateway_office_shadow_observer: Node3D
+var _directed_gateway_office_shadow_camera: Camera3D
+var _directed_gateway_camera_near_restore := -1.0
+var _directed_gateway_active_space := &"hub_core"
+var _directed_gateways: Array[Dictionary] = []
+var _directed_gateway_cooldown_until := 0
+var _directed_gateway_boundary_pairs: Array[Dictionary] = []
+var _directed_gateway_boundary_restore: Array[Dictionary] = []
 var _env: Environment                   # для переключения ambient в рантайме
 var _ambient_energy := AMBIENT_ENERGY   # рантайм-регулятор амбиента (клавиши -/+)
 var _light_new := true                  # режим света: ON=новый, OFF=старый (G)
@@ -447,6 +464,9 @@ var _mat_lamp_glow: ShaderMaterial
 var _mat_base: StandardMaterial3D
 var _mat_office_new_leaf: BaseMaterial3D
 var _mat_office_new_handle: BaseMaterial3D
+var _office_new_profile_frame_mesh: Mesh
+var _office_new_profile_casing_mesh: Mesh
+var _office_new_profile_leaf_mesh: Mesh
 var _mat_pit: StandardMaterial3D
 var _mat_round_lamp: StandardMaterial3D
 var _mat_void: StandardMaterial3D        # = _mat_floor (стенки колодца как пол)
@@ -464,6 +484,10 @@ const CANONICAL_ARCHITECTURE := preload("res://modules/architecture_module.gd")
 const CANONICAL_LIGHTING := preload("res://modules/lighting_module.gd")
 const CANONICAL_AUDIO := preload("res://modules/audio_module.gd")
 const STREAM_BLOCK_PLANNER := preload("res://modules/stream_block_plan_module.gd")
+const PHANTOM_VIEW_MODULE := preload("res://modules/phantom_view_module.gd")
+const PORTAL_LIGHT_BRIDGE_MODULE := preload(
+	"res://modules/portal_light_bridge_module.gd")
+const HALL2_GATEWAY_SCENE := preload("res://template_preview.tscn")
 
 # Продуктовая раскладка бывшего compatibility-слоя level_d. Она принадлежит
 # level_e; level_d остаётся только визуальным/регрессионным эталоном.
@@ -488,8 +512,12 @@ const MAZE_AFTER_PIT_TAIL_CELL := Vector2i(4, 1)
 const OFFICE_AFTER_MAZE_CELL := Vector2i(4, 2)
 const PIT_EXIT_LANE_D := Vector2i(10, 13)
 const LEVEL_D_MAZE_OFFICE_LANE := Vector2i(12, 15)
-const ROOMS := [
+const ATTACHED_ROOMS := [
 	[FIRST_RING_CELL, "pit", 0, "ЗАЛ-ПРОВАЛ"],
+]
+# Замороженный каталог прежней внешней раскладки. Эти спецификации сохранены
+# для будущего последовательного пристыковывания, но в runtime не строятся.
+const FROZEN_ROOMS := [
 	[Vector2i(0, 0), "lit_hall", 0, "УГЛОВОЙ ЗАЛ СЗ"],
 	[Vector2i(3, 3), "lit_hall", 0, "УГЛОВОЙ ЗАЛ ЮВ"],
 	[Vector2i(0, 3), "lit_hall", 0, "УГЛОВОЙ ЗАЛ ЮЗ"],
@@ -523,7 +551,7 @@ const ROOMS := [
 	[Vector2i(-1, 1), "empty", 0, "ОБЛАСТЬ"],
 	[Vector2i(-1, 0), "empty", 0, "ОБЛАСТЬ"],
 ]
-const LINKS := [
+const FROZEN_LINKS := [
 	[Vector2i(0, 0), Vector2i(0, -1)], [Vector2i(0, -1), Vector2i(1, -1)],
 	[Vector2i(1, -1), Vector2i(2, -1)], [Vector2i(2, -1), Vector2i(3, -1)],
 	[Vector2i(4, 2), Vector2i(4, 3)], [Vector2i(4, 3), Vector2i(3, 3)],
@@ -543,15 +571,34 @@ const PIT_ENTRY_NICHE_LIGHT_D := Vector2(-0.5, 4.5)
 const PIT_FLICKER_POS_D := Vector2(-1.5, 1.5)
 const PIT_SIGN_POS_D := Vector3(-1.0, 0.0, 0.5)
 const PIT_POCKET_SIGN_POS_D := Vector3(-1.3, 0.25, 5.2)
-const WINDOW_BRANCHES := [
+const FROZEN_WINDOW_BRANCHES := [
 	[Vector2i(1, 0), "N"], [Vector2i(0, 1), "W"], [Vector2i(0, 2), "W"],
 	[Vector2i(3, 1), "E"], [Vector2i(3, 2), "E"], [Vector2i(1, 3), "S"],
 	[Vector2i(2, 3), "S"],
 ]
+const PHANTOM_VIEWS := [
+	{"id": &"north_lit_corridor", "cell": Vector2i(1, 0),
+		"side": "N", "type": "infinite_corridor_live_proxy"},
+]
 const WIN_LANE := 11
-const SLIT_W := 0.25
-const SLIT_BASE_H := 0.12
-const SLIT_BASE_PAD := 0.05
+const PHANTOM_SLIT_WIDTH := CELL
+const PHANTOM_SLIT_HEIGHT := CEIL_H
+const PHANTOM_SLIT_CENTER_Y := CEIL_H * 0.5
+const PHANTOM_SLIT_RIGHT_OFFSET_CELLS := 0.5
+const DIRECTED_GATEWAY_VERTICAL_OFFSET := -32.0
+const HUB_COLUMN_OFFICE_NICHE_DEPTH := CELL * 0.5
+const DIRECTED_GATEWAY_SPAWN_DISTANCE_CELLS := 3.5
+const DIRECTED_GATEWAY_COOLDOWN_MS := 240
+const DIRECTED_GATEWAY_COMMIT_DISTANCE := 0.04
+const DIRECTED_GATEWAY_OFFICE_COMMIT_DISTANCE := -0.0005
+const DIRECTED_GATEWAY_OFFICE_NEAR_GUARD_DISTANCE := 0.65
+const DIRECTED_GATEWAY_OFFICE_CAMERA_NEAR := 0.001
+const DIRECTED_GATEWAY_LIGHT_BLEND_DISTANCE := CELL * 1.5
+const DIRECTED_GATEWAY_LIGHT_FAMILY_SEARCH_DISTANCE := CELL * 4.0
+const DIRECTED_GATEWAY_RECEIVER_SCALE_MIN := 0.50
+const DIRECTED_GATEWAY_RECEIVER_SCALE_MAX := 1.80
+const DIRECTED_GATEWAY_RECEIVER_FLOOR_EPS := 0.04
+const DIRECTED_GATEWAY_PROXY_POOL_DEPTH := 0.04
 const LAMP_SOURCE_DROP_D := CANONICAL_LIGHTING.SOURCE_LEVEL_DROP
 const MAC_RENDER_SCALE := CANONICAL_ARCHITECTURE.MAC_RENDER_SCALE
 const HALL_LIGHT_CHECKER := true
@@ -593,7 +640,8 @@ const ARROW_CARD_BOX_TOP_YAW_DEG := 5.0
 # Клавиши: M карта, K вкл/выкл стриминг (выкл → пересобрать всё, показать уровень).
 
 const LEVEL_NAME := "LEVEL E"
-const SPLIT_TYPES := ["wall", "floor", "ceil", "base", "pit", "lamp"]
+const SPLIT_TYPES := ["wall", "floor", "ceil", "base", "pit", "lamp",
+	"portal_cap_wall", "portal_cap_base"]
 const STREAM_BUILD_RADIUS := 2   # держать/строить блоки в этом радиусе от игрока
 const STREAM_FREE_RADIUS := 3    # освобождать за этим (гистерезис, чтобы не дёргалось)
 const LAZY_LOAD := true          # на загрузке строить только близкие блоки (иначе весь уровень)
@@ -627,7 +675,7 @@ const MODEL_FILL_ENERGY_DEFAULT := 0.05
 const MODEL_FILL_ENERGY_STEP := 0.0125
 const MODEL_FILL_MIN_RANGE := 2.5
 const MODEL_FILL_MAX_RANGE := 5.0
-const INFINITE_ANOMALY_SCENE := preload("res://infinite_corridor_e.tscn")
+const INFINITE_ANOMALY_SCENE_PATH := "res://infinite_corridor_e.tscn"
 const INFINITE_CONNECTOR_AREA := Vector2i(2, 0)
 const INFINITE_CONNECTOR_LANE := Vector2i(5, 9)
 const INFINITE_CONNECTOR_DEPTH_CELLS := 2
@@ -687,7 +735,6 @@ var _stream_unit_box_arrays: Array = []
 var _stream_background_enabled := true
 var _stream_ab_requested := false
 var _stream_background_stress_requested := false
-var _stream_infinite_integration_requested := false
 var _stream_plan_thread: Thread
 var _stream_plan_block := Vector2i(2147483647, 2147483647)
 var _stream_plan_started_usec := 0
@@ -816,6 +863,7 @@ func _build_level_content() -> void:
 	_normalize_lamp_energy()        # яркость по плотности (новый режим): без пересвета залов
 	_configure_canonical_template_lighting()
 	_commit()
+	_configure_phantom_inbound_lights()
 	_apply_area_light_mode()
 	_place_all_office_doors()       # модели дверей/рам офиса (после запекания)
 	for cfg in _pit_exit_configs():
@@ -829,6 +877,7 @@ func _build_level_content() -> void:
 	_add_pit_flicker_light()        # одиночный мерцающий светильник по центру провала
 	_add_correct_path_flicker()     # мерцающая панель-подсказка у верного прохода
 	_spawn_player()
+	_setup_directed_gateway_pair()
 
 
 func _initialize_level_presentation() -> void:
@@ -863,7 +912,7 @@ func _level_e_base_process(delta: float) -> void:
 
 
 func _uses_canonical_template_lighting() -> bool:
-	return preview_template == "hall_2x2"
+	return preview_template in ["hall_2x2", "office_corridor"]
 
 
 func _configure_canonical_template_lighting() -> void:
@@ -1286,7 +1335,52 @@ func _build_column_hall(area: Dictionary) -> void:
 	# 4 колонны 2×2, симметрично относительно центра (7.5): клетки 3-4 и 10-11.
 	for lx in [3, 10]:
 		for lz in [3, 10]:
-			_place_column(area, lx, lz, 2, 2)
+			if String(area.get("id", "")) == "hall_sw" and lx == 10 and lz == 3:
+				_place_hub_column_office_niche(area, lx, lz)
+			else:
+				_place_column(area, lx, lz, 2, 2)
+
+
+func _place_hub_column_office_niche(area: Dictionary, lx: int, lz: int) -> void:
+	var column_width := 2.0 * CELL
+	var niche_depth := HUB_COLUMN_OFFICE_NICHE_DEPTH
+	var opening_width := OPENINGS.opening_width_m()
+	var opening_height := OPENINGS.opening_height_m()
+	var side_width := (column_width - opening_width) * 0.5
+	var c: Vector2i = area["cell"]
+	var face_center := _local_world(c.x, c.y, float(lx) + 1.0,
+		float(lz), 0.0)
+	# Видимая ниша занимает полклетки. Бока и перемычка остаются непрерывными
+	# на всю глубину колонны; за portal-plane скрыт только центральный запас
+	# для пересечения anchor капсулой, а задняя клетка целиком глухая.
+	for side: float in [-1.0, 1.0]:
+		_put("wall", Vector3(side_width, CEIL_H, CELL * 2.0),
+			face_center + Vector3(
+				side * (opening_width * 0.5 + side_width * 0.5),
+				CEIL_H * 0.5, CELL), true, true, true)
+	var lintel_height := CEIL_H - opening_height
+	if lintel_height > 0.001:
+		_put("wall", Vector3(opening_width, lintel_height, CELL * 2.0),
+			face_center + Vector3(0.0,
+				opening_height + lintel_height * 0.5, CELL),
+			true, true, true)
+	_put("portal_cap_wall", Vector3(opening_width, CEIL_H, CELL),
+		face_center + Vector3(0.0, CEIL_H * 0.5, CELL * 1.5),
+		true, true, true)
+	_put("floor", Vector3(opening_width, SLAB_T, niche_depth),
+		face_center + Vector3(0.0, -SLAB_T * 0.5, niche_depth * 0.5),
+		true, false)
+	_mark_column_cells(area, lx, lz, 2, 2)
+	var normal := Vector2(0.0, -1.0)
+	var opening_center := Vector2(float(lx) + 1.0,
+		float(lz) + PARTITION_T * 0.5)
+	_register_office_wall_opening(area, opening_center, normal,
+		"hub:right_column_niche", false, true, [1.0])
+
+
+func _hub_column_office_portal_floor() -> Vector3:
+	return _local_world(1, 2, 11.0,
+		3.0 + HUB_COLUMN_OFFICE_NICHE_DEPTH / CELL, 0.0)
 
 
 # Большой зал 2×2: сетка 5×5 крестовых колонн на слитом интерьере 33×33.
@@ -1299,6 +1393,13 @@ func _build_column_hall(area: Dictionary) -> void:
 # поперечина Т/угол Г в первой клетке у стены, вылет уходит в стену на 1 клетку.
 const HALL2_LINES := [3.5, 11.5, 19.5, 27.5, 35.5]   # основная сетка 5×5
 const HALL2_MIDS := [7.5, 15.5, 23.5, 31.5]          # центры ячеек 4×4 (шахматка)
+const HALL2_DIAGONAL_LIGHTS := [9.5, 13.5, 17.5, 21.5, 25.5, 29.5]
+const HALL2_PRIMARY_BOUNCE_RANGE := 4.75
+const HALL2_PRIMARY_BOUNCE_ENERGY := 0.36
+const HALL2_PRIMARY_BOUNCE_ATTEN := 0.70
+const HALL2_FILL_BOUNCE_RANGE := 5.0
+const HALL2_FILL_BOUNCE_ENERGY := 0.20
+const HALL2_FILL_BOUNCE_ATTEN := 0.35
 const HALL2_ARM := 3.0          # длина бруса, клеток
 const HALL2_THICK := 1.0        # толщина бруса, клеток
 
@@ -1406,8 +1507,8 @@ func _build_office_corridor(area: Dictionary) -> void:
 	var end_wp := _oc_transform_point(area, Vector2(end_center_x, 16.0))
 	var end_nrm := _oc_transform_normal(area, Vector2(0.0, -1.0))
 	var end_center := _office_opening_center_from_face(end_wp, end_nrm)
-	_add_office_opening_liner(area, end_center, end_nrm)
-	_register_office_wall_opening(area, end_center, end_nrm, "oc:end_opening", false)
+	_register_office_wall_opening(area, end_center, end_nrm,
+		"oc:end_opening", false, true, [1.0])
 	# Карман за проёмом: по размеру того же калиброванного офисного проёма.
 	var open_w := _opening_width()
 	var open_left := end_center_x - open_w * 0.5
@@ -1687,7 +1788,19 @@ func _place_office_opening_models() -> void:
 		var center: Vector2 = d["center"]
 		var nrm: Vector2 = d["nrm"]
 		var opening_id := "%s:%d" % [String(d.get("opening_id", "office_wall")), wi]
-		_spawn_office_opening_frames(scene, a, center, nrm, "office_wall_opening_%d" % wi, opening_id)
+		var frame_sides: Array = d.get("frame_sides", [])
+		if frame_sides.is_empty():
+			_spawn_office_opening_frames(scene, a, center, nrm,
+				"office_wall_opening_%d" % wi, opening_id)
+		else:
+			var opening_center := _office_opening_center_world_pos(a, center)
+			var normal3 := Vector3(nrm.x, 0.0, nrm.y).normalized()
+			for side_value in frame_sides:
+				var side := float(side_value)
+				_spawn_office_new_frame(scene, opening_center, normal3 * side,
+					"office_wall_opening_%d_%s" % [wi,
+						"neg" if side < 0.0 else "pos"],
+					opening_id, side)
 		if bool(d.get("door_panel", false)):
 			_spawn_office_door_panel(scene, a, center, nrm, "office_wall_door_panel_%d" % wi, opening_id, bool(d.get("collide", true)))
 		wi += 1
@@ -3118,11 +3231,8 @@ func _add_office_opening_liner(area: Dictionary, center: Vector2, normal: Vector
 	var opening_width_panels := _opening_width() if open_w_panels <= 0.0 else open_w_panels
 	var opening_height := DOOR_HEIGHT + DOOR_TOP_CLEARANCE if open_h <= 0.0 else open_h
 	var open_w := opening_width_panels * CELL
-	var frame_scale := minf(
-		open_w / OFFICE_DOOR_V2_FRAME_W_RAW,
-		opening_height / OFFICE_DOOR_V2_FRAME_H_RAW)
-	var inner_half_w := OFFICE_DOOR_V2_INNER_HALF_W_RAW * frame_scale
-	var inner_top := OFFICE_DOOR_V2_INNER_TOP_RAW * frame_scale
+	var inner_half_w := OPENINGS.canonical_liner_inner_half_m(open_w)
+	var inner_top := OPENINGS.canonical_liner_inner_top_m(opening_height)
 	var side_fill := maxf(0.0, open_w * 0.5 - inner_half_w)
 	var top_fill := maxf(0.0, opening_height - inner_top)
 	var cx := center.x * CELL
@@ -3151,15 +3261,20 @@ func _add_office_wall_opening(area: Dictionary, wp: Vector2, nrm: Vector2, openi
 	_register_office_wall_opening(area, center, nrm, opening_id, door_panel, collide)
 
 
-func _register_office_wall_opening(area: Dictionary, center: Vector2, nrm: Vector2, opening_id: String, door_panel := false, collide := true) -> void:
-	_office_wall_openings.append({
+func _register_office_wall_opening(area: Dictionary, center: Vector2,
+		nrm: Vector2, opening_id: String, door_panel := false,
+		collide := true, frame_sides: Array = []) -> void:
+	var record := {
 		"area": area,
 		"center": center,
 		"nrm": nrm,
 		"opening_id": opening_id,
 		"door_panel": door_panel,
 		"collide": collide,
-	})
+	}
+	if not frame_sides.is_empty():
+		record["frame_sides"] = frame_sides.duplicate()
+	_office_wall_openings.append(record)
 
 
 # Перемычки над офисными проёмами (заполняют стену выше двери до потолка).
@@ -3366,6 +3481,9 @@ func _spawn_office_new_frame(scene: PackedScene, opening_center: Vector3, outwar
 	if frame == null:
 		inst.queue_free()
 		return
+	if _office_new_profile_frame_mesh == null:
+		_office_new_profile_frame_mesh = OPENINGS.canonical_frame_mesh(frame.mesh)
+	frame.mesh = _office_new_profile_frame_mesh
 	frame.material_override = _mat_base
 	var scale_factor := _office_new_scale()
 	inst.scale = Vector3.ONE * scale_factor
@@ -3378,6 +3496,7 @@ func _spawn_office_new_frame(scene: PackedScene, opening_center: Vector3, outwar
 	_spawn_office_new_casing(inst, opening_center, outward, scale_factor, contact_scalar)
 	_mark_office_opening_node(inst, opening_id, "frame", side)
 	inst.set_meta("opening_style", "office_new")
+	inst.set_meta("inner_lip_m", OPENINGS.OFFICE_INNER_LIP)
 	inst.set_meta("office_new_center", opening_center)
 	inst.set_meta("office_new_outward", outward)
 
@@ -3396,6 +3515,10 @@ func _spawn_office_new_casing(frame_root: Node3D, opening_center: Vector3, outwa
 	if mesh == null:
 		casing.queue_free()
 		return
+	if _office_new_profile_casing_mesh == null:
+		_office_new_profile_casing_mesh = OPENINGS.canonical_frame_mesh(
+			mesh.mesh, true)
+	mesh.mesh = _office_new_profile_casing_mesh
 	mesh.material_override = _mat_base
 	_office_new_align_center_floor(casing, mesh, opening_center)
 	var box := mesh.global_transform * mesh.get_aabb()
@@ -3413,6 +3536,14 @@ func _spawn_office_new_leaf(opening_center: Vector3, normal: Vector3,
 	if leaf == null:
 		inst.free()
 		return
+	var latch_shift := OPENINGS.canonical_leaf_latch_shift_raw(leaf.mesh)
+	if _office_new_profile_leaf_mesh == null:
+		_office_new_profile_leaf_mesh = OPENINGS.canonical_leaf_mesh(leaf.mesh)
+	leaf.mesh = _office_new_profile_leaf_mesh
+	for handle_name: String in ["Handle", "Handle2"]:
+		var handle := leaf.get_node_or_null(handle_name) as Node3D
+		if handle != null:
+			handle.position.z += latch_shift
 	_office_new_tune_leaf_materials(inst)
 	# Не добавляем исходный normal/AO-вариант в дерево ни на один кадр.
 	add_child(inst)
@@ -3424,6 +3555,9 @@ func _spawn_office_new_leaf(opening_center: Vector3, normal: Vector3,
 	inst.set_meta("office_new_normal", normal)
 	inst.set_meta("office_new_face", face)
 	inst.set_meta("opening_style", "office_new")
+	inst.set_meta("inner_lip_m", OPENINGS.OFFICE_INNER_LIP)
+	inst.set_meta("leaf_profile_size_m",
+		OPENINGS.office_profile_leaf_size_m(OPENINGS.OFFICE_INNER_LIP))
 	_position_office_new_leaf(inst, opening_center, normal, face)
 	_mark_office_opening_node(inst, opening_id, "door", face)
 	if collide:
@@ -3642,6 +3776,11 @@ func _place_column(area: Dictionary, lx: int, lz: int, w: int, h: int) -> void:
 	var c: Vector2i = area["cell"]
 	var center := _local_world(c.x, c.y, float(lx) + float(w) * 0.5, float(lz) + float(h) * 0.5, CEIL_H * 0.5)
 	_put("wall", Vector3(float(w) * CELL, CEIL_H, float(h) * CELL), center, true, true, true)
+	_mark_column_cells(area, lx, lz, w, h)
+
+
+func _mark_column_cells(area: Dictionary, lx: int, lz: int,
+		w: int, h: int) -> void:
 	var base := _area_base_cell(area)
 	for dx in range(w):
 		for dz in range(h):
@@ -4065,6 +4204,10 @@ func _check_infinite_pit_fall(delta: float) -> void:
 func _nearest_pit_walk_center(p: Vector3) -> Vector3:
 	# После reveal мостки принадлежат кольцу, а не исходной области.
 	if _pit_ring_active and _pit_ring != null:
+		if bool(_pit_ring.in_void_room()):
+			var void_center: Vector3 = _pit_ring.void_return_position()
+			if not void_center.is_zero_approx():
+				return void_center
 		var ring_center: Vector3 = _pit_ring.nearest_walk_center(p)
 		return ring_center
 	if _pit_walk_world_centers.is_empty():
@@ -4487,24 +4630,56 @@ func _spawn_seam_lamp(gx: float, gz: float) -> void:
 	_set_last_lamp_bounce_shadow_allowed(false)
 
 
-# Зал 2×2 — исходная шахматная раскладка из 24 светильников.
+# Зал 2×2 — исходные 24 светильника и 36 панелей между ними по диагонали.
 func _add_hall_2x2_lights(_area: Dictionary) -> void:
 	# Исходные 24 узла шахматки «линия × середина», без пристеночного ряда.
 	# Все источники получают wide + LF3 из lighting_module и area_id preview.
 	var inner: Array = HALL2_LINES.slice(1, HALL2_LINES.size() - 1)   # [11.5, 19.5, 27.5]
 	for hx: float in inner:
 		for hz: float in HALL2_MIDS:
-			_emit_hall_light(hx, hz)
+			_emit_hall_light(hx, hz, false)
 	for hx: float in HALL2_MIDS:
 		for hz: float in inner:
-			_emit_hall_light(hx, hz)
+			_emit_hall_light(hx, hz, false)
+	# Центр каждого диагонального промежутка исходной шахматки. Шаг в две
+	# клетки до старого источника оставляет между центрами одну пустую клетку.
+	for hx: float in HALL2_DIAGONAL_LIGHTS:
+		for hz: float in HALL2_DIAGONAL_LIGHTS:
+			_emit_hall_light(hx, hz, true)
 
 
-func _emit_hall_light(hx: float, hz: float) -> void:
+func _emit_hall_light(hx: float, hz: float, primary: bool) -> void:
 	var pos := Vector3(hx * CELL, CEIL_H + 0.02, hz * CELL)   # hx/hz — центры клеток (x.5)
 	_emit_ceiling_light(pos, Vector3(CELL - 0.05, 0.06, CELL - 0.05))
 	_spawn_lamp_source(pos, false)         # профиль wide окончательно задаёт lighting_module
 	_set_last_lamp_area_id("preview")      # весь зал — одна area-группа
+	_set_last_hall2_light_role(primary)
+
+
+func _set_last_hall2_light_role(primary: bool) -> void:
+	if _lamps.is_empty() or _area_bounce_lamps.is_empty():
+		return
+	var index := _lamps.size() - 1
+	var role := &"diagonal_primary" if primary else &"original_fill"
+	var bounce := _area_bounce_lamps[index]
+	var range_v := HALL2_PRIMARY_BOUNCE_RANGE if primary \
+		else HALL2_FILL_BOUNCE_RANGE
+	var energy_v := HALL2_PRIMARY_BOUNCE_ENERGY if primary \
+		else HALL2_FILL_BOUNCE_ENERGY
+	var attenuation_v := HALL2_PRIMARY_BOUNCE_ATTEN if primary \
+		else HALL2_FILL_BOUNCE_ATTEN
+	_lamps[index].set_meta("hall2_light_role", role)
+	_lamps[index].set_meta("bounce_shadow_allowed", primary)
+	if index < _area_lamps.size():
+		_area_lamps[index].set_meta("hall2_light_role", role)
+	bounce.set_meta("hall2_light_role", role)
+	bounce.set_meta("bounce_shadow_allowed", primary)
+	bounce.set_meta("base_bounce_range", range_v)
+	bounce.set_meta("base_bounce_energy", energy_v)
+	bounce.set_meta("base_bounce_attenuation", attenuation_v)
+	bounce.omni_range = range_v
+	bounce.light_energy = energy_v
+	bounce.omni_attenuation = attenuation_v
 
 
 # Большой зал: сплошная сетка ламп, но ТУГОЙ свет (узкий радиус, крутое
@@ -4598,6 +4773,7 @@ func _level_e_base_spawn_lamp_source(pos: Vector3, tight := false) -> void:
 		l.distance_fade_length = LAMP_FADE_LENGTH
 	l.position = pos + Vector3(0, -LIGHTING.SOURCE_BASE_DROP, 0)
 	l.set_meta("tight", tight)
+	l.set_meta("fixture_reference_position", pos)
 	# Своя область (по мировой позиции лампы, та же конверсия, что и у игрока
 	# в _current_area_name/_update_light_pool) — нужна, чтобы пул света ниже
 	# никогда не гасил лампы в комнате, где сейчас стоит игрок.
@@ -4699,6 +4875,7 @@ func _spawn_area_panel_light(pos: Vector3, area_size: Vector2, tight: bool, area
 		l.distance_fade_length = LAMP_FADE_LENGTH
 	l.set_meta("tight", tight)
 	l.set_meta("area_id", area_id)
+	l.set_meta("fixture_reference_position", pos)
 	l.set_meta("skip_level_d_source_drop", true)
 	l.set_meta("area_panel_range_test", true)
 	_apply_area_lamp_runtime(l, LAMP_RANGE_OLD if tight else LAMP_RANGE, LAMP_ENERGY, LAMP_ATTEN_OLD if tight else LAMP_ATTEN)
@@ -4725,8 +4902,11 @@ func _spawn_area_bounce_light(pos: Vector3, area_id: String) -> OmniLight3D:
 	l.set("light_cull_mask", AREA_LIGHT_WORLD_LAYER | AREA_LIGHT_CEILING_FILL_LAYER)
 	l.position = pos + Vector3(0.0, AREA_LIGHT_BOUNCE_Y_OFFSET, 0.0)
 	l.set_meta("area_id", area_id)
+	l.set_meta("fixture_reference_position", pos)
 	l.set_meta("area_bounce", true)
 	l.set_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)
+	l.set_meta("base_bounce_energy", AREA_LIGHT_BOUNCE_ENERGY)
+	l.set_meta("base_bounce_attenuation", AREA_LIGHT_BOUNCE_ATTEN)
 	l.set_meta("far_bounce", false)
 	l.set_meta("skip_level_d_source_drop", true)
 	_apply_runtime_light_rules(l)
@@ -4824,7 +5004,10 @@ func _level_e_base_apply_area_bounce_runtime(l: Light3D) -> void:
 	var energy_mul := lerpf(AREA_LIGHT_FAR_BOUNCE_ENERGY_MUL, 1.0, full_weight) \
 		* visibility_weight
 	omni.omni_range = float(omni.get_meta("base_bounce_range", AREA_LIGHT_BOUNCE_RANGE)) * range_mul if _area_bounce_mode else 0.0
-	omni.light_energy = AREA_LIGHT_BOUNCE_ENERGY * energy_mul
+	omni.light_energy = float(omni.get_meta("base_bounce_energy",
+		AREA_LIGHT_BOUNCE_ENERGY)) * energy_mul
+	omni.omni_attenuation = float(omni.get_meta("base_bounce_attenuation",
+		AREA_LIGHT_BOUNCE_ATTEN))
 	if not _area_bounce_mode:
 		omni.shadow_enabled = false
 		omni.set(&"shadow_opacity", 0.0)
@@ -5098,7 +5281,7 @@ func _level_e_base_update_shadow_pool() -> void:
 	# заметно ближе (margin). Убирает поппинг при ходьбе.
 	if _area_lights_active() or SHADOW_CASTERS <= 0 or _player_ref == null or _lamps.is_empty():
 		return
-	var p := _player_ref.position
+	var p := _directed_gateway_hub_observer_position()
 	var ranked := _lamps.duplicate()
 	ranked.sort_custom(func(a, b):
 		return a.position.distance_squared_to(p) < b.position.distance_squared_to(p))
@@ -5200,7 +5383,7 @@ func _update_light_pool() -> void:
 	if _player_ref == null or (_lamps.is_empty() and _area_lamps.is_empty() and _area_bounce_lamps.is_empty()):
 		return
 	var area_on := _area_lights_active()
-	var p := _player_ref.position
+	var p := _directed_gateway_hub_observer_position()
 	var player_cell := Vector2i(int(floor(p.x / CELL)), int(floor(p.z / CELL)))
 	var player_ids := _player_area_ids(player_cell)
 	var max_hops := 1
@@ -5225,21 +5408,27 @@ func _update_light_pool() -> void:
 			"visible": clampf(visibility_weight, 0.0, 1.0),
 		}
 	for l: OmniLight3D in _lamps:
+		var area_id := String(l.get_meta("area_id", ""))
 		var weights: Dictionary = spatial_weights.get(
-			String(l.get_meta("area_id", "")), {})
-		var weight := float(weights.get("full", 0.0)) if not area_on else 0.0
+			area_id, {})
+		var weight := _pit_fixture_pool_weight(l, area_id, weights, p) \
+			if not area_on else 0.0
 		_set_spatial_pool_light(l, weight)
 	for l: Light3D in _area_lamps:
+		var area_id := String(l.get_meta("area_id", ""))
 		var weights: Dictionary = spatial_weights.get(
-			String(l.get_meta("area_id", "")), {})
-		var weight := float(weights.get("full", 0.0)) if area_on else 0.0
+			area_id, {})
+		var weight := _pit_fixture_pool_weight(l, area_id, weights, p) \
+			if area_on else 0.0
 		_set_spatial_pool_light(l, weight)
 	for l: OmniLight3D in _area_bounce_lamps:
 		var id := String(l.get_meta("area_id", ""))
 		var weights: Dictionary = spatial_weights.get(id, {})
-		var full_weight := float(weights.get("full", 0.0)) if area_on else 0.0
-		var visibility_weight := float(weights.get("visible", 0.0)) \
+		var full_weight := _pit_fixture_pool_weight(l, id, weights, p) \
 			if area_on else 0.0
+		var visibility_weight := full_weight \
+			if _pit_ring_active and _is_pit_area_id(id) \
+			else (float(weights.get("visible", 0.0)) if area_on else 0.0)
 		l.set_meta("pool_full_weight", full_weight)
 		l.set_meta("pool_visibility_weight", visibility_weight)
 		l.set_meta("pool_shadow_weight", full_weight)
@@ -5250,6 +5439,27 @@ func _update_light_pool() -> void:
 	if _light_zones_enabled:
 		_apply_level_e_light_zone_profile(p)
 	_update_bounce_shadow_pool(p)
+
+
+# Обычные области получают единый вес area-group. Якорная область-провал —
+# исключение: topology лишь допускает её, затем каждая семья затухает от
+# собственного fixture-anchor той же кривой, что подвижное кольцо.
+func _pit_fixture_pool_weight(light: Light3D, area_id: String,
+		weights: Dictionary, player_pos: Vector3) -> float:
+	if _pit_ring_active and _is_pit_area_id(area_id):
+		var reference_value = light.get_meta(
+			"fixture_reference_position", light.global_position)
+		var reference := light.global_position
+		if reference_value is Vector3:
+			reference = reference_value
+		return float(INFINITE_PIT_MODULE.source_distance_fade(
+			reference.distance_to(player_pos)))
+	return float(weights.get("full", 0.0)) if not weights.is_empty() else 0.0
+
+
+func _is_pit_area_id(area_id: String) -> bool:
+	var area := _area_by_id(area_id)
+	return not area.is_empty() and String(area.get("type", "")) == "pit"
 
 
 func _set_spatial_pool_light(l: Light3D, weight: float) -> void:
@@ -5503,9 +5713,6 @@ func _get_box(size: Vector3) -> BoxMesh:
 		_mesh_cache[size] = bm
 	return _mesh_cache[size]
 func _ready() -> void:
-	_stream_infinite_integration_requested = \
-		"--level-e-infinite-streaming-integration-test" \
-		in OS.get_cmdline_user_args()
 	_stream_background_stress_requested = \
 		"--level-e-streaming-background-stress" in OS.get_cmdline_user_args()
 	_stream_background_enabled = \
@@ -5538,8 +5745,7 @@ func _ready() -> void:
 		in OS.get_cmdline_user_args()
 	_lf3_guardian_test_requested = "--lf3-guardian-shadow-test" \
 		in OS.get_cmdline_user_args()
-	if _stream_ab_requested or _stream_background_stress_requested \
-			or _stream_infinite_integration_requested:
+	if _stream_ab_requested or _stream_background_stress_requested:
 		randomize_maze_seed = false
 		maze_seed = 173205
 	if _lf3_level_e_capture_requested or _lf3_box_capture_requested \
@@ -5553,8 +5759,9 @@ func _ready() -> void:
 	_p0_on = false
 	_apply_tuned_mode()
 	if _level_e_main_layout_features_enabled():
-		_setup_infinite_connector_trigger()
 		_prebuild_infinite_pit()
+		if void_room_test_spawn:
+			_setup_void_room_product_test_spawn()
 		# Бот бесконечного провала запускается сам, если рядом лежит маркер
 		# `.run_infinite_pit_bot`. Тогда достаточно нажать Play в редакторе,
 		# командная строка не нужна. Маркер снимается после прогона.
@@ -5581,8 +5788,6 @@ func _ready() -> void:
 		call_deferred("_streaming_background_ab_suite")
 	elif _stream_background_stress_requested:
 		call_deferred("_streaming_background_stress_suite")
-	elif _stream_infinite_integration_requested:
-		call_deferred("_infinite_streaming_integration_suite")
 
 
 # Hooks отделяют единую runtime-базу level_e от её текущей живой раскладки.
@@ -5593,7 +5798,10 @@ func _level_e_main_layout_features_enabled() -> bool:
 
 
 func _level_e_streaming_enabled() -> bool:
-	return true
+	# Пока игрок находится в резидентном пространстве за порталом, hub_core
+	# остаётся подготовленным для обратного вида и перехода.
+	return _directed_gateway_active_space == &"hub_core" \
+		or _directed_gateways.is_empty()
 
 
 func _level_e_capture_runners_enabled() -> bool:
@@ -5601,7 +5809,250 @@ func _level_e_capture_runners_enabled() -> bool:
 
 
 func _level_e_process_content(_delta: float) -> void:
-	pass
+	_update_directed_gateway_camera_near(get_viewport().get_camera_3d())
+	if _portal_light_bridge != null:
+		_portal_light_bridge.update()
+	if _phantom_views != null:
+		_phantom_views.update(get_viewport().get_camera_3d())
+	_update_directed_gateway_visibility(get_viewport().get_camera_3d())
+
+
+func _update_directed_gateway_camera_near(camera: Camera3D) -> void:
+	if camera == null:
+		return
+	if _directed_gateways.is_empty():
+		_restore_directed_gateway_camera_near(camera)
+		return
+	var guard_active := false
+	for gateway: Dictionary in _directed_gateways:
+		var gateway_id := gateway.get("id", &"") as StringName
+		if gateway_id != &"hub_to_office" \
+				and gateway_id != &"office_to_hub":
+			continue
+		if gateway.get("source_space", &"") \
+				!= _directed_gateway_active_space:
+			continue
+		var local_eye := (gateway["source"] as Transform3D).affine_inverse() \
+			* camera.global_position
+		var size: Vector2 = gateway["size"]
+		if local_eye.z < DIRECTED_GATEWAY_OFFICE_CAMERA_NEAR * 2.0 \
+				and local_eye.z > -DIRECTED_GATEWAY_OFFICE_NEAR_GUARD_DISTANCE \
+				and absf(local_eye.x) < size.x * 0.75 \
+				and absf(local_eye.y) < size.y:
+			guard_active = true
+			break
+	if guard_active:
+		if _directed_gateway_camera_near_restore < 0.0:
+			_directed_gateway_camera_near_restore = camera.near
+		camera.near = minf(camera.near,
+			DIRECTED_GATEWAY_OFFICE_CAMERA_NEAR)
+	elif _directed_gateway_camera_near_restore > 0.0:
+		_restore_directed_gateway_camera_near(camera)
+
+
+func _restore_directed_gateway_camera_near(camera: Camera3D) -> void:
+	if camera != null and _directed_gateway_camera_near_restore > 0.0:
+		camera.near = _directed_gateway_camera_near_restore
+	_directed_gateway_camera_near_restore = -1.0
+
+
+func _on_directed_gateway_boundary_light_pre_draw() -> void:
+	_apply_directed_gateway_boundary_light_blend()
+
+
+func _restore_directed_gateway_boundary_light_blend() -> void:
+	for record: Dictionary in _directed_gateway_boundary_restore:
+		var light_value = record.get("light")
+		if light_value == null or not is_instance_valid(light_value):
+			continue
+		var light := light_value as Light3D
+		if light == null:
+			continue
+		light.light_energy = float(record["energy"])
+		light.shadow_enabled = bool(record["shadow_enabled"])
+		light.shadow_opacity = float(record["shadow_opacity"])
+		if light is OmniLight3D:
+			(light as OmniLight3D).omni_range = float(record["range"])
+			(light as OmniLight3D).omni_attenuation = float(record["attenuation"])
+		else:
+			light.set("area_range", float(record["range"]))
+			light.set("area_attenuation", float(record["attenuation"]))
+	_directed_gateway_boundary_restore.clear()
+
+
+func _apply_directed_gateway_boundary_light_blend() -> void:
+	_restore_directed_gateway_boundary_light_blend()
+	if _player_ref == null or _directed_gateways.is_empty() \
+			or _directed_gateway_boundary_pairs.is_empty():
+		return
+	for pair: Dictionary in _directed_gateway_boundary_pairs:
+		var anchor := Transform3D.IDENTITY
+		if pair.get("space_a", &"") == _directed_gateway_active_space:
+			anchor = pair["anchor_a"]
+		elif pair.get("space_b", &"") == _directed_gateway_active_space:
+			anchor = pair["anchor_b"]
+		else:
+			continue
+		var local_player := anchor.affine_inverse() \
+			* _player_ref.global_position
+		var dx := maxf(absf(local_player.x) \
+			- OPENINGS.opening_width_m() * 0.5, 0.0)
+		var distance := Vector2(dx, local_player.z).length()
+		var weight := 1.0 - smoothstep(CELL * 0.25,
+			DIRECTED_GATEWAY_LIGHT_BLEND_DISTANCE, distance)
+		if weight <= 0.001:
+			continue
+		var state := _directed_gateway_receiver_pair_state(pair)
+		var contribution_a := float(state.get("contribution_a", 0.0))
+		var contribution_b := float(state.get("contribution_b", 0.0))
+		if contribution_a <= 0.0001 or contribution_b <= 0.0001:
+			continue
+		var target := (contribution_a + contribution_b) * 0.5
+		var scale_a := clampf(target / contribution_a,
+			DIRECTED_GATEWAY_RECEIVER_SCALE_MIN,
+			DIRECTED_GATEWAY_RECEIVER_SCALE_MAX)
+		var scale_b := clampf(target / contribution_b,
+			DIRECTED_GATEWAY_RECEIVER_SCALE_MIN,
+			DIRECTED_GATEWAY_RECEIVER_SCALE_MAX)
+		for light_value in pair.get("lights_a", []):
+			_apply_directed_gateway_receiver_scale(light_value as Light3D,
+				weight, scale_a)
+		for light_value in pair.get("lights_b", []):
+			_apply_directed_gateway_receiver_scale(light_value as Light3D,
+				weight, scale_b)
+		pair["receiver_scale_a"] = scale_a
+		pair["receiver_scale_b"] = scale_b
+
+
+func _directed_gateway_light_boundary_influence(light: Light3D,
+		anchor: Transform3D, range_v: float, attenuation: float) -> float:
+	if light == null or range_v <= 0.001:
+		return 0.0
+	var distance := light.global_position.distance_to(anchor.origin)
+	var radial := clampf(1.0 - distance / range_v, 0.0, 1.0)
+	return pow(radial, maxf(attenuation, 0.05))
+
+
+func _directed_gateway_light_boundary_contribution(light: Light3D,
+		anchor: Transform3D) -> float:
+	if light == null or not is_instance_valid(light):
+		return 0.0
+	var state := _directed_gateway_light_state(light)
+	return float(state["energy"]) \
+		* _directed_gateway_light_boundary_influence(light, anchor,
+			float(state["range"]), float(state["attenuation"]))
+
+
+func _directed_gateway_receiver_pair_state(pair: Dictionary) -> Dictionary:
+	var samples_a := _directed_gateway_floor_receiver_samples(pair["anchor_a"])
+	var samples_b := _directed_gateway_floor_receiver_samples(pair["anchor_b"])
+	var contribution_a := _directed_gateway_receiver_strip_contribution(
+		pair.get("lights_a", []), samples_a)
+	var contribution_b := _directed_gateway_receiver_strip_contribution(
+		pair.get("lights_b", []), samples_b)
+	return {
+		"sample_count": samples_a.size(),
+		"contribution_a": contribution_a,
+		"contribution_b": contribution_b,
+		"scale_a": float(pair.get("receiver_scale_a", 1.0)),
+		"scale_b": float(pair.get("receiver_scale_b", 1.0)),
+	}
+
+
+func _directed_gateway_floor_receiver_samples(anchor: Transform3D) -> Array:
+	var samples: Array = []
+	var floor_y := -OPENINGS.opening_height_m() * 0.5 \
+		+ DIRECTED_GATEWAY_RECEIVER_FLOOR_EPS
+	var half_width := OPENINGS.opening_width_m() * 0.5
+	for depth in [CELL * 0.08, CELL * 0.28, CELL * 0.50]:
+		for lateral in [-0.62, 0.0, 0.62]:
+			samples.append(anchor * Vector3(
+				lateral * half_width, floor_y, -depth))
+	return samples
+
+
+func _directed_gateway_receiver_strip_contribution(lights: Array,
+		samples: Array) -> float:
+	if samples.is_empty():
+		return 0.0
+	var total := 0.0
+	for sample_value in samples:
+		var sample: Vector3 = sample_value
+		for light_value in lights:
+			var light := light_value as Light3D
+			if light == null or not is_instance_valid(light) or not light.visible:
+				continue
+			total += _directed_gateway_light_receiver_contribution(light, sample)
+	return total / float(samples.size())
+
+
+func _directed_gateway_light_receiver_contribution(light: Light3D,
+		receiver: Vector3) -> float:
+	var state := _directed_gateway_light_state(light)
+	var range_v := float(state["range"])
+	if range_v <= 0.001:
+		return 0.0
+	var offset := receiver - light.global_position
+	var distance := offset.length()
+	var radial := clampf(1.0 - distance / range_v, 0.0, 1.0)
+	var influence := pow(radial,
+		maxf(float(state["attenuation"]), 0.05))
+	if not (light is OmniLight3D) and distance > 0.001:
+		var forward := -light.global_basis.z.normalized()
+		influence *= maxf(forward.dot(offset / distance), 0.0)
+	return float(state["energy"]) * influence
+
+
+func _apply_directed_gateway_receiver_scale(light: Light3D,
+		weight: float, scale_factor: float) -> void:
+	if light == null or not is_instance_valid(light):
+		return
+	var state := _directed_gateway_light_state(light)
+	for old_state: Dictionary in _directed_gateway_boundary_restore:
+		if old_state.get("light") == light:
+			return
+	_directed_gateway_boundary_restore.append(state)
+	light.light_energy = float(state["energy"]) \
+		* lerpf(1.0, scale_factor, weight)
+
+
+func _directed_gateway_light_state(light: Light3D) -> Dictionary:
+	var range_v := 0.0
+	var attenuation := 1.0
+	if light is OmniLight3D:
+		range_v = (light as OmniLight3D).omni_range
+		attenuation = (light as OmniLight3D).omni_attenuation
+	elif light is SpotLight3D:
+		range_v = (light as SpotLight3D).spot_range
+		attenuation = (light as SpotLight3D).spot_attenuation
+	else:
+		range_v = float(light.get("area_range"))
+		attenuation = float(light.get("area_attenuation"))
+	return {
+		"light": light, "energy": light.light_energy, "range": range_v,
+		"attenuation": attenuation,
+		"shadow_enabled": light.shadow_enabled,
+		"shadow_opacity": light.shadow_opacity if light.shadow_enabled else 0.0,
+	}
+
+
+func _apply_directed_gateway_light_blend(light: Light3D, state: Dictionary,
+		weight: float, target_energy: float, target_range: float,
+		target_attenuation: float, target_shadow: float) -> void:
+	_directed_gateway_boundary_restore.append(state)
+	light.light_energy = lerpf(float(state["energy"]), target_energy, weight)
+	var range_v := lerpf(float(state["range"]), target_range, weight)
+	var attenuation := lerpf(float(state["attenuation"]),
+		target_attenuation, weight)
+	if light is OmniLight3D:
+		(light as OmniLight3D).omni_range = range_v
+		(light as OmniLight3D).omni_attenuation = attenuation
+	else:
+		light.set("area_range", range_v)
+		light.set("area_attenuation", attenuation)
+	var shadow := lerpf(float(state["shadow_opacity"]), target_shadow, weight)
+	light.shadow_enabled = shadow > 0.001
+	light.shadow_opacity = shadow if light.shadow_enabled else 0.0
 
 
 func _level_e_input_content(_event: InputEventKey) -> void:
@@ -5619,7 +6070,7 @@ func _init_areas() -> void:
 			for key in (r[5] as Dictionary).keys():
 				area[key] = (r[5] as Dictionary)[key]
 		_areas.append(area)
-	for r in ROOMS:
+	for r in ATTACHED_ROOMS:
 		var cell: Vector2i = r[0]
 		var area := {
 			"id": "r_%d_%d" % [cell.x, cell.y], "cell": cell,
@@ -5652,30 +6103,13 @@ func _begin() -> void:
 	_infinite_anomaly_active = false
 
 
-# Левый рукав у стрелки не соединяем с соседним `cor_n_w`.
-# Выбираем два ближних к `cor_n_e` слоя трёхклеточной общей стены,
-# а дальний слой оставляем глухим: получается ниша, а не ложная дыра
-# в физически соседнюю область.
+# Левый рукав `cor_n_e` у стрелки снова является исходным тупиком: никаких
+# специальных выемок, телепортов и скрытого входа в `infinite_corridor_e`.
 func _carve_passages() -> void:
 	_carve_hub()
-	for lk in LINKS:
-		_carve_area_link(lk[0], lk[1])
 	_carve_pit_gates()
-	_carve_after_pit_chain()
-	for wb in WINDOW_BRANCHES:
-		_branch_window_carve(wb[0], String(wb[1]))
-	if preview_template != "" or not _area_by_cell.has(INFINITE_CONNECTOR_AREA):
-		return
-	var area: Dictionary = _area_by_cell[INFINITE_CONNECTOR_AREA]
-	var base := _area_base_cell(area)
-	for gx in range(base.x + WALL_CELLS - INFINITE_CONNECTOR_DEPTH_CELLS,
-			base.x + WALL_CELLS):
-		for gz in range(base.y + WALL_CELLS + INFINITE_CONNECTOR_LANE.x,
-				base.y + WALL_CELLS + INFINITE_CONNECTOR_LANE.y):
-			var cell := Vector2i(gx, gz)
-			_set_cell(cell, K_PASSAGE)
-			_area_id[cell] = String(area["id"])
-			_light_block.erase(cell)
+	for spec: Dictionary in PHANTOM_VIEWS:
+		_branch_window_carve(spec["cell"], String(spec["side"]))
 
 
 func _carve_hub() -> void:
@@ -5734,77 +6168,600 @@ func _pit_exit_configs() -> Array:
 
 
 func _branch_window_carve(bc: Vector2i, side: String) -> void:
-	match side:
-		"N":
-			var north := bc + Vector2i(0, -1)
-			if _area_by_cell.has(north):
-				_carve_passage(_area_by_cell[north], Vector2i(0, 1),
-					WIN_LANE, WIN_LANE + 1)
-		"S":
-			if _area_by_cell.has(bc):
-				_carve_passage(_area_by_cell[bc], Vector2i(0, 1),
-					WIN_LANE, WIN_LANE + 1)
-		"W":
-			var west := bc + Vector2i(-1, 0)
-			if _area_by_cell.has(west):
-				_carve_passage(_area_by_cell[west], Vector2i(1, 0),
-					WIN_LANE, WIN_LANE + 1)
-		"E":
-			if _area_by_cell.has(bc):
-				_carve_passage(_area_by_cell[bc], Vector2i(1, 0),
-					WIN_LANE, WIN_LANE + 1)
+	if not _area_by_cell.has(bc):
+		return
+	var direction := _side_dir(side)
+	if direction != Vector2i.ZERO:
+		_carve_passage(_area_by_cell[bc], direction,
+			WIN_LANE, WIN_LANE + 2)
 
 
 func _build_area_content() -> void:
 	_level_e_base_build_area_content()
-	for wb in WINDOW_BRANCHES:
-		_branch_window_geo(wb[0], String(wb[1]))
+	# Свободностоящая рама резервирует центр до раскладки света: общий
+	# occupancy-aware фильтр сам выдерживает обязательную пустую клетку.
+	var gateway_center := _hub_center_pos()
+	_light_block[Vector2i(floori(gateway_center.x / CELL),
+		floori(gateway_center.z / CELL))] = true
+	for spec: Dictionary in PHANTOM_VIEWS:
+		_branch_vertical_slit_geo(spec["cell"], String(spec["side"]))
+	_build_phantom_views()
 	_place_hall_arrow()
 	_place_arrow_cardboard_box()
 
 
-func _branch_window_geo(bc: Vector2i, side: String) -> void:
-	var wall := 0.0
-	var along_x := true
+func _branch_vertical_slit_geo(bc: Vector2i, side: String) -> void:
+	var wall := -1.5 if side in ["N", "W"] else ROOM_CELLS + 1.5
+	var along_x := side in ["N", "S"]
+	var depth := float(WALL_CELLS) * CELL
+	var center := float(WIN_LANE) + 0.5 + PHANTOM_SLIT_RIGHT_OFFSET_CELLS
+	var carved_width := 2.0 * CELL
+	var side_width := (carved_width - PHANTOM_SLIT_WIDTH) * 0.5
+	var side_offset_cells := (PHANTOM_SLIT_WIDTH * 0.5 + side_width * 0.5) / CELL
+	if side_width <= 0.001:
+		return
+	if along_x:
+		_put("wall", Vector3(side_width, CEIL_H, depth),
+			_local_world(bc.x, bc.y, center - side_offset_cells, wall,
+				PHANTOM_SLIT_CENTER_Y), true)
+		_put("wall", Vector3(side_width, CEIL_H, depth),
+			_local_world(bc.x, bc.y, center + side_offset_cells, wall,
+				PHANTOM_SLIT_CENTER_Y), true)
+	else:
+		_put("wall", Vector3(depth, CEIL_H, side_width),
+			_local_world(bc.x, bc.y, wall, center - side_offset_cells,
+				PHANTOM_SLIT_CENTER_Y), true)
+		_put("wall", Vector3(depth, CEIL_H, side_width),
+			_local_world(bc.x, bc.y, wall, center + side_offset_cells,
+				PHANTOM_SLIT_CENTER_Y), true)
+
+
+func _build_phantom_views() -> void:
+	_phantom_views = PHANTOM_VIEW_MODULE.new()
+	for spec: Dictionary in PHANTOM_VIEWS:
+		if String(spec.get("type", "")) != "infinite_corridor_live_proxy":
+			continue
+		var bc: Vector2i = spec["cell"]
+		var side := String(spec["side"])
+		_phantom_views.add_infinite_corridor_proxy(
+			self, spec["id"], _phantom_slit_anchor(bc, side),
+			Vector2(PHANTOM_SLIT_WIDTH, PHANTOM_SLIT_HEIGHT))
+
+
+func _configure_phantom_inbound_lights() -> void:
+	if _phantom_views == null:
+		return
+	var sources: Array = []
+	sources.append_array(_lamps)
+	sources.append_array(_area_lamps)
+	sources.append_array(_area_bounce_lamps)
+	sources.append_array(_legacy_aux_lights)
+	sources.append_array(_area_aux_lights)
+	sources.append_array(_model_fill_lights)
+	for spec: Dictionary in PHANTOM_VIEWS:
+		_phantom_views.configure_inbound_light_handoff(spec["id"], sources)
+
+
+func _phantom_slit_anchor(bc: Vector2i, side: String) -> Transform3D:
+	var direction_2d := _side_dir(side)
+	var outward := Vector3(direction_2d.x, 0.0, direction_2d.y)
+	var center := float(WIN_LANE) + 0.5 + PHANTOM_SLIT_RIGHT_OFFSET_CELLS
+	var edge := 0.0
+	var position := Vector3.ZERO
 	match side:
 		"N":
-			wall = -1.5
+			edge = -float(WALL_CELLS) - 0.01
+			position = _local_world(bc.x, bc.y, center, edge,
+				PHANTOM_SLIT_CENTER_Y)
 		"S":
-			wall = ROOM_CELLS + 1.5
+			edge = float(ROOM_CELLS + WALL_CELLS) + 0.01
+			position = _local_world(bc.x, bc.y, center, edge,
+				PHANTOM_SLIT_CENTER_Y)
 		"W":
-			wall = -1.5
-			along_x = false
+			edge = -float(WALL_CELLS) - 0.01
+			position = _local_world(bc.x, bc.y, edge, center,
+				PHANTOM_SLIT_CENTER_Y)
 		"E":
-			wall = ROOM_CELLS + 1.5
-			along_x = false
-		_:
-			return
-	var depth := WALL_CELLS * CELL
-	var fw := 0.5 - SLIT_W * 0.5
-	var c1 := WIN_LANE + fw * 0.5
-	var c2 := WIN_LANE + 1.0 - fw * 0.5
-	if along_x:
-		_put("wall", Vector3(fw * CELL, CEIL_H, depth),
-			_local_world(bc.x, bc.y, c1, wall, CEIL_H * 0.5), true, false)
-		_put("wall", Vector3(fw * CELL, CEIL_H, depth),
-			_local_world(bc.x, bc.y, c2, wall, CEIL_H * 0.5), true, false)
-		_put("base", Vector3(fw * CELL + SLIT_BASE_PAD, SLIT_BASE_H,
-			depth + SLIT_BASE_PAD),
-			_local_world(bc.x, bc.y, c1, wall, SLIT_BASE_H * 0.5), false, false)
-		_put("base", Vector3(fw * CELL + SLIT_BASE_PAD, SLIT_BASE_H,
-			depth + SLIT_BASE_PAD),
-			_local_world(bc.x, bc.y, c2, wall, SLIT_BASE_H * 0.5), false, false)
+			edge = float(ROOM_CELLS + WALL_CELLS) + 0.01
+			position = _local_world(bc.x, bc.y, edge, center,
+				PHANTOM_SLIT_CENTER_Y)
+	var local_x := Vector3.UP.cross(outward).normalized()
+	return Transform3D(Basis(local_x, Vector3.UP, outward), position)
+
+
+func phantom_debug_state() -> Array[Dictionary]:
+	return [] if _phantom_views == null else _phantom_views.debug_state()
+
+
+func _setup_directed_gateway_pair() -> void:
+	if preview_template != "" or _player_ref == null or _phantom_views == null:
+		return
+	var source_floor := _hub_center_pos()
+	source_floor.y = 0.0
+	var target_local_floor := Vector3(
+		(float(WALL_CELLS) + 16.5) * CELL, 0.0,
+		(float(WALL_CELLS) + 16.5) * CELL)
+	var hall := HALL2_GATEWAY_SCENE.instantiate() as Node3D
+	if hall == null:
+		push_error("Directed gateway hall_2x2 could not be instantiated")
+		return
+	hall.name = "directed_gateway_hall_2x2"
+	hall.set("embedded_area_mode", true)
+	hall.set("preview_template", "hall_2x2")
+	hall.position = source_floor - target_local_floor \
+		+ Vector3(0.0, DIRECTED_GATEWAY_VERTICAL_OFFSET, 0.0)
+	add_child(hall)
+	_directed_gateway_hall = hall
+	hall.call("bind_embedded_player", _player_ref)
+	var office := HALL2_GATEWAY_SCENE.instantiate() as Node3D
+	if office == null:
+		push_error("Directed gateway office_corridor could not be instantiated")
+		return
+	office.name = "directed_gateway_office_corridor"
+	office.set("embedded_area_mode", true)
+	office.set("preview_template", "office_corridor")
+	office.position = Vector3(0.0, DIRECTED_GATEWAY_VERTICAL_OFFSET * 2.0, 0.0)
+	add_child(office)
+	_directed_gateway_office = office
+	office.call("bind_embedded_player", _player_ref)
+	_directed_gateway_shadow_observer = Node3D.new()
+	_directed_gateway_shadow_observer.name = "directed_gateway_shadow_observer"
+	add_child(_directed_gateway_shadow_observer)
+	_directed_gateway_shadow_camera = Camera3D.new()
+	_directed_gateway_shadow_camera.name = "directed_gateway_shadow_camera"
+	_directed_gateway_shadow_camera.current = false
+	add_child(_directed_gateway_shadow_camera)
+	_directed_gateway_office_shadow_observer = Node3D.new()
+	_directed_gateway_office_shadow_observer.name = \
+		"directed_gateway_office_shadow_observer"
+	add_child(_directed_gateway_office_shadow_observer)
+	_directed_gateway_office_shadow_camera = Camera3D.new()
+	_directed_gateway_office_shadow_camera.name = \
+		"directed_gateway_office_shadow_camera"
+	_directed_gateway_office_shadow_camera.current = false
+	add_child(_directed_gateway_office_shadow_camera)
+
+	var frame_scene := load(OFFICE_DOOR_PANEL) as PackedScene
+	if frame_scene != null:
+		for side: float in [-1.0, 1.0]:
+			_spawn_office_new_frame(frame_scene, source_floor,
+				Vector3.BACK * side,
+				"hub_gateway_frame_%s" % ("neg" if side < 0.0 else "pos"),
+				"hub_to_hall2", side)
+	hall.call("add_freestanding_frame", target_local_floor,
+		Vector3.FORWARD, "hall2_return_frame")
+	_set_directed_gateway_frame_layer(self, "hub_gateway_frame")
+	_set_directed_gateway_frame_layer(hall, "hall2_return_frame")
+
+	var opening_size := Vector2(
+		OPENINGS.opening_width_m(), OPENINGS.opening_height_m())
+	var source_anchor := _directed_gateway_anchor(
+		source_floor + Vector3.UP * opening_size.y * 0.5,
+		Vector3.BACK)
+	var target_floor := hall.to_global(target_local_floor)
+	var target_anchor := _directed_gateway_anchor(
+		target_floor + Vector3.UP * opening_size.y * 0.5,
+		Vector3.FORWARD)
+	var office_source_floor := _hub_column_office_portal_floor()
+	var office_source_anchor := _directed_gateway_anchor(
+		office_source_floor + Vector3.UP * opening_size.y * 0.5,
+		Vector3.BACK)
+	var office_local_floor: Vector3 = office.call(
+		"office_corridor_end_portal_floor")
+	var office_floor := office.to_global(office_local_floor)
+	var office_anchor := _directed_gateway_anchor(
+		office_floor + Vector3.UP * opening_size.y * 0.5,
+		Vector3.BACK)
+	_setup_office_portal_cap_layers()
+	var source_surface: MeshInstance3D = _phantom_views.add_live_portal(
+		self, &"hub_to_hall2", source_anchor, opening_size, target_anchor,
+		hall, [_player_ref])
+	var target_surface: MeshInstance3D = _phantom_views.add_live_portal(
+		self, &"hall2_to_hub", target_anchor, opening_size, source_anchor,
+		self, [hall, office, _player_ref])
+	var office_source_surface: MeshInstance3D = _phantom_views.add_live_portal(
+		self, &"hub_to_office", office_source_anchor, opening_size,
+		office_anchor, office, [_player_ref])
+	var office_target_surface: MeshInstance3D = _phantom_views.add_live_portal(
+		self, &"office_to_hub", office_anchor, opening_size,
+		office_source_anchor, self, [hall, office, _player_ref])
+	_directed_gateways = [
+		{
+			"id": &"hub_to_hall2", "source": source_anchor,
+			"destination": target_anchor, "surface": source_surface,
+			"size": opening_size, "source_space": &"hub_core",
+			"destination_space": &"hall_2x2",
+		},
+		{
+			"id": &"hall2_to_hub", "source": target_anchor,
+			"destination": source_anchor, "surface": target_surface,
+			"size": opening_size, "source_space": &"hall_2x2",
+			"destination_space": &"hub_core",
+		},
+		{
+			"id": &"hub_to_office", "source": office_source_anchor,
+			"destination": office_anchor, "surface": office_source_surface,
+			"surface_base_transform": office_source_surface.global_transform,
+			"size": opening_size, "source_space": &"hub_core",
+			"destination_space": &"office_corridor",
+		},
+		{
+			"id": &"office_to_hub", "source": office_anchor,
+			"destination": office_source_anchor,
+			"surface": office_target_surface, "size": opening_size,
+			"surface_base_transform": office_target_surface.global_transform,
+			"source_space": &"office_corridor",
+			"destination_space": &"hub_core",
+		},
+	]
+	_reset_directed_gateway_distances()
+
+
+func _setup_office_portal_cap_layers() -> void:
+	if _directed_gateway_office == null:
+		return
+	_enable_portal_cap_receivers(self)
+	_enable_portal_cap_receivers(_directed_gateway_office)
+
+
+func _enable_portal_cap_receivers(root_node: Node) -> void:
+	if root_node == null:
+		return
+	var lights: Array = root_node.find_children("*", "Light3D", true, false)
+	if root_node == self:
+		lights.append_array(_lamps)
+		lights.append_array(_area_lamps)
+		lights.append_array(_area_bounce_lamps)
+	var seen := {}
+	for value in lights:
+		var light := value as Light3D
+		if light == null or seen.has(light.get_instance_id()):
+			continue
+		seen[light.get_instance_id()] = true
+		light.light_cull_mask |= \
+			PORTAL_LIGHT_BRIDGE_MODULE.PORTAL_CAP_CASTER_LAYER
+
+
+func _setup_directed_gateway_boundary_light_blend(hub_anchor: Transform3D,
+		hall_anchor: Transform3D, office_hub_anchor: Transform3D,
+		office_anchor: Transform3D) -> void:
+	_directed_gateway_boundary_pairs.clear()
+	_append_directed_gateway_boundary_light_pairs(&"hub_to_hall2",
+		&"hub_core", &"hall_2x2", self, _directed_gateway_hall,
+		hub_anchor, hall_anchor)
+	_append_directed_gateway_boundary_light_pairs(&"hub_to_office",
+		&"hub_core", &"office_corridor", self, _directed_gateway_office,
+		office_hub_anchor, office_anchor)
+
+
+func _append_directed_gateway_boundary_light_pairs(edge_id: StringName,
+		space_a: StringName, space_b: StringName, root_a: Node,
+		root_b: Node, anchor_a: Transform3D, anchor_b: Transform3D) -> void:
+	if root_a == null or root_b == null:
+		return
+	var family_a := _directed_gateway_light_families(
+		root_a, anchor_a.origin)
+	var family_b := _directed_gateway_light_families(
+		root_b, anchor_b.origin)
+	for key in [&"direct", &"area", &"bounce"]:
+		var lights_a: Array = family_a.get(key, [])
+		var lights_b: Array = family_b.get(key, [])
+		if not lights_a.is_empty() and not lights_b.is_empty():
+			_directed_gateway_boundary_pairs.append({
+				"edge_id": edge_id, "component": key,
+				"space_a": space_a, "space_b": space_b,
+				"anchor_a": anchor_a, "anchor_b": anchor_b,
+				"lights_a": lights_a, "lights_b": lights_b,
+				# Совместимость диагностик: это первые реальные представители,
+				# а не единственная пара, по которой выполняется калибровка.
+				"light_a": lights_a[0], "light_b": lights_b[0],
+			})
+
+
+func _directed_gateway_light_families(root_node: Node,
+		center: Vector3) -> Dictionary:
+	var result := {&"direct": [], &"area": [], &"bounce": []}
+	var candidates: Array = []
+	if root_node == self:
+		candidates.append_array(_lamps)
+		candidates.append_array(_area_lamps)
+		candidates.append_array(_area_bounce_lamps)
 	else:
-		_put("wall", Vector3(depth, CEIL_H, fw * CELL),
-			_local_world(bc.x, bc.y, wall, c1, CEIL_H * 0.5), true, false)
-		_put("wall", Vector3(depth, CEIL_H, fw * CELL),
-			_local_world(bc.x, bc.y, wall, c2, CEIL_H * 0.5), true, false)
-		_put("base", Vector3(depth + SLIT_BASE_PAD, SLIT_BASE_H,
-			fw * CELL + SLIT_BASE_PAD),
-			_local_world(bc.x, bc.y, wall, c1, SLIT_BASE_H * 0.5), false, false)
-		_put("base", Vector3(depth + SLIT_BASE_PAD, SLIT_BASE_H,
-			fw * CELL + SLIT_BASE_PAD),
-			_local_world(bc.x, bc.y, wall, c2, SLIT_BASE_H * 0.5), false, false)
+		candidates = root_node.find_children("*", "Light3D", true, false)
+	for value in candidates:
+		var light := value as Light3D
+		if light == null or not is_instance_valid(light):
+			continue
+		var distance := Vector2(light.global_position.x - center.x,
+			light.global_position.z - center.z).length()
+		if distance > DIRECTED_GATEWAY_LIGHT_FAMILY_SEARCH_DISTANCE:
+			continue
+		var component := &"area" if not (light is OmniLight3D) \
+			else (&"bounce" if bool(light.get_meta("area_bounce", false)) \
+			else &"direct")
+		(result[component] as Array).append(light)
+	return result
+
+
+func _directed_gateway_anchor(center: Vector3, normal: Vector3) -> Transform3D:
+	var portal_z := normal.normalized()
+	var portal_x := Vector3.UP.cross(portal_z).normalized()
+	return Transform3D(Basis(portal_x, Vector3.UP, portal_z), center)
+
+
+func _set_directed_gateway_frame_layer(root_node: Node,
+		name_prefix: String) -> void:
+	for frame_root in root_node.find_children("%s*" % name_prefix,
+			"Node3D", true, false):
+		for visual in (frame_root as Node).find_children(
+				"*", "GeometryInstance3D", true, false):
+			(visual as GeometryInstance3D).layers = 1 << 19
+
+
+func _update_directed_gateway_visibility(camera: Camera3D) -> void:
+	if camera == null or _pit_ring_active:
+		return
+	for gateway: Dictionary in _directed_gateways:
+		var surface := gateway.get("surface") as MeshInstance3D
+		if surface == null or not is_instance_valid(surface):
+			continue
+		var anchor: Transform3D = gateway["source"]
+		var local_eye := anchor.affine_inverse() * camera.global_position
+		var commit_distance := _directed_gateway_commit_distance(gateway)
+		var gateway_id := gateway.get("id", &"") as StringName
+		if gateway_id == &"hub_to_office" or gateway_id == &"office_to_hub":
+			var base_transform: Transform3D = gateway.get(
+				"surface_base_transform", surface.global_transform)
+			var extension := maxf(0.0, local_eye.z \
+				+ DIRECTED_GATEWAY_OFFICE_CAMERA_NEAR * 1.5)
+			base_transform.origin += anchor.basis.z * extension
+			surface.global_transform = base_transform
+		# Только portal-полупространство. Тыльная сторона остаётся настоящим
+		# пустым проёмом и не получает даже одностороннюю заглушку.
+		var source_is_active: bool = gateway.get("source_space", &"") \
+			== _directed_gateway_active_space
+		var visibility_plane := -commit_distance
+		if gateway_id == &"hub_to_office" \
+				or gateway_id == &"office_to_hub":
+			# Keep the source image through the physical crossing frame. Hiding it
+			# at the near-side epsilon exposed the sealed cap for one frame before
+			# the player transfer changed the active SpaceInstance.
+			visibility_plane = DIRECTED_GATEWAY_OFFICE_CAMERA_NEAR * 2.0
+		var portal_visible: bool = source_is_active \
+			and local_eye.z < visibility_plane \
+			and absf(local_eye.y) <= CEIL_H * 2.0
+		_phantom_views.set_live_portal_visible(gateway["id"], portal_visible)
+		surface.visible = portal_visible
+	_update_directed_gateway_shadow_observer(camera)
+
+
+func _suspend_directed_gateways_for_world_replacement() -> void:
+	_restore_directed_gateway_camera_near(get_viewport().get_camera_3d())
+	if _portal_light_bridge != null:
+		_portal_light_bridge.clear()
+		_portal_light_bridge = null
+	for gateway: Dictionary in _directed_gateways:
+		var surface_value = gateway.get("surface")
+		if surface_value == null or not is_instance_valid(surface_value):
+			continue
+		var surface := surface_value as VisualInstance3D
+		if surface != null:
+			surface.visible = false
+	_directed_gateway_boundary_pairs.clear()
+	_directed_gateways.clear()
+	if _directed_gateway_hall != null \
+			and is_instance_valid(_directed_gateway_hall):
+		_directed_gateway_hall.call("clear_embedded_shadow_observer")
+		_retire_portal_space_instance(_directed_gateway_hall)
+	if _directed_gateway_office != null \
+			and is_instance_valid(_directed_gateway_office):
+		_directed_gateway_office.call("clear_embedded_shadow_observer")
+		_retire_portal_space_instance(_directed_gateway_office)
+	for observer in [
+			_directed_gateway_shadow_observer,
+			_directed_gateway_shadow_camera,
+			_directed_gateway_office_shadow_observer,
+			_directed_gateway_office_shadow_camera]:
+		if observer != null and is_instance_valid(observer):
+			(observer as Node).process_mode = Node.PROCESS_MODE_DISABLED
+
+
+func _retire_portal_space_instance(space_root: Node3D) -> void:
+	if space_root == null or not is_instance_valid(space_root):
+		return
+	space_root.set_meta("portal_space_retired", true)
+	var nodes: Array[Node] = [space_root]
+	for child_value in space_root.find_children("*", "", true, false):
+		var child := child_value as Node
+		if child != null:
+			nodes.append(child)
+	for node: Node in nodes:
+		node.process_mode = Node.PROCESS_MODE_DISABLED
+		if node is Node3D:
+			(node as Node3D).visible = false
+		if node is VisualInstance3D:
+			(node as VisualInstance3D).visible = false
+		if node is Light3D:
+			var light := node as Light3D
+			light.visible = false
+			light.light_energy = 0.0
+		if node is AudioStreamPlayer3D:
+			(node as AudioStreamPlayer3D).stop()
+		elif node is AudioStreamPlayer:
+			(node as AudioStreamPlayer).stop()
+		if node is CollisionObject3D:
+			var collision_object := node as CollisionObject3D
+			collision_object.collision_layer = 0
+			collision_object.collision_mask = 0
+			if collision_object is Area3D:
+				(collision_object as Area3D).monitoring = false
+				(collision_object as Area3D).monitorable = false
+		if node is CollisionShape3D:
+			(node as CollisionShape3D).set_deferred("disabled", true)
+
+
+func _update_directed_gateway_shadow_observer(camera: Camera3D) -> void:
+	if camera == null or _directed_gateways.is_empty():
+		return
+	_update_directed_gateway_target_observer(&"hall_2x2",
+		_directed_gateway_hall, _directed_gateway_shadow_observer,
+		_directed_gateway_shadow_camera, camera)
+	_update_directed_gateway_target_observer(&"office_corridor",
+		_directed_gateway_office, _directed_gateway_office_shadow_observer,
+		_directed_gateway_office_shadow_camera, camera)
+
+
+func _directed_gateway_commit_distance(gateway: Dictionary) -> float:
+	var gateway_id := gateway.get("id", &"") as StringName
+	if gateway_id == &"hub_to_office" or gateway_id == &"office_to_hub":
+		return DIRECTED_GATEWAY_OFFICE_COMMIT_DISTANCE
+	return DIRECTED_GATEWAY_COMMIT_DISTANCE
+
+
+func _directed_gateway_hub_observer_position() -> Vector3:
+	if _player_ref == null:
+		return Vector3.ZERO
+	if _directed_gateway_active_space == &"hub_core" \
+			or _directed_gateways.is_empty():
+		return _player_ref.position
+	for gateway: Dictionary in _directed_gateways:
+		if gateway.get("source_space", &"") \
+				!= _directed_gateway_active_space \
+				or gateway.get("destination_space", &"") != &"hub_core":
+			continue
+		var source: Transform3D = gateway["source"]
+		var destination: Transform3D = gateway["destination"]
+		var half_turn := Transform3D(Basis(Vector3.UP, PI), Vector3.ZERO)
+		var local_player := source.affine_inverse() \
+			* _player_ref.global_transform
+		return to_local((destination * half_turn * local_player).origin)
+	return _player_ref.position
+
+
+func _update_directed_gateway_target_observer(target_space: StringName,
+		target_root: Node3D, observer: Node3D, observer_camera: Camera3D,
+		camera: Camera3D) -> void:
+	if target_root == null or observer == null or observer_camera == null:
+		return
+	if _directed_gateway_active_space == target_space:
+		if target_space == &"office_corridor":
+			# Preserve the same observer path on both sides of the office commit.
+			# Clearing it changed the target pool owner on the crossing frame.
+			target_root.call("set_embedded_shadow_observer", _player_ref, camera)
+		else:
+			target_root.call("clear_embedded_shadow_observer")
+		return
+	var inbound := {}
+	for gateway: Dictionary in _directed_gateways:
+		if gateway.get("source_space", &"") == _directed_gateway_active_space \
+				and gateway.get("destination_space", &"") == target_space:
+			inbound = gateway
+			break
+	if inbound.is_empty():
+		target_root.call("clear_embedded_shadow_observer")
+		return
+	var source: Transform3D = inbound["source"]
+	var destination: Transform3D = inbound["destination"]
+	var source_eye := source.affine_inverse() * camera.global_position
+	var commit_distance := _directed_gateway_commit_distance(inbound)
+	if source_eye.z >= -commit_distance:
+		target_root.call("clear_embedded_shadow_observer")
+		return
+	var local_player := source.affine_inverse() * _player_ref.global_transform
+	var local_camera := source.affine_inverse() * camera.global_transform
+	var half_turn := Transform3D(Basis(Vector3.UP, PI), Vector3.ZERO)
+	# Пул света описывает область, видимую у destination-порога, а не пустое
+	# пространство между далёкой исходной камерой и рамой. Камера рендера ниже
+	# сохраняет полный transform, поэтому эта фиксация не влияет на параллакс.
+	local_player.origin.x = clampf(local_player.origin.x,
+		-OPENINGS.opening_width_m() * 0.48,
+		OPENINGS.opening_width_m() * 0.48)
+	local_player.origin.z = maxf(local_player.origin.z,
+		-DIRECTED_GATEWAY_PROXY_POOL_DEPTH)
+	observer.global_position = \
+		(destination * half_turn * local_player).origin
+	observer_camera.global_transform = \
+		destination * half_turn * local_camera
+	observer_camera.projection = camera.projection
+	observer_camera.keep_aspect = camera.keep_aspect
+	observer_camera.fov = camera.fov
+	observer_camera.size = camera.size
+	observer_camera.frustum_offset = camera.frustum_offset
+	observer_camera.h_offset = camera.h_offset
+	observer_camera.v_offset = camera.v_offset
+	observer_camera.near = camera.near
+	observer_camera.far = camera.far
+	target_root.call("set_embedded_shadow_observer", observer, observer_camera)
+
+
+func _update_directed_gateway_crossings() -> void:
+	if _player_ref == null or _directed_gateways.is_empty():
+		return
+	for gateway: Dictionary in _directed_gateways:
+		var source: Transform3D = gateway["source"]
+		var local_pos := source.affine_inverse() * _player_ref.global_position
+		var previous := float(gateway.get("previous_distance", local_pos.z))
+		gateway["previous_distance"] = local_pos.z
+		if Time.get_ticks_msec() < _directed_gateway_cooldown_until:
+			continue
+		var size: Vector2 = gateway["size"]
+		var commit_distance := _directed_gateway_commit_distance(gateway)
+		if previous < -commit_distance \
+				and local_pos.z >= -commit_distance \
+				and absf(local_pos.x) <= size.x * 0.48 \
+				and absf(local_pos.y) <= size.y * 0.5:
+			_directed_gateway_cooldown_until = Time.get_ticks_msec() \
+				+ DIRECTED_GATEWAY_COOLDOWN_MS
+			_transfer_player_through_directed_gateway(gateway)
+			_reset_directed_gateway_distances()
+			return
+
+
+func _transfer_player_through_directed_gateway(gateway: Dictionary) -> void:
+	var source: Transform3D = gateway["source"]
+	var destination: Transform3D = gateway["destination"]
+	var half_turn := Transform3D(Basis(Vector3.UP, PI), Vector3.ZERO)
+	var local_transform := source.affine_inverse() * _player_ref.global_transform
+	var local_velocity := source.basis.inverse() * _player_ref.velocity
+	_player_ref.global_transform = destination * half_turn * local_transform
+	_player_ref.velocity = destination.basis * half_turn.basis * local_velocity
+	_directed_gateway_active_space = gateway.get("destination_space", &"hub_core")
+	if _directed_gateway_active_space == &"hall_2x2" \
+			and _directed_gateway_hall != null:
+		_directed_gateway_hall.call("clear_embedded_shadow_observer")
+	if _directed_gateway_active_space == &"office_corridor" \
+			and _directed_gateway_office != null:
+		_directed_gateway_office.call("set_embedded_shadow_observer",
+			_player_ref, _player_ref.camera)
+
+
+func _reset_directed_gateway_distances() -> void:
+	if _player_ref == null:
+		return
+	for gateway: Dictionary in _directed_gateways:
+		var source: Transform3D = gateway["source"]
+		gateway["previous_distance"] = (
+			source.affine_inverse() * _player_ref.global_position).z
+
+
+func directed_gateway_debug_state() -> Dictionary:
+	var records: Array[Dictionary] = []
+	for gateway: Dictionary in _directed_gateways:
+		var surface := gateway.get("surface") as MeshInstance3D
+		records.append({
+			"id": gateway["id"],
+			"surface_valid": surface != null and is_instance_valid(surface),
+			"source": (gateway["source"] as Transform3D).origin,
+			"destination": (gateway["destination"] as Transform3D).origin,
+		})
+	return {
+		"hall_ready": _directed_gateway_hall != null \
+			and is_instance_valid(_directed_gateway_hall),
+		"office_ready": _directed_gateway_office != null \
+			and is_instance_valid(_directed_gateway_office),
+		"gateway_count": _directed_gateways.size(),
+		"gateways": records,
+	}
 
 
 func _place_hall_arrow() -> void:
@@ -6061,7 +7018,8 @@ func _setup_infinite_connector_trigger() -> void:
 
 
 func _setup_embedded_infinite_anomaly() -> void:
-	var anomaly := INFINITE_ANOMALY_SCENE.instantiate() as Node3D
+	var packed := load(INFINITE_ANOMALY_SCENE_PATH) as PackedScene
+	var anomaly := packed.instantiate() as Node3D if packed != null else null
 	if anomaly == null:
 		push_error("Infinite anomaly scene could not be instantiated")
 		return
@@ -6173,6 +7131,37 @@ func _prebuild_infinite_pit() -> void:
 	_build_pit_door_keep_panels()
 
 
+func _setup_void_room_product_test_spawn() -> void:
+	if _pit_ring == null or _player_ref == null:
+		return
+	# Готовим ровно то же продуктовое кольцо, которое обычно появляется после
+	# двух переключений, без отдельной тестовой геометрии.
+	_reveal_infinite_pit_back()
+	_reveal_infinite_pit_front()
+	var tile_length := float(INFINITE_PIT_MODULE.TILE_LENGTH)
+	var room_size := float(INFINITE_PIT_MODULE.ROOM_SIZE)
+	_player_ref.global_position = _pit_interior_origin + Vector3(
+		tile_length * 0.5, 1.2, room_size * 0.5 - 1.0)
+	_pit_ring._last_move_sign = -1.0
+	_pit_ring._spawn_exit_door(_player_ref)
+	var door_node = _pit_ring._door_node
+	if door_node == null or not is_instance_valid(door_node):
+		return
+	var room_value = door_node.get_meta("void_room", null)
+	if room_value == null or not is_instance_valid(room_value):
+		return
+	var room := room_value as Node3D
+	var cube_center: Vector3 = room.get_meta("void_cube_center")
+	var outward_z := float(room.get_meta("void_outward_z"))
+	_spawn_pos = door_node.to_global(cube_center \
+		- Vector3(0.0, 0.0, outward_z * 2.0) + Vector3.UP * 1.2)
+	_spawn_yaw = PI if outward_z > 0.0 else 0.0
+	_player_ref.global_position = _spawn_pos
+	_player_ref.rotation.y = _spawn_yaw
+	if _player_ref.camera != null:
+		_player_ref.camera.rotation.x = 0.0
+
+
 # Раскладка ближайших ламп не должна меняться в момент подмены: свет области
 # остаётся ровно тем же, пока якорная секция кольца не уедет за кап. Но панели
 # запечены в геометрию блока и уходят вместе с ним, поэтому для каждой лампы
@@ -6192,6 +7181,12 @@ func _build_pit_door_keep_panels() -> void:
 		panel.mesh = mesh
 		panel.material_override = _mat_lamp
 		panel.position = pos
+		panel.visibility_range_end = float(
+			INFINITE_PIT_MODULE.FADE_DARK_DISTANCE)
+		panel.visibility_range_end_margin = float(
+			INFINITE_PIT_MODULE.PANEL_FADE_MARGIN)
+		panel.visibility_range_fade_mode = \
+			GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
 		panel.visible = false
 		add_child(panel)
 		_pit_door_keep_panels.append(panel)
@@ -6262,6 +7257,10 @@ func _camera_turned_away_from(camera: Camera3D, swap_dir: Vector3) -> bool:
 
 
 func _reveal_infinite_pit_back() -> void:
+	_suspend_directed_gateways_for_world_replacement()
+	if _phantom_views != null \
+			and _phantom_views.has_method("suspend_for_world_replacement"):
+		_phantom_views.suspend_for_world_replacement()
 	_pit_ring_active = true
 	# Стриминг уровня встаёт на паузу: перекрытые кольцом блоки не должны
 	# достраиваться обратно.
@@ -6334,6 +7333,8 @@ func _sweep_ring_area_leftovers(keep_anchor: bool) -> void:
 	for child in get_children():
 		var node := child as Node3D
 		if node == null or node.name.begins_with("infinite_pit_ring"):
+			continue
+		if bool(node.get_meta("portal_light_handoff", false)):
 			continue
 		if node.name.begins_with("pit_door_keep_panel"):
 			continue
@@ -6634,6 +7635,7 @@ func _stop_level_audio_for_anomaly() -> void:
 func _process(delta: float) -> void:
 	if _infinite_anomaly_active:
 		return
+	_update_directed_gateway_crossings()
 	_level_e_base_process(delta)
 	if _level_e_streaming_enabled():
 		_update_streaming()
@@ -7049,7 +8051,8 @@ func _update_shadow_pool() -> void:
 			_lf3_restore_reference_shadow_profile(l)
 		_level_e_base_update_shadow_pool()
 		return
-	_lf3_apply_stable_shadow_pool(_lamps, _player_ref.position if _player_ref != null else Vector3.ZERO, false)
+	_lf3_apply_stable_shadow_pool(_lamps,
+		_directed_gateway_hub_observer_position(), false)
 
 
 func _update_bounce_shadow_pool(player_pos: Vector3) -> void:
@@ -9261,8 +10264,6 @@ func _apply_bounce_range() -> void:
 	for l in _area_bounce_lamps:
 		if l != null and is_instance_valid(l):
 			l.set_meta("base_bounce_range", _bounce_range)
-
-
 # Пул света каждый кадр вызывает _apply_area_bounce_runtime и переписывает
 # энергию/радиус bounce из констант+меты. Перехватываем ПОСЛЕ super и накидываем
 # живой множитель энергии — так значение переживает пер-кадровый пересчёт, а базу
@@ -9355,13 +10356,18 @@ func _put(st_name: String, size: Vector3, pos: Vector3, collide := true, add_bas
 			_block_body_get(_emit_ctx).add_child(cs)
 		else:
 			_body.add_child(cs)
-	if add_base and st_name == "wall" and pos.y - size.y * 0.5 < 0.05 and (force_base or _wall_base_allowed(size)):
+	if add_base and st_name in ["wall", "portal_cap_wall"] \
+			and pos.y - size.y * 0.5 < 0.05 \
+			and (force_base or _wall_base_allowed(size)):
 		var bs := Vector3(size.x + BASEBOARD_PAD, BASEBOARD_H, size.z + BASEBOARD_PAD)
 		var bpos := Vector3(pos.x, BASEBOARD_H * 0.5, pos.z)
 		var bb := _emit_ctx if derived else _block_of(bpos)
-		_block_surface(bb, "base").append_from(_get_box(bs), 0, Transform3D(Basis(), bpos))
+		var base_surface := "portal_cap_base" \
+			if st_name == "portal_cap_wall" else "base"
+		_block_surface(bb, base_surface).append_from(
+			_get_box(bs), 0, Transform3D(Basis(), bpos))
 		if not derived:
-			_rec(bb)["geo"].append(["base", bs, bpos])
+			_rec(bb)["geo"].append([base_surface, bs, bpos])
 
 
 # ── По-блочный эмит геометрии (re-entrant, под-шаг 1) ──
@@ -9498,6 +10504,7 @@ func _mats_map() -> Dictionary:
 	return {
 		"wall": _mat_wall, "floor": _mat_floor, "ceil": _mat_ceil,
 		"lamp": _mat_lamp, "lamp_glow": _mat_lamp_glow, "base": _mat_base, "pit": _mat_pit,
+		"portal_cap_wall": _mat_wall, "portal_cap_base": _mat_base,
 	}
 
 
@@ -9513,6 +10520,8 @@ func _build_block_meshes(holder: Node3D, surfs: Dictionary) -> void:
 		mi.gi_mode = GeometryInstance3D.GI_MODE_STATIC
 		if n == "ceil":
 			mi.layers = mi.layers | AREA_LIGHT_CEILING_FILL_LAYER
+		elif n.begins_with("portal_cap_"):
+			mi.layers = PORTAL_LIGHT_BRIDGE_MODULE.PORTAL_CAP_CASTER_LAYER
 		holder.add_child(mi)
 
 
@@ -9758,10 +10767,18 @@ func _build_block_mesh_arrays(holder: Node3D,
 		instance.gi_mode = GeometryInstance3D.GI_MODE_STATIC
 		if surface_name == "ceil":
 			instance.layers = instance.layers | AREA_LIGHT_CEILING_FILL_LAYER
+		elif surface_name.begins_with("portal_cap_"):
+			instance.layers = \
+				PORTAL_LIGHT_BRIDGE_MODULE.PORTAL_CAP_CASTER_LAYER
 		holder.add_child(instance)
 
 
 func _exit_tree() -> void:
+	if _portal_light_bridge != null:
+		_portal_light_bridge.clear()
+		_portal_light_bridge = null
+	if _phantom_views != null and _phantom_views.has_method("shutdown"):
+		_phantom_views.shutdown()
 	_finish_stream_plan_thread()
 
 
@@ -10273,8 +11290,11 @@ func _spawn_player() -> void:
 		_level_e_base_spawn_player()
 		return
 	var player := preload("res://player.tscn").instantiate() as CharacterBody3D
-	_spawn_pos = _hub_center_pos()   # центр слитого интерьера 33×33 (= центр ленивой загрузки)
-	_spawn_yaw = 0.0
+	# Рама остаётся строго в центре. Игрок начинает перед её portal-стороной
+	# и сразу смотрит на X-колонный зал.
+	_spawn_pos = _hub_center_pos() - Vector3.BACK \
+		* (DIRECTED_GATEWAY_SPAWN_DISTANCE_CELLS * CELL)
+	_spawn_yaw = PI
 	player.position = _spawn_pos
 	player.rotation.y = _spawn_yaw
 	add_child(player)

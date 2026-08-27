@@ -27,3 +27,14 @@
 /.light_leak_spot_motion/
 /.perimeter_teeth_light_ab/
 /.infinite_pit_bot/
+/.directed_gateway_probe/
+/.infinite_pit_bidirectional_probe/
+/.infinite_pit_boundary_probe/
+/.infinite_pit_ceiling_phase_probe/
+/.infinite_pit_ceiling_sweep/
+/.infinite_pit_panel_grid_probe/
+/.infinite_pit_route_probe/
+/.office_portal_bridge_ab/
+/.portal_aperture_bridge_lab/
+/.seamless_gateway_bot/
+/.void_light_handoff_probe/

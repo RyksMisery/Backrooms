@@ -93,6 +93,9 @@ var _comparison_floor_enabled := true
 var _mat_office_opening_base: StandardMaterial3D
 var _mat_office_door_leaf: BaseMaterial3D
 var _mat_office_door_handle: BaseMaterial3D
+var _office_profile_frame_mesh: Mesh
+var _office_profile_casing_mesh: Mesh
+var _office_profile_leaf_mesh: Mesh
 var _office_door_v2_instances: Array[Node3D] = []
 var _lf_renderer: Node3D
 var _lf_controller: Node
@@ -137,6 +140,7 @@ var _lf3_leak_capture_state := {}
 var embedded_mode := false
 var embedded_player: CharacterBody3D
 var embedded_environment: Environment
+var embedded_light_pool_no_distance_fade := false
 var _embedded_active := false
 
 const LF2_REFERENCE_VIEW_NAMES := [
@@ -1609,7 +1613,10 @@ func _update_corridor_lights(_delta: float) -> void:
 			continue
 		var light := entry["light"] as OmniLight3D
 		var d := absf(light.global_position.z - pz)
-		entry["level"] = clampf((LAMP_DARK_DIST - d) / span, 0.0, 1.0)
+		entry["level"] = (1.0 if bool(entry.get(
+			"proxy_layout_enabled", true)) else 0.0) if embedded_mode \
+				and embedded_light_pool_no_distance_fade else clampf(
+			(LAMP_DARK_DIST - d) / span, 0.0, 1.0)
 		_apply_light_entry(entry, CANONICAL_LIGHTING.LAMP_ENERGY * _live_energy_mul, false)
 		# В LF3-0 используются те же настоящие источники, но только из
 		# ограниченного ближайшего пула. Его граница лежит уже в полностью
@@ -2924,9 +2931,9 @@ func _add_story_sidewall_solid_segment(room: Node3D, wall_center_x: float,
 func _add_office_opening_v2_liner(room: Node3D, door_z: float, wall_center_x: float, wall_t: float) -> void:
 	var open_w := _opening_width_m()
 	var open_h := _opening_height_m()
-	var frame_scale := minf(open_w / OFFICE_DOOR_V2_FRAME_W_RAW, open_h / OFFICE_DOOR_V2_FRAME_H_RAW)
-	var inner_half_w := OFFICE_DOOR_V2_INNER_HALF_W_RAW * frame_scale
-	var inner_top := OFFICE_DOOR_V2_INNER_TOP_RAW * frame_scale
+	var inner_half_w := CANONICAL_OPENINGS.canonical_liner_inner_half_m(
+		open_w)
+	var inner_top := CANONICAL_OPENINGS.canonical_liner_inner_top_m(open_h)
 	var side_fill := maxf(0.0, open_w * 0.5 - inner_half_w)
 	var top_fill := maxf(0.0, open_h - inner_top)
 	var depth := wall_t + OFFICE_FRAME_OUTSET * 2.0
@@ -2970,11 +2977,15 @@ func _spawn_one_office_opening_v2_frame(room: Node3D, _side: float, door_z: floa
 	if frame == null:
 		inst.queue_free()
 		return null
+	if _office_profile_frame_mesh == null:
+		_office_profile_frame_mesh = CANONICAL_OPENINGS.canonical_frame_mesh(
+			frame.mesh)
+	frame.mesh = _office_profile_frame_mesh
 	var raw_box := frame.global_transform * frame.get_aabb()
 	if raw_box.size.y <= 0.0 or raw_box.size.z <= 0.0:
 		inst.queue_free()
 		return null
-	var scale_factor := minf(_opening_width_m() / raw_box.size.z, _opening_height_m() / raw_box.size.y)
+	var scale_factor := CANONICAL_OPENINGS.office_new_scale()
 	inst.scale = Vector3.ONE * scale_factor
 	var box := frame.global_transform * frame.get_aabb()
 	var center := box.position + box.size * 0.5
@@ -2983,6 +2994,7 @@ func _spawn_one_office_opening_v2_frame(room: Node3D, _side: float, door_z: floa
 	var target := room.to_global(Vector3(center_x, 0.0, door_z))
 	inst.global_position += target - Vector3(center.x, box.position.y, center.z)
 	_spawn_original_outer_casing(inst, room, door_z, wall_center_x, wall_t, face, scale_factor)
+	inst.set_meta("inner_lip_m", CANONICAL_OPENINGS.OFFICE_INNER_LIP)
 	return inst
 
 
@@ -3001,6 +3013,10 @@ func _spawn_original_outer_casing(frame_root: Node3D, room: Node3D, door_z: floa
 	if casing_mesh == null:
 		casing.queue_free()
 		return
+	if _office_profile_casing_mesh == null:
+		_office_profile_casing_mesh = CANONICAL_OPENINGS.canonical_frame_mesh(
+			casing_mesh.mesh, true)
+	casing_mesh.mesh = _office_profile_casing_mesh
 	casing_mesh.material_override = _office_opening_base_material()
 	var casing_box := casing_mesh.global_transform * casing_mesh.get_aabb()
 	if casing_box.size.x <= 0.0 or casing_box.size.y <= 0.0 or casing_box.size.z <= 0.0:
@@ -3029,6 +3045,16 @@ func _spawn_office_door_v2_leaf(room: Node3D, side: float, door_z: float,
 	if leaf == null:
 		inst.free()
 		return null
+	var latch_shift := CANONICAL_OPENINGS.canonical_leaf_latch_shift_raw(
+		leaf.mesh)
+	if _office_profile_leaf_mesh == null:
+		_office_profile_leaf_mesh = CANONICAL_OPENINGS.canonical_leaf_mesh(
+			leaf.mesh)
+	leaf.mesh = _office_profile_leaf_mesh
+	for handle_name: String in ["Handle", "Handle2"]:
+		var handle := leaf.get_node_or_null(handle_name) as Node3D
+		if handle != null:
+			handle.position.z += latch_shift
 	_tune_new_door_materials(inst)
 	# В дерево попадает уже облегчённый материал: исходный normal/AO-вариант не
 	# должен успеть попасть в очередь рендера даже на один кадр.
@@ -3039,6 +3065,10 @@ func _spawn_office_door_v2_leaf(room: Node3D, side: float, door_z: float,
 	inst.scale = Vector3.ONE * scale_factor
 	inst.set_meta("office_door_v2_side", side)
 	inst.set_meta("office_door_v2_door_z", door_z)
+	inst.set_meta("inner_lip_m", CANONICAL_OPENINGS.OFFICE_INNER_LIP)
+	inst.set_meta("leaf_profile_size_m",
+		CANONICAL_OPENINGS.office_profile_leaf_size_m(
+			CANONICAL_OPENINGS.OFFICE_INNER_LIP))
 	# Дверь закрывается с той стороны проёма, на которой сейчас находится игрок.
 	# При последующем переходе через стену сторона обновляется динамически.
 	var face_player := -side
